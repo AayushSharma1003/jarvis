@@ -1,30 +1,57 @@
-# Node / frontend
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Frontend
 node_modules/
-app/dist/
+dist/
+.vite/
+*.tsbuildinfo
 
 # Rust / Tauri
+target/
 app/src-tauri/target/
 app/src-tauri/gen/
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
-backend/dist/
-backend/build/
+# ML model weights (huge, downloaded on install)
+*.onnx
+*.gguf
+*.bin
+*.safetensors
+backend/models/
+models/
 
-# Model weights — fetched by scripts/fetch_models.py, never committed
-models/*
-!models/README.md
-!models/.gitkeep
-
-# Sidecar binaries staged for Tauri bundling
-app/src-tauri/binaries/
-
-# Local state
+# Local data
+*.sqlite
+*.db
 *.log
-.DS_Store
+
+# Secrets and config
+.env
+.env.local
+*.pem
+*.key
 config.local.toml
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Build outputs
+*.dmg
+*.msi
+*.exe
+*.deb
+*.AppImage
+release/
