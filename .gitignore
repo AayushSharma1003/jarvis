@@ -55,3 +55,5 @@ desktop.ini
 *.deb
 *.AppImage
 release/
+!models/README.md
+!models/.gitkeep
