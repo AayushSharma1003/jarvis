@@ -1,0 +1,24 @@
+[extension]
+name = "timers-reminders"
+version = "0.1.0"
+description = "Set timers and reminders, delivered as local notifications"
+
+[permissions]
+os = []
+network = false
+
+[[tools]]
+name = "set_timer"
+risk = "safe"
+
+[[tools]]
+name = "set_reminder"
+risk = "safe"
+
+[[tools]]
+name = "list_timers"
+risk = "safe"
+
+[[tools]]
+name = "cancel_timer"
+risk = "safe"

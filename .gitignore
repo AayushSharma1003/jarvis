@@ -1,0 +1,30 @@
+# Node / frontend
+node_modules/
+app/dist/
+
+# Rust / Tauri
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+backend/dist/
+backend/build/
+
+# Model weights — fetched by scripts/fetch_models.py, never committed
+models/*
+!models/README.md
+!models/.gitkeep
+
+# Sidecar binaries staged for Tauri bundling
+app/src-tauri/binaries/
+
+# Local state
+*.log
+.DS_Store
+config.local.toml

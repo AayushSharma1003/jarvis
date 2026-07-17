@@ -1,0 +1,21 @@
+# Curated model catalog — data, not a service.
+# Bundled with the app; refreshing from the repo is a MANUAL user action
+# (zero automatic phone-home, per docs/security-model.md §6).
+# Onboarding and the Settings model browser render from this file.
+#
+# tags: tool-calling | chat | vision | small | coding
+# tier: min RAM in GB for a good experience
+
+[[models]]
+id = "qwen3:4b"
+tier = 8
+tags = ["chat", "tool-calling", "small"]
+note = "Default on 8GB machines"
+
+[[models]]
+id = "qwen3:8b"
+tier = 16
+tags = ["chat", "tool-calling"]
+note = "Default on 16GB machines"
+
+# ... curated list grows here; every entry needs a rationale in `note`.

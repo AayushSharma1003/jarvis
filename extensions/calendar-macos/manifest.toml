@@ -1,0 +1,17 @@
+[extension]
+name = "calendar-macos"
+version = "0.1.0"
+description = "Read and create macOS Calendar events (EventKit)"
+platforms = ["darwin"]
+
+[permissions]
+os = ["calendar"]
+network = false
+
+[[tools]]
+name = "list_events"
+risk = "safe"
+
+[[tools]]
+name = "create_event"
+risk = "ask"
