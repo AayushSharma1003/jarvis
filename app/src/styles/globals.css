@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* Dark is the default theme (product decision); light mode arrives with the
+   settings screen. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* Chat content is selectable even though the chrome isn't. */
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}

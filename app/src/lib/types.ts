@@ -1,0 +1,63 @@
+// Mirrors backend/jarvis_backend/server/protocol.py. Keep the two in sync.
+
+export interface BackendInfo {
+  port: number;
+  token: string;
+}
+
+export interface ModelEntry {
+  id: string;
+  parameter_size: string | null;
+  size_bytes: number | null;
+}
+
+export interface HistoryMessage {
+  id: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+}
+
+export interface HistoryTurn {
+  id: string;
+  parent_turn_id: string | null;
+  messages: HistoryMessage[];
+}
+
+export type ServerMessage =
+  | { type: "ready"; version: string }
+  | { type: "pong" }
+  | { type: "chat.start"; conversation_id: string; model: string }
+  | { type: "chat.delta"; text: string }
+  | {
+      type: "chat.done";
+      conversation_id: string;
+      turn_id: string;
+      interrupted: boolean;
+    }
+  | { type: "models"; default: string; models: ModelEntry[] }
+  | {
+      type: "conversations";
+      conversations: {
+        id: string;
+        title: string | null;
+        created_at: string;
+        updated_at: string;
+      }[];
+    }
+  | { type: "history"; conversation_id: string; turns: HistoryTurn[] }
+  | { type: "error"; code: string; detail?: string };
+
+export type ClientMessage =
+  | { type: "auth"; token: string }
+  | { type: "ping" }
+  | {
+      type: "chat.send";
+      content: string;
+      conversation_id?: string;
+      model?: string;
+      parent_turn_id?: string;
+    }
+  | { type: "chat.stop" }
+  | { type: "models.list" }
+  | { type: "conversations.list" }
+  | { type: "conversation.history"; conversation_id: string };

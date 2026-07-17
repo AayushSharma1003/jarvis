@@ -1,0 +1,94 @@
+# Tag push (v*) → build installers for all three platforms, publish a draft
+# GitHub Release with artifacts + SHA-256 checksums. Releases are UNSIGNED by
+# design (zero budget — see docs/unsigned-install.md); checksums are the
+# integrity story, so they are generated in CI, never locally.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest # arm64
+            bundles: dmg
+          - os: windows-latest
+            bundles: msi,nsis
+          - os: ubuntu-22.04
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Build Python sidecar (PyInstaller onedir)
+        working-directory: backend
+        run: |
+          uv sync
+          uv run python ../scripts/build_sidecar.py
+
+      - name: Build app
+        working-directory: app
+        run: |
+          npm ci
+          # tauri.release.conf.json layers in the sidecar resources, which only
+          # exist after the sidecar build step (keeps plain `cargo check` green).
+          npm run tauri build -- --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          find app/src-tauri/target/release/bundle \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
+               -o -name '*.deb' -o -name '*.AppImage' \) \
+            -exec cp {} release-artifacts/ \;
+          ls -la release-artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.os }}
+          path: release-artifacts/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          merge-multiple: true
+      - name: Generate SHA-256 checksums
+        working-directory: all
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: all/*
+          body: |
+            Unsigned release — verify your download against SHA256SUMS.txt.
+            Install instructions per OS: see docs/unsigned-install.md.

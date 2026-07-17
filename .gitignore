@@ -57,3 +57,6 @@ desktop.ini
 release/
 !models/README.md
 !models/.gitkeep
+
+# Claude Code local tooling (session-specific launch config)
+.claude/

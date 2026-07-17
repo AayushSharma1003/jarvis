@@ -1,0 +1,45 @@
+[project]
+name = "jarvis-backend"
+version = "0.1.0"
+description = "JARVIS Python sidecar: voice pipeline, agent loop, tools, security layer"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "platformdirs>=4.0",
+    "psutil>=6.0",
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+jarvis-backend = "jarvis_backend.main:run"
+jarvis = "jarvis_backend.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jarvis_backend"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# A hanging test must fail loudly, not stall CI (learned the hard way in phase 1).
+timeout = 30
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

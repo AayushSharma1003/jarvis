@@ -18,4 +18,17 @@
 
 ## Dev setup
 
-(Phase 1 will fill this in: `uv sync` in `backend/`, `npm install` in `app/`, `npm run tauri dev`.)
+Prereqs: [uv](https://docs.astral.sh/uv/), Node 22+, Rust stable, [Ollama](https://ollama.com) running with at least one model pulled (`ollama pull llama3.2:3b`).
+
+```sh
+cd backend && uv sync          # backend deps
+uv run pytest                  # tests
+uv run jarvis doctor           # diagnose your setup
+cd ../app && npm install       # frontend deps
+npm run tauri dev              # full app (debug builds run the backend via uv)
+```
+
+Frontend-only iteration without the Tauri shell: start the backend yourself
+(`JARVIS_WS_TOKEN=<any> JARVIS_PORT=8765 uv run jarvis-backend`), then
+`VITE_JARVIS_PORT=8765 VITE_JARVIS_TOKEN=<same> npm run dev` and open
+http://localhost:1420 in a browser.

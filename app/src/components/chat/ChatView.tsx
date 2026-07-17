@@ -1,0 +1,61 @@
+import { useTranslation } from "react-i18next";
+import { errorText } from "../../i18n";
+import { useConversation } from "../../state/conversation";
+import { Composer } from "./Composer";
+import { MessageList } from "./MessageList";
+
+const STATUS_DOT: Record<string, string> = {
+  ready: "bg-emerald-500",
+  connecting: "bg-amber-500",
+  starting: "bg-amber-500",
+  closed: "bg-amber-500",
+  "backend-lost": "bg-red-500",
+};
+
+export function ChatView() {
+  const { t } = useTranslation();
+  const s = useConversation();
+
+  return (
+    <div className="flex h-full flex-col bg-zinc-900 text-zinc-100">
+      <header
+        data-tauri-drag-region
+        className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5"
+      >
+        <span className={`h-2 w-2 rounded-full ${STATUS_DOT[s.status]}`} />
+        <span className="text-sm font-medium">{t("app.title")}</span>
+        <span className="text-xs text-zinc-500">{t(`status.${s.status}`)}</span>
+        <div className="ml-auto">
+          <select
+            value={s.currentModel}
+            onChange={(e) => s.setModel(e.target.value)}
+            disabled={s.models.length === 0}
+            aria-label={t("model.label")}
+            className="max-w-44 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
+          >
+            {s.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+          </select>
+        </div>
+      </header>
+
+      <MessageList messages={s.messages} streamingText={s.streamingText} />
+
+      {s.errorCode && (
+        <div className="mx-4 mb-2 rounded-lg bg-red-950/60 px-3 py-2 text-xs text-red-300">
+          {errorText(s.errorCode)}
+        </div>
+      )}
+
+      <Composer
+        disabled={s.status !== "ready"}
+        streaming={s.streamingText !== null}
+        onSend={s.send}
+        onStop={s.stop}
+      />
+    </div>
+  );
+}

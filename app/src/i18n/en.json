@@ -1,0 +1,37 @@
+{
+  "app": {
+    "title": "Jarvis"
+  },
+  "status": {
+    "starting": "Starting…",
+    "connecting": "Connecting…",
+    "ready": "Ready",
+    "closed": "Reconnecting…",
+    "backend-lost": "Backend stopped — restart the app"
+  },
+  "chat": {
+    "placeholder": "Ask Jarvis anything…",
+    "send": "Send",
+    "stop": "Stop",
+    "empty": "Local-first. Nothing leaves this machine.",
+    "interrupted": "(stopped)"
+  },
+  "model": {
+    "label": "Model"
+  },
+  "error": {
+    "OLLAMA_UNREACHABLE": "Can't reach Ollama. Is it running?",
+    "NO_MODELS": "No models installed yet. Run: ollama pull llama3.2:3b",
+    "MODEL_NOT_FOUND": "That model isn't installed.",
+    "LLM_STREAM_ERROR": "The model stopped unexpectedly.",
+    "BUSY": "Still answering — stop it first.",
+    "AUTH_FAILED": "Connection rejected (bad token).",
+    "BAD_MESSAGE": "Invalid request.",
+    "UNKNOWN_TYPE": "Invalid request.",
+    "CONVERSATION_NOT_FOUND": "Conversation not found.",
+    "BACKEND_UNAVAILABLE": "Backend not running. In dev: start it and set VITE_JARVIS_PORT / VITE_JARVIS_TOKEN.",
+    "BACKEND_TIMEOUT": "Backend didn't start in time.",
+    "BACKEND_EXITED": "Backend crashed on startup.",
+    "unknown": "Something went wrong ({{code}})."
+  }
+}

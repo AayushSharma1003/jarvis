@@ -2,7 +2,7 @@
 
 > A local-first, voice-activated AI assistant that runs on **your** machine. Wake word, streaming voice, real tool use — zero API keys, zero telemetry, cloud optional.
 
-**Status: pre-alpha scaffold.** Nothing works yet. See [docs/architecture.md](docs/architecture.md) for the plan.
+**Status: pre-alpha, phase 1 of 6.** Text chat against local Ollama works end-to-end (streaming, history, model auto-selection by RAM tier); voice arrives in phase 2. See [docs/architecture.md](docs/architecture.md) for the plan.
 
 <!-- DEMO GIF PLACEHOLDER: sphere responding to "Hey Jarvis" -->
 
