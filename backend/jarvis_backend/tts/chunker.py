@@ -55,7 +55,8 @@ class SentenceChunker:
         """Add a stream delta; return any sentences that are now complete."""
         self._buf += delta
         out: list[str] = []
-        # Latency fast-path: speak the opening clause as soon as it closes.
+        # Latency fast-path: speak the opening clause as soon as it closes,
+        # or — for long comma-less openers — the first FIRST_MAX_WORDS words.
         if not self._emitted:
             m = _CLAUSE.search(self._buf)
             sentence_first = _BOUNDARY.search(self._buf)
@@ -65,6 +66,15 @@ class SentenceChunker:
                     out.append(clause)
                     self._buf = self._buf[m.end() :]
                     self._emitted = True
+            elif sentence_first is None:
+                words = self._buf.split(" ")
+                if len(words) > FIRST_MAX_WORDS + 1:  # +1: last word may be mid-token
+                    head = " ".join(words[:FIRST_MAX_WORDS])
+                    spoken = speakable(head)
+                    if spoken:
+                        out.append(spoken)
+                        self._buf = self._buf[len(head) :].lstrip()
+                        self._emitted = True
         while True:
             m = _BOUNDARY.search(self._buf)
             if m is None:
