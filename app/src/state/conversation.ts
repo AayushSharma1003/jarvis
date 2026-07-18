@@ -29,6 +29,10 @@ interface ConversationState {
 }
 
 let socket: JarvisSocket | null = null;
+// Synchronous guard: React StrictMode double-mounts effects, and `socket` is
+// only assigned after an await — two concurrent init() calls would open two
+// WebSockets and double-apply every streamed delta (seen in the wild).
+let initStarted = false;
 
 export const useConversation = create<ConversationState>((set, get) => ({
   status: "starting",
@@ -40,7 +44,8 @@ export const useConversation = create<ConversationState>((set, get) => ({
   streamingText: null,
 
   init: async () => {
-    if (socket) return;
+    if (initStarted) return;
+    initStarted = true;
     onBackendExited(() => set({ status: "backend-lost" }));
     try {
       const info = await getBackendInfo();

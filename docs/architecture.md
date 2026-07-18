@@ -47,3 +47,28 @@ flowchart LR
 5. **Extended scope** — branching UI, `jarvis install`, model catalog UI, default extensions, wake-word training tool + "Hey Friday", opt-in VAD barge-in
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release
 - **Post-v1**: AEC milestone, voice cloning TTS backend evaluation (Chatterbox-Turbo tier), auto-update (blocked on signing budget)
+
+## Handshake reliability rules (phase-1 postmortem)
+
+The "Backend didn't start in time" bug (missing Tauri capabilities → `event.listen`
+silently denied) produced these standing rules, enforced in code:
+
+1. `app/src-tauri/capabilities/default.json` grants `core:default` to the main
+   window. Deleting it breaks all webview IPC events silently — don't.
+2. Frontend handshake ([ipc.ts](../app/src/lib/ipc.ts)): listeners register
+   BEFORE state queries, and `backend_info` is ALSO polled — events are an
+   optimization, never a single point of failure.
+3. No swallowed rejections anywhere in the spawn/handshake/connect chain;
+   every step logs (Rust `[sidecar]`, webview via the `frontend_log` command,
+   raw sidecar stdout behind `JARVIS_DEBUG=1`).
+4. `JARVIS_STARTUP_DELAY=<s>` (backend test hook) simulates a slow cold start;
+   any change to the handshake must pass a run with `JARVIS_STARTUP_DELAY=5`.
+
+## Followups
+
+- Sidecar auto-restart with backoff on unexpected exit (today: UI shows
+  "backend stopped", user restarts the app).
+- `ws.ts` keeps reconnect-looping against a dead port after `backend-exited`
+  (harmless noise; suppress once auto-restart exists).
+- macOS Intel (`x86_64-apple-darwin`) release target — add a `macos-13` runner
+  to release.yml if anyone asks for it.

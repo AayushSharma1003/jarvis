@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core IPC permissions for the main window. Without this file Tauri 2 grants the webview NOTHING — event.listen silently fails and the backend handshake times out (the phase-1 'Backend didn't start in time' bug).",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -28,6 +28,11 @@ cd ../app && npm install       # frontend deps
 npm run tauri dev              # full app (debug builds run the backend via uv)
 ```
 
+Debugging the app↔backend handshake: run with `JARVIS_DEBUG=1` to echo raw
+sidecar stdout; all handshake steps already log to the `tauri dev` terminal
+with `[sidecar]` / `[frontend]` prefixes. `JARVIS_STARTUP_DELAY=5` simulates a
+slow backend cold start.
+
 Frontend-only iteration without the Tauri shell: start the backend yourself
 (`JARVIS_WS_TOKEN=<any> JARVIS_PORT=8765 uv run jarvis-backend`), then
 `VITE_JARVIS_PORT=8765 VITE_JARVIS_TOKEN=<same> npm run dev` and open

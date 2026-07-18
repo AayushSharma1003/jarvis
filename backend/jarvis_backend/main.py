@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import socket
+import time
 
 import psutil
 import uvicorn
@@ -32,6 +33,11 @@ PARENT_POLL_S = 2.0
 
 
 def run() -> None:
+    # Test hook: simulate a slow cold start (used to verify the supervisor's
+    # handshake handles a backend that comes up after the webview does).
+    if delay := os.environ.get("JARVIS_STARTUP_DELAY"):
+        time.sleep(float(delay))
+
     config = load()
     env_token = os.environ.get("JARVIS_WS_TOKEN")
     token = env_token or make_token()
