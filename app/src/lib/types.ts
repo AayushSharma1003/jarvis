@@ -56,6 +56,8 @@ export type ServerMessage =
       }[];
     }
   | { type: "history"; conversation_id: string; turns: HistoryTurn[] }
+  | { type: "wake.status"; enabled: boolean; available: boolean }
+  | { type: "wake.detected" }
   | { type: "error"; code: string; detail?: string };
 
 export type ClientMessage =
@@ -73,4 +75,5 @@ export type ClientMessage =
   | { type: "voice.stop" }
   | { type: "models.list" }
   | { type: "conversations.list" }
-  | { type: "conversation.history"; conversation_id: string };
+  | { type: "conversation.history"; conversation_id: string }
+  | { type: "wake.set"; enabled: boolean };

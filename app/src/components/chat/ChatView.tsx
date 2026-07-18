@@ -40,7 +40,26 @@ export function ChatView() {
         <span className="text-xs text-zinc-500">
           {s.voiceState !== "idle" ? t(`voice.${s.voiceState}`) : t(`status.${s.status}`)}
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {s.wakeAvailable && (
+            <button
+              onClick={() => s.setWakeEnabled(!s.wakeEnabled)}
+              aria-pressed={s.wakeEnabled}
+              title={s.wakeEnabled ? t("wake.disable") : t("wake.enable")}
+              className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+                s.wakeEnabled
+                  ? "bg-sky-950 text-sky-300 hover:bg-sky-900"
+                  : "bg-zinc-800 text-zinc-500 hover:bg-zinc-700"
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  s.wakeEnabled ? "animate-pulse bg-sky-400" : "bg-zinc-600"
+                }`}
+              />
+              {t("wake.label")}
+            </button>
+          )}
           <select
             value={s.currentModel}
             onChange={(e) => s.setModel(e.target.value)}

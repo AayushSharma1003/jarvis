@@ -22,13 +22,15 @@ import time
 import psutil
 import uvicorn
 
-from .config import load
+from . import assets
+from .config import Config, load, load_wake_enabled, save_wake_enabled
 from .llm.ollama import OllamaBackend
-from .server.app import AppState, create_app
+from .server.app import AppState, create_app, handle_wake
 from .server.auth import make_token
 from .server.voice import RealVoiceIO
 from .storage import db
 from .storage.conversations import Store
+from .wake.service import WakeService
 
 PARENT_POLL_S = 2.0
 
@@ -45,11 +47,11 @@ def run() -> None:
 
     store = Store(db.connect(config.data_dir / "jarvis.sqlite3"))
     backend = OllamaBackend(config.ollama_url)
-    app = create_app(
-        AppState(
-            token=token, store=store, backend=backend, config=config, voice_io=RealVoiceIO()
-        )
+    state = AppState(
+        token=token, store=store, backend=backend, config=config, voice_io=RealVoiceIO()
     )
+    state.wake = _make_wake_service(state, config)
+    app = create_app(state)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -76,6 +78,42 @@ def run() -> None:
             await backend.close()
 
     asyncio.run(serve())
+
+
+def _make_wake_service(state: AppState, config: Config) -> WakeService:
+    """Composition root for the real wake service: real models, real mic."""
+
+    def make_pipeline():
+        from .stt.vad import SileroVAD
+        from .wake.detector import WakeDetector
+        from .wake.pipeline import WakePipeline
+
+        vad = SileroVAD(assets.path_for("silero-vad"))  # own instance: own thread
+        detector = WakeDetector(
+            assets.path_for("wake-melspec"),
+            assets.path_for("wake-embedding"),
+            assets.path_for("wake-hey-jarvis"),
+        )
+        return WakePipeline(vad.prob, detector)
+
+    def open_capture():
+        from .audio.capture import SyncMicCapture
+
+        cap = SyncMicCapture()
+        cap.start()
+        return cap
+
+    # The VAD gate makes silero part of the wake path too.
+    available = not assets.missing("wake") and assets.is_present("silero-vad")
+    return WakeService(
+        make_pipeline=make_pipeline,
+        open_capture=open_capture,
+        on_wake=lambda: handle_wake(state),
+        persist=save_wake_enabled,
+        enabled=load_wake_enabled(),
+        threshold=config.wake_threshold,
+        available=available,
+    )
 
 
 async def _watch_parent(parent_pid: int, server: uvicorn.Server) -> None:

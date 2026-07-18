@@ -133,6 +133,18 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
     player: Playback | None = None
     capture: Capture | None = None
     level_task: asyncio.Task | None = None
+    # The wake service pauses only while WE own the mic ("hey jarvis" mid-
+    # utterance must not re-trigger); it resumes for thinking/speaking so the
+    # wake word can barge in on playback.
+    wake = state.wake
+    wake_held = False
+
+    def _release_wake() -> None:
+        nonlocal wake_held
+        if wake_held:
+            wake.resume()
+            wake_held = False
+
     try:
         await send(protocol.voice_state("loading"))
         try:
@@ -151,6 +163,9 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
 
         # ---- listen ----
         await send(protocol.voice_state("listening"))
+        if wake is not None:
+            wake.suppress()
+            wake_held = True
         try:
             capture = io.open_capture()
         except AudioError as e:
@@ -175,6 +190,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
                 break
         capture.close()
         capture = None
+        _release_wake()
         if utterance is None or utterance.size == 0:
             await send(protocol.voice_state("idle", reason="no_speech"))
             return
@@ -246,6 +262,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
             level_task.cancel()
         if capture is not None:
             capture.close()
+        _release_wake()
 
 
 async def _synth_worker(

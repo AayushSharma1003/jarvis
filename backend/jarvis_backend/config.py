@@ -25,6 +25,12 @@ ollama_url = "http://127.0.0.1:11434"
 # Model to use. Empty string means: auto-select the best installed model
 # for this machine's RAM tier (see docs/architecture.md).
 default_model = ""
+
+[wake]
+# Wake-word ("Hey Jarvis") detection sensitivity, 0-1. Higher = fewer false
+# triggers but easier to miss. The on/off toggle itself lives in the app UI
+# (persisted in the data dir), not here.
+threshold = 0.5
 """
 
 
@@ -43,6 +49,7 @@ class Config:
     default_model: str
     config_path: Path
     data_dir: Path
+    wake_threshold: float = 0.5
 
 
 def config_dir() -> Path:
@@ -76,11 +83,50 @@ def load() -> Config:
     if not isinstance(ollama_url, str) or not isinstance(default_model, str):
         raise ConfigError("CONFIG_INVALID_VALUE", "[llm] values must be strings")
 
+    wake = raw.get("wake", {})
+    wake_threshold = wake.get("threshold", 0.5)
+    if not isinstance(wake_threshold, int | float) or not 0.0 <= wake_threshold <= 1.0:
+        raise ConfigError("CONFIG_INVALID_VALUE", "[wake] threshold must be in [0, 1]")
+
     ddir = data_dir()
     ddir.mkdir(parents=True, exist_ok=True)
     return Config(
         ollama_url=ollama_url.rstrip("/"),
         default_model=default_model,
+        wake_threshold=float(wake_threshold),
         config_path=path,
         data_dir=ddir,
     )
+
+
+# --- app-managed state ------------------------------------------------------
+# Settings the app itself writes (UI toggles) live in state.toml in the DATA
+# dir, apart from the hand-edited config.toml — the app never rewrites the
+# user's config file, so their comments and edits are never clobbered.
+
+
+def _state_path() -> Path:
+    return data_dir() / "state.toml"
+
+
+def load_wake_enabled() -> bool:
+    try:
+        raw = tomllib.loads(_state_path().read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return bool(raw.get("wake", {}).get("enabled", False))
+
+
+def save_wake_enabled(enabled: bool) -> None:
+    import tomli_w
+
+    path = _state_path()
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        raw = {}
+    raw.setdefault("wake", {})["enabled"] = enabled
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_bytes(tomli_w.dumps(raw).encode("utf-8"))
+    tmp.replace(path)

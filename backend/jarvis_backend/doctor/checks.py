@@ -41,6 +41,7 @@ def run_checks() -> list[Check]:
     checks.extend(_ollama(config.ollama_url, config.default_model))
     checks.append(_port_bindable())
     checks.append(_voice_models())
+    checks.append(_wake_models())
     checks.append(_audio_devices())
     return checks
 
@@ -129,15 +130,33 @@ def _ollama(base_url: str, configured_model: str) -> list[Check]:
 def _voice_models() -> Check:
     from ..assets import ASSETS, missing, models_dir
 
-    absent = missing()
+    absent = missing(group="voice")
     if not absent:
-        return Check("voice models", OK, f"{len(ASSETS)} model(s) in {models_dir()}")
+        n = sum(1 for a in ASSETS.values() if a.group == "voice")
+        return Check("voice models", OK, f"{n} model(s) in {models_dir()}")
     names = ", ".join(a.name for a in absent)
     return Check(
         "voice models",
         WARN,
         f"missing: {names} — run `uv run python ../scripts/fetch_models.py` (voice disabled)",
     )
+
+
+def _wake_models() -> Check:
+    from ..assets import missing
+    from ..config import load_wake_enabled
+
+    absent = missing(group="wake")
+    if absent:
+        names = ", ".join(a.name for a in absent)
+        return Check(
+            "wake word",
+            WARN,
+            f"missing: {names} — run `uv run python ../scripts/fetch_models.py`"
+            " (wake word disabled)",
+        )
+    toggle = "enabled" if load_wake_enabled() else "disabled (toggle in app)"
+    return Check("wake word", OK, f"models present, {toggle}")
 
 
 def _audio_devices() -> Check:

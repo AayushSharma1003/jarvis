@@ -19,6 +19,11 @@
   "model": {
     "label": "Model"
   },
+  "wake": {
+    "label": "“Hey Jarvis”",
+    "enable": "Enable the always-on wake word (keeps the microphone open)",
+    "disable": "Disable the wake word (closes the microphone)"
+  },
   "voice": {
     "start": "Start voice input",
     "stop": "Stop voice",
@@ -54,6 +59,9 @@
     "VAD_RUNTIME_MISSING": "Voice detection isn't installed in this build.",
     "AUDIO_RUNTIME_MISSING": "Audio system unavailable.",
     "MIC_UNAVAILABLE": "Can't open the microphone. Check system permissions.",
+    "WAKE_UNAVAILABLE": "Wake word isn't available — fetch the wake models first.",
+    "WAKE_MODEL_MISSING": "Wake-word models missing — run scripts/fetch_models.py.",
+    "WAKE_RUNTIME_MISSING": "Wake-word detection isn't installed in this build.",
     "SPEAKER_UNAVAILABLE": "Can't open the speaker.",
     "TTS_VOICE_UNKNOWN": "The configured voice doesn't exist.",
     "unknown": "Something went wrong ({{code}})."

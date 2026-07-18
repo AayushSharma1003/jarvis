@@ -67,3 +67,55 @@ class MicCapture:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+
+class SyncMicCapture:
+    """Blocking-queue capture for the wake worker thread — no asyncio in the
+    path, so an always-on consumer costs no event-loop wakeups. Larger
+    blocksize than MicCapture: fewer PortAudio callbacks matters when the
+    stream runs for hours, and wake detection doesn't need 32 ms granularity.
+    """
+
+    def __init__(self, blocksize: int = 1024) -> None:
+        import queue
+
+        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=QUEUE_CHUNKS)
+        self._blocksize = blocksize
+        self._stream = None
+
+    def start(self) -> None:
+        try:
+            import sounddevice as sd
+        except (ImportError, OSError) as e:
+            raise AudioError("AUDIO_RUNTIME_MISSING", str(e)) from e
+
+        def callback(indata, frames, time_info, status) -> None:
+            chunk = np.ascontiguousarray(indata[:, 0], dtype=np.float32).copy()
+            if self._queue.full():
+                try:
+                    self._queue.get_nowait()  # drop oldest
+                except Exception:
+                    pass
+            self._queue.put_nowait(chunk)
+
+        try:
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                blocksize=self._blocksize,
+                callback=callback,
+            )
+            self._stream.start()
+        except sd.PortAudioError as e:
+            raise AudioError("MIC_UNAVAILABLE", str(e)) from e
+
+    def get(self, timeout: float) -> np.ndarray:
+        """Blocking read; raises queue.Empty on timeout."""
+        return self._queue.get(timeout=timeout)
+
+    def close(self) -> None:
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None

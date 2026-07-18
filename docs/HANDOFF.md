@@ -111,6 +111,16 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
 5. **Debugging the handshake:** `JARVIS_DEBUG=1` echoes raw sidecar stdout; all
    steps log `[sidecar]`/`[frontend]` to the `tauri dev` terminal (webview
    console is invisible there — that's why the original bug was silent).
+6. **CPU% lies on Apple Silicon:** a mostly-idle background thread runs on
+   efficiency cores at ~1/3 clock, so the same work reads ~3× the CPU% you
+   measured in a hot benchmark loop. Budget always-on work against *measured
+   idle* numbers (`ps -o cputime` deltas), not hot-loop math. Also: per-chunk
+   `asyncio.to_thread` at 30 Hz costs several % — the wake worker is one
+   long-lived thread for this reason.
+7. **You can voice-test without a human:** synthesize with Kokoro, `afplay`
+   through the speakers, and the real mic hears it — full wake→STT→LLM→TTS
+   and barge-in verified this way. Latency numbers need a quiet machine (dev
+   servers running inflate 1.3s → 1.8s).
 
 ## Repo map
 
@@ -143,9 +153,18 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    Silicon; CoreML EP fragments the graph (don't); waiting for a full first
    sentence blew the budget (3.92s) before clause/word-cap chunking.
    NSMicrophoneUsageDescription lives in app/src-tauri/Info.plist.
-3. **Always-on + feel** — openWakeWord always-on (<3% CPU), wake-word barge-in,
-   **the sphere UI** (4 states, audio-reactive — see docs/design/sphere.md),
-   RAM tiering, onboarding v1.
+3. **Always-on + feel** — IN PROGRESS. ✅ **M3.1 wake word DONE** (2026-07-18):
+   always-on "Hey Jarvis" at **2.4% idle CPU** (budget <3%), persistent UI
+   toggle (state.toml), wake-word barge-in (interrupts playback instantly),
+   verified acoustically E2E (speaker→mic: wake → question → spoken reply →
+   barge-in mid-speech). The openWakeWord chain is **vendored** in
+   wake/detector.py (3 onnx sessions; bit-exact parity vs the reference lib)
+   — the pip package would drag scipy/sklearn into the bundle. VAD-gated
+   pipeline (wake/pipeline.py): adaptive energy gate → Silero → chain, so
+   the expensive embedding model sleeps in silence. 78 backend tests.
+   Remaining: **the sphere UI** (4 states, audio-reactive —
+   docs/design/sphere.md; adaptive placement: small in header, expands
+   during voice), RAM tiering surfacing, onboarding v1.
 4. **Agency + security** — permission engine + taint + sandbox, tools ship WITH
    their security layer, extension loader + approval gate.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
@@ -177,12 +196,54 @@ cd app && npm install && npm run tauri dev      # full app (debug runs backend v
 # Rust: export PATH="/opt/homebrew/opt/rustup/bin:$PATH" first (rustup via brew)
 ```
 
+## Chat history — stored but not navigable (decision point before Phase 3)
+
+**History IS persisted.** Every turn (typed and spoken) is written to the
+immutable SQLite tree at `~/Library/Application Support/jarvis/jarvis.sqlite3`;
+`jarvis doctor` shows the conversation count. The *backend* already exposes
+`conversations.list` and `conversation.history` over WS, and `Store` has
+`set_title()`, `set_active_leaf()`, `siblings()`, `path(leaf)` — branching-ready.
+
+**Why the user can't see past chats:** the *frontend* has no conversation-list
+UI. `App.tsx` renders only `<ChatView/>`; `state/conversation.ts` boots with
+`conversationId: null` and never sends `conversations.list`, so every launch
+starts a fresh conversation. Nothing is lost — it's just not surfaced.
+
+**Gaps to close for full chat management (user asked for this explicitly):**
+- **List + switch + new chat** — pure frontend: a sidebar that calls the
+  existing `conversations.list` / `conversation.history`; "new chat" = reset
+  `conversationId` to null. No backend work.
+- **Rename** — backend `set_title()` exists; needs a `conversation.rename` WS
+  message + dispatch + a UI affordance.
+- **Delete** — **not implemented anywhere.** Note the tension: the store is
+  deliberately append-only ("no update/delete for turns/messages" — the
+  immutability promise in architecture.md). Deleting a whole *conversation*
+  (the container) is defensible user-data control, not a breach of that promise,
+  but it needs a deliberate call + `DELETE ... CASCADE` (schema already has FKs).
+- Storage cost is a **non-issue**: text only, no audio stored; ~1KB/turn, so
+  heavy daily use is tens of MB/year — rounding error against the ~500MB voice
+  models and multi-GB LLM. Local-forever is the right default; delete is a
+  privacy/control feature, not a space-pressure one.
+
+This is Phase 5 in the original plan (with branching UI). **Recommendation:**
+pull *basic* conversation management (list/switch/new/rename/delete) forward to
+its own small milestone before or alongside Phase 3 — it's a glaring everyday
+gap — and leave *branch navigation* (the sibling/tree UI) in Phase 5. User to
+decide sequencing.
+
 ## Immediate next action
 
-**Have the user do a live mic test** (run the app, press ⌘M, speak): the whole
-loop is verified except a human actually talking into the microphone — the
-dev-terminal TCC mic grant and real-room VAD behavior are the untested links.
-Then start **Phase 3**: openWakeWord always-on, wake-word barge-in, and the
-sphere UI (docs/design/sphere.md; `voice.level` WS messages already stream
-10Hz levels for it, and `voice.state` maps 1:1 to the sphere's four states —
-loading/transcribing render as "thinking").
+**M3.1 (wake word) shipped and verified** — see phase plan above. User
+decisions on record: wake toggle is opt-in + persistent (their explicit ask),
+sphere placement is **adaptive** (small orb in header while chatting, expands
+to centerpiece during voice states).
+
+**Next: M3.2 — the sphere** (docs/design/sphere.md + sphere-refs/).
+`voice.level` already streams 10Hz levels and `voice.state` maps 1:1 to the
+four sphere states (loading/transcribing → "thinking"). Plan approved by user:
+three + @types/three only, vanilla Three.js (no react-three-fiber), custom
+Fresnel-rim shader instead of transmission (approved deviation — perf),
+~8–12k points, half-res bloom, DPR cap 1.5, FPS watchdog → SphereFallback2D
+(canvas-2D, mandatory). Then M3.3: RAM tiering surfacing + onboarding v1
+(slips first). Chat history / conversation management (see section above)
+still queued — user chose Phase 3 first.

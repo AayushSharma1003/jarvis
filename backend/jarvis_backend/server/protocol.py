@@ -1,10 +1,10 @@
 """WebSocket message protocol. JSON objects with a `type` discriminator.
 
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
-                 conversation.history, ping, voice.start, voice.stop
+                 conversation.history, ping, voice.start, voice.stop, wake.set
 Server → client: ready, chat.start, chat.delta, chat.done, models,
                  conversations, history, error, pong,
-                 voice.state, stt.text, voice.level
+                 voice.state, stt.text, voice.level, wake.status, wake.detected
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
 
@@ -59,3 +59,11 @@ def stt_text(text: str) -> dict[str, Any]:
 
 def voice_level(level: float) -> dict[str, Any]:
     return {"type": "voice.level", "level": round(level, 3)}
+
+
+def wake_status(enabled: bool, available: bool) -> dict[str, Any]:
+    return {"type": "wake.status", "enabled": enabled, "available": available}
+
+
+def wake_detected() -> dict[str, Any]:
+    return {"type": "wake.detected"}

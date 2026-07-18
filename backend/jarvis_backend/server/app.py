@@ -20,6 +20,8 @@ from ..config import Config
 from ..llm.base import ChatBackend, LLMError
 from ..llm.tiering import pick_model
 from ..storage.conversations import StorageError, Store
+from ..wake.detector import WakeError
+from ..wake.service import WakeService
 from . import protocol
 from .auth import origin_allowed, token_valid
 from .voice import VoiceIO, run_voice_exchange
@@ -29,12 +31,49 @@ WS_POLICY_VIOLATION = 1008
 
 
 @dataclass
+class Connection:
+    """One authenticated WS client: its serialized sender and its (single)
+    in-flight generation task. Registered on AppState so the wake service can
+    reach the active client to barge in."""
+
+    send: Any
+    generation: asyncio.Task | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self.generation is not None and not self.generation.done()
+
+
+@dataclass
 class AppState:
     token: str
     store: Store
     backend: ChatBackend
     config: Config
     voice_io: VoiceIO | None = None  # None ⇒ voice.start answers VOICE_UNAVAILABLE
+    wake: WakeService | None = None  # None ⇒ wake.set answers WAKE_UNAVAILABLE
+
+    def __post_init__(self) -> None:
+        self.connections: list[Connection] = []
+
+
+async def handle_wake(state: AppState) -> bool:
+    """The wake service heard the wake word. Barge in: cancel whatever the
+    newest client is generating (stops playback instantly), then hand the
+    decision to the client, which answers with voice.start. Returns False if
+    nobody is connected to hear it."""
+    if not state.connections:
+        return False
+    conn = state.connections[-1]
+    if conn.busy:
+        conn.generation.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await conn.generation
+    try:
+        await conn.send(protocol.wake_detected())
+    except Exception:
+        return False
+    return True
 
 
 def create_app(state: AppState) -> FastAPI:
@@ -73,7 +112,11 @@ def create_app(state: AppState) -> FastAPI:
 
         await send(protocol.ready(__version__))
 
-        generation: asyncio.Task | None = None
+        conn = Connection(send=send)
+        state.connections.append(conn)
+        if state.wake is not None:
+            state.wake.ensure_started()
+            await send(protocol.wake_status(state.wake.enabled, state.wake.available))
         try:
             while True:
                 try:
@@ -84,51 +127,61 @@ def create_app(state: AppState) -> FastAPI:
                 if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
                     await send(protocol.error("BAD_MESSAGE"))
                     continue
-                generation = await _dispatch(state, send, msg, generation)
+                await _dispatch(state, conn, msg)
         except WebSocketDisconnect:
             pass
         finally:
-            if generation is not None and not generation.done():
-                generation.cancel()
+            state.connections.remove(conn)
+            if conn.busy:
+                conn.generation.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await generation
+                    await conn.generation
 
     return app
 
 
-async def _dispatch(
-    state: AppState,
-    send,
-    msg: dict[str, Any],
-    generation: asyncio.Task | None,
-) -> asyncio.Task | None:
-    """Handle one client message; returns the (possibly new) generation task."""
+async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> None:
+    """Handle one client message, mutating conn.generation as needed."""
     mtype = msg["type"]
-    busy = generation is not None and not generation.done()
+    send = conn.send
 
     try:
         if mtype == "ping":
             await send({"type": "pong"})
 
         elif mtype in ("chat.stop", "voice.stop"):
-            if busy:
-                generation.cancel()
+            if conn.busy:
+                conn.generation.cancel()
 
         elif mtype == "voice.start":
-            if busy:
+            if conn.busy:
                 await send(protocol.error("BUSY"))
-                return generation
-            return asyncio.create_task(run_voice_exchange(state, send, msg))
+                return
+            conn.generation = asyncio.create_task(run_voice_exchange(state, send, msg))
 
         elif mtype == "chat.send":
-            if busy:
+            if conn.busy:
                 await send(protocol.error("BUSY"))
-                return generation
+                return
             content = msg.get("content")
             if not isinstance(content, str) or not content.strip():
                 await send(protocol.error("BAD_MESSAGE", "content required"))
-                return generation
-            return asyncio.create_task(_generate(state, send, msg, content))
+                return
+            conn.generation = asyncio.create_task(_generate(state, send, msg, content))
+
+        elif mtype == "wake.set":
+            if state.wake is None:
+                await send(protocol.error("WAKE_UNAVAILABLE"))
+                return
+            try:
+                state.wake.set_enabled(bool(msg.get("enabled")))
+            except WakeError as e:
+                await send(protocol.error(e.code, e.detail))
+                return
+            status = protocol.wake_status(state.wake.enabled, state.wake.available)
+            for c in list(state.connections):  # all open UIs stay in sync
+                with contextlib.suppress(Exception):
+                    await c.send(status)
 
         elif mtype == "models.list":
             models = await state.backend.list_models()
@@ -190,8 +243,6 @@ async def _dispatch(
         await send(protocol.error(e.code, e.detail))
     except StorageError as e:
         await send(protocol.error(e.code, e.detail))
-
-    return generation
 
 
 async def _generate(state: AppState, send, msg: dict[str, Any], content: str) -> None:

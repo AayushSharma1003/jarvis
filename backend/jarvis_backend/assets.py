@@ -25,6 +25,9 @@ class Asset:
     # sha256 pinned at the time the URL was added; guards corrupt/partial
     # downloads and silent upstream swaps. Empty string = not yet pinned.
     sha256: str
+    # "voice" (STT/VAD/TTS — the voice loop) or "wake" (always-on wake word).
+    # The groups fail independently: missing wake models never disable voice.
+    group: str = "voice"
 
 
 ASSETS: dict[str, Asset] = {
@@ -62,6 +65,33 @@ ASSETS: dict[str, Asset] = {
             size_bytes=28214398,
             sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
         ),
+        # openWakeWord inference chain (melspectrogram → speech embedding →
+        # wake classifier). We run these directly on onnxruntime — see
+        # wake/detector.py for why the openwakeword package isn't a dependency.
+        Asset(
+            name="wake-melspec",
+            filename="melspectrogram.onnx",
+            url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx",
+            size_bytes=1087958,
+            sha256="ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+            group="wake",
+        ),
+        Asset(
+            name="wake-embedding",
+            filename="embedding_model.onnx",
+            url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx",
+            size_bytes=1326578,
+            sha256="70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
+            group="wake",
+        ),
+        Asset(
+            name="wake-hey-jarvis",
+            filename="hey_jarvis_v0.1.onnx",
+            url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx",
+            size_bytes=1271370,
+            sha256="94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb",
+            group="wake",
+        ),
     )
 }
 
@@ -89,5 +119,9 @@ def is_present(name: str) -> bool:
     return p.is_file() and p.stat().st_size == asset.size_bytes
 
 
-def missing() -> list[Asset]:
-    return [a for a in ASSETS.values() if not is_present(a.name)]
+def missing(group: str | None = None) -> list[Asset]:
+    return [
+        a
+        for a in ASSETS.values()
+        if (group is None or a.group == group) and not is_present(a.name)
+    ]

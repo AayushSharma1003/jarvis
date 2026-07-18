@@ -25,10 +25,13 @@ interface ConversationState {
   voiceState: VoiceState;
   voiceLevel: number; // smoothed 0–1 audio level (mic or TTS) for the sphere
   voiceHint: string | null; // e.g. "no_speech" — transient, not an error
+  wakeEnabled: boolean; // the persistent "Hey Jarvis" toggle (backend-owned)
+  wakeAvailable: boolean; // wake models fetched & runtime present
   init: () => Promise<void>;
   send: (text: string) => void;
   stop: () => void;
   toggleVoice: () => void;
+  setWakeEnabled: (enabled: boolean) => void;
   setModel: (model: string) => void;
 }
 
@@ -49,6 +52,8 @@ export const useConversation = create<ConversationState>((set, get) => ({
   voiceState: "idle",
   voiceLevel: 0,
   voiceHint: null,
+  wakeEnabled: false,
+  wakeAvailable: false,
 
   init: async () => {
     if (initStarted) return;
@@ -111,8 +116,25 @@ export const useConversation = create<ConversationState>((set, get) => ({
     if (ok) set({ errorCode: null, voiceHint: null });
   },
 
+  setWakeEnabled: (enabled: boolean) => {
+    // Optimistic-free: the backend confirms via wake.status (it's the one
+    // persisting the toggle), so the UI only flips when it really happened.
+    socket?.send({ type: "wake.set", enabled });
+  },
+
   setModel: (model: string) => set({ currentModel: model }),
 }));
+
+/** The wake word was heard (backend already cancelled any active reply). */
+function startVoiceFromWake(get: () => ConversationState): void {
+  const { voiceState, streamingText, conversationId, currentModel } = get();
+  if (voiceState !== "idle" || streamingText !== null || !socket) return;
+  socket.send({
+    type: "voice.start",
+    ...(conversationId ? { conversation_id: conversationId } : {}),
+    ...(currentModel ? { model: currentModel } : {}),
+  });
+}
 
 function handleMessage(
   msg: ServerMessage,
@@ -144,6 +166,12 @@ function handleMessage(
       break;
     case "voice.level":
       set({ voiceLevel: msg.level });
+      break;
+    case "wake.status":
+      set({ wakeEnabled: msg.enabled, wakeAvailable: msg.available });
+      break;
+    case "wake.detected":
+      startVoiceFromWake(get);
       break;
     case "models":
       set({
