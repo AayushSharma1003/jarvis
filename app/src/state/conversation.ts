@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { getBackendInfo, onBackendExited } from "../lib/ipc";
 import { JarvisSocket, type SocketStatus } from "../lib/ws";
-import type { ModelEntry, ServerMessage } from "../lib/types";
+import type { ModelEntry, ServerMessage, VoiceState } from "../lib/types";
 
 export interface UiMessage {
   id: string;
@@ -22,9 +22,13 @@ interface ConversationState {
   conversationId: string | null;
   messages: UiMessage[];
   streamingText: string | null; // non-null while an assistant reply streams
+  voiceState: VoiceState;
+  voiceLevel: number; // smoothed 0–1 audio level (mic or TTS) for the sphere
+  voiceHint: string | null; // e.g. "no_speech" — transient, not an error
   init: () => Promise<void>;
   send: (text: string) => void;
   stop: () => void;
+  toggleVoice: () => void;
   setModel: (model: string) => void;
 }
 
@@ -42,6 +46,9 @@ export const useConversation = create<ConversationState>((set, get) => ({
   conversationId: null,
   messages: [],
   streamingText: null,
+  voiceState: "idle",
+  voiceLevel: 0,
+  voiceHint: null,
 
   init: async () => {
     if (initStarted) return;
@@ -89,6 +96,21 @@ export const useConversation = create<ConversationState>((set, get) => ({
     socket?.send({ type: "chat.stop" });
   },
 
+  toggleVoice: () => {
+    const { voiceState, conversationId, currentModel, streamingText } = get();
+    if (voiceState !== "idle") {
+      socket?.send({ type: "voice.stop" });
+      return;
+    }
+    if (streamingText !== null) return; // a text reply is still streaming
+    const ok = socket?.send({
+      type: "voice.start",
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(currentModel ? { model: currentModel } : {}),
+    });
+    if (ok) set({ errorCode: null, voiceHint: null });
+  },
+
   setModel: (model: string) => set({ currentModel: model }),
 }));
 
@@ -98,6 +120,31 @@ function handleMessage(
   get: () => ConversationState,
 ): void {
   switch (msg.type) {
+    case "voice.state":
+      set({
+        voiceState: msg.state,
+        ...(msg.state === "idle"
+          ? {
+              voiceLevel: 0,
+              voiceHint: msg.reason === "no_speech" ? "no_speech" : null,
+            }
+          : {}),
+      });
+      break;
+    case "stt.text":
+      // The transcribed utterance becomes a normal user message; the reply
+      // then arrives via chat.start/delta/done exactly like a typed turn.
+      set((s) => ({
+        streamingText: "",
+        messages: [
+          ...s.messages,
+          { id: crypto.randomUUID(), role: "user", content: msg.text },
+        ],
+      }));
+      break;
+    case "voice.level":
+      set({ voiceLevel: msg.level });
+      break;
     case "models":
       set({
         models: msg.models,

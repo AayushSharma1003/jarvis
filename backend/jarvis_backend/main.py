@@ -26,6 +26,7 @@ from .config import load
 from .llm.ollama import OllamaBackend
 from .server.app import AppState, create_app
 from .server.auth import make_token
+from .server.voice import RealVoiceIO
 from .storage import db
 from .storage.conversations import Store
 
@@ -44,7 +45,11 @@ def run() -> None:
 
     store = Store(db.connect(config.data_dir / "jarvis.sqlite3"))
     backend = OllamaBackend(config.ollama_url)
-    app = create_app(AppState(token=token, store=store, backend=backend, config=config))
+    app = create_app(
+        AppState(
+            token=token, store=store, backend=backend, config=config, voice_io=RealVoiceIO()
+        )
+    )
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

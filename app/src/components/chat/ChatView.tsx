@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { useConversation } from "../../state/conversation";
@@ -16,6 +17,18 @@ export function ChatView() {
   const { t } = useTranslation();
   const s = useConversation();
 
+  // Push-to-talk hotkey: ⌘M / Ctrl+M toggles the voice loop.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        useConversation.getState().toggleVoice();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="flex h-full flex-col bg-zinc-900 text-zinc-100">
       <header
@@ -24,7 +37,9 @@ export function ChatView() {
       >
         <span className={`h-2 w-2 rounded-full ${STATUS_DOT[s.status]}`} />
         <span className="text-sm font-medium">{t("app.title")}</span>
-        <span className="text-xs text-zinc-500">{t(`status.${s.status}`)}</span>
+        <span className="text-xs text-zinc-500">
+          {s.voiceState !== "idle" ? t(`voice.${s.voiceState}`) : t(`status.${s.status}`)}
+        </span>
         <div className="ml-auto">
           <select
             value={s.currentModel}
@@ -49,12 +64,19 @@ export function ChatView() {
           {errorText(s.errorCode)}
         </div>
       )}
+      {s.voiceHint && !s.errorCode && (
+        <div className="mx-4 mb-2 rounded-lg bg-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
+          {t(`voice.hint.${s.voiceHint}`)}
+        </div>
+      )}
 
       <Composer
         disabled={s.status !== "ready"}
         streaming={s.streamingText !== null}
+        voiceState={s.voiceState}
         onSend={s.send}
         onStop={s.stop}
+        onVoiceToggle={s.toggleVoice}
       />
     </div>
   );

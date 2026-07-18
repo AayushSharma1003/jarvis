@@ -40,6 +40,8 @@ def run_checks() -> list[Check]:
     checks.append(_database(config.data_dir))
     checks.extend(_ollama(config.ollama_url, config.default_model))
     checks.append(_port_bindable())
+    checks.append(_voice_models())
+    checks.append(_audio_devices())
     return checks
 
 
@@ -122,6 +124,36 @@ def _ollama(base_url: str, configured_model: str) -> list[Check]:
         else:
             checks.append(Check("model", FAIL, f"{e.code} {e.detail}"))
     return checks
+
+
+def _voice_models() -> Check:
+    from ..assets import ASSETS, missing, models_dir
+
+    absent = missing()
+    if not absent:
+        return Check("voice models", OK, f"{len(ASSETS)} model(s) in {models_dir()}")
+    names = ", ".join(a.name for a in absent)
+    return Check(
+        "voice models",
+        WARN,
+        f"missing: {names} — run `uv run python ../scripts/fetch_models.py` (voice disabled)",
+    )
+
+
+def _audio_devices() -> Check:
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError) as e:  # OSError: PortAudio lib missing
+        return Check("audio devices", FAIL, f"sounddevice unavailable: {e}")
+    try:
+        devices = sd.query_devices()
+    except sd.PortAudioError as e:
+        return Check("audio devices", FAIL, str(e))
+    inputs = sum(1 for d in devices if d["max_input_channels"] > 0)
+    outputs = sum(1 for d in devices if d["max_output_channels"] > 0)
+    if not inputs or not outputs:
+        return Check("audio devices", WARN, f"{inputs} input(s), {outputs} output(s)")
+    return Check("audio devices", OK, f"{inputs} input(s), {outputs} output(s)")
 
 
 def _port_bindable() -> Check:

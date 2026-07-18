@@ -23,9 +23,20 @@ export interface HistoryTurn {
   messages: HistoryMessage[];
 }
 
+export type VoiceState =
+  | "idle"
+  | "loading"
+  | "listening"
+  | "transcribing"
+  | "thinking"
+  | "speaking";
+
 export type ServerMessage =
   | { type: "ready"; version: string }
   | { type: "pong" }
+  | { type: "voice.state"; state: VoiceState; reason?: string }
+  | { type: "stt.text"; text: string }
+  | { type: "voice.level"; level: number }
   | { type: "chat.start"; conversation_id: string; model: string }
   | { type: "chat.delta"; text: string }
   | {
@@ -58,6 +69,8 @@ export type ClientMessage =
       parent_turn_id?: string;
     }
   | { type: "chat.stop" }
+  | { type: "voice.start"; conversation_id?: string; model?: string }
+  | { type: "voice.stop" }
   | { type: "models.list" }
   | { type: "conversations.list" }
   | { type: "conversation.history"; conversation_id: string };

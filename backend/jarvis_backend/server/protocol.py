@@ -1,11 +1,16 @@
 """WebSocket message protocol. JSON objects with a `type` discriminator.
 
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
-                 conversation.history, ping
+                 conversation.history, ping, voice.start, voice.stop
 Server → client: ready, chat.start, chat.delta, chat.done, models,
-                 conversations, history, error, pong
+                 conversations, history, error, pong,
+                 voice.state, stt.text, voice.level
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
+
+Voice states: loading → listening → transcribing → thinking → speaking → idle.
+The LLM reply inside a voice exchange reuses chat.start/delta/done so the chat
+transcript renders identically for typed and spoken turns.
 """
 
 from __future__ import annotations
@@ -39,3 +44,18 @@ def chat_done(conversation_id: str, turn_id: str, interrupted: bool = False) -> 
         "turn_id": turn_id,
         "interrupted": interrupted,
     }
+
+
+def voice_state(state: str, reason: str = "") -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": "voice.state", "state": state}
+    if reason:
+        msg["reason"] = reason
+    return msg
+
+
+def stt_text(text: str) -> dict[str, Any]:
+    return {"type": "stt.text", "text": text}
+
+
+def voice_level(level: float) -> dict[str, Any]:
+    return {"type": "voice.level", "level": round(level, 3)}

@@ -16,18 +16,36 @@ def main(argv: list[str] | None = None) -> int:
 
     doctor_p = sub.add_parser("doctor", help="diagnose the local setup")
     doctor_p.add_argument("--json", action="store_true", help="machine-readable output")
+    doctor_p.add_argument(
+        "--latency", action="store_true", help="measure the voice pipeline (needs models + Ollama)"
+    )
 
     sub.add_parser("version", help="print version")
 
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
+        if args.latency:
+            return _latency()
         return _doctor(json_output=args.json)
     if args.command == "version":
         print(__version__)
         return 0
     parser.print_help()
     return 2
+
+
+def _latency() -> int:
+    from .doctor.latency import format_latency, run_latency
+
+    print(f"jarvis doctor --latency (v{__version__}) — measuring, ~30s…")
+    try:
+        stages, first_audio, status = run_latency()
+    except Exception as e:  # noqa: BLE001 - doctor reports, never crashes
+        print(f" FAIL: {e}")
+        return 1
+    print(format_latency(stages, first_audio, status))
+    return 1 if status == "fail" else 0
 
 
 def _doctor(json_output: bool) -> int:

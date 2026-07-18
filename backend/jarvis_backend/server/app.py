@@ -22,6 +22,7 @@ from ..llm.tiering import pick_model
 from ..storage.conversations import StorageError, Store
 from . import protocol
 from .auth import origin_allowed, token_valid
+from .voice import VoiceIO, run_voice_exchange
 
 AUTH_TIMEOUT_S = 5.0
 WS_POLICY_VIOLATION = 1008
@@ -33,6 +34,7 @@ class AppState:
     store: Store
     backend: ChatBackend
     config: Config
+    voice_io: VoiceIO | None = None  # None ⇒ voice.start answers VOICE_UNAVAILABLE
 
 
 def create_app(state: AppState) -> FastAPI:
@@ -108,9 +110,15 @@ async def _dispatch(
         if mtype == "ping":
             await send({"type": "pong"})
 
-        elif mtype == "chat.stop":
+        elif mtype in ("chat.stop", "voice.stop"):
             if busy:
                 generation.cancel()
+
+        elif mtype == "voice.start":
+            if busy:
+                await send(protocol.error("BUSY"))
+                return generation
+            return asyncio.create_task(run_voice_exchange(state, send, msg))
 
         elif mtype == "chat.send":
             if busy:
