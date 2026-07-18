@@ -83,7 +83,16 @@ def test_clause_split_only_applies_to_first_chunk():
         ["Opening clause goes here, then more. ", "Second, with a comma, stays whole. ", "x"],
     )
     assert out[0] == "Opening clause goes here,"
-    assert "Second, with a comma, stays whole." in out
+    # Later commas never split; the short " then more." tail merges forward.
+    assert out[1] == "then more. Second, with a comma, stays whole."
+
+
+def test_comma_less_opener_cuts_at_word_boundary():
+    c = SentenceChunker()
+    out = c.feed("I can help you with a wide range of topics and activities and")
+    assert out == ["I can help you with a wide range of topics"]
+    out = c.feed(" more. Next sentence arrives here. x")
+    assert out == ["and activities and more.", "Next sentence arrives here."]
 
 
 def test_paragraph_break_is_a_boundary():

@@ -33,6 +33,7 @@ async def run_exchange(
     user_text: str,
     on_delta: Callable[[str], Awaitable[None]],
     parent_turn_id: str | None = None,
+    voice_mode: bool = False,
 ) -> ExchangeResult:
     """Stream one user→assistant exchange and persist it as ONE atomic turn.
 
@@ -42,7 +43,11 @@ async def run_exchange(
     never sees a half-open turn because the write happens after streaming ends.
     """
     history = store.path(conversation_id, parent_turn_id)
-    messages = [ChatMessage("system", system_prompt(store.get_system_prompt(conversation_id)))]
+    messages = [
+        ChatMessage(
+            "system", system_prompt(store.get_system_prompt(conversation_id), voice=voice_mode)
+        )
+    ]
     for turn in history:
         for m in turn.messages:
             messages.append(ChatMessage(m.role, m.content))

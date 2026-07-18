@@ -217,6 +217,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
                 user_text=text,
                 on_delta=on_delta,
                 parent_turn_id=msg.get("parent_turn_id"),
+                voice_mode=True,
             )
         finally:
             if rest := chunker.flush():

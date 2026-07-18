@@ -94,6 +94,7 @@ def run_latency(model: str | None = None) -> tuple[list[Stage], float, str]:
     backend = OllamaBackend(config.ollama_url)
 
     async def first_sentence() -> tuple[str, float, float]:
+        from ..agent.prompts import system_prompt
         from ..llm.base import ChatMessage
 
         chosen = model or pick_model(await backend.list_models(), config.default_model)
@@ -102,7 +103,11 @@ def run_latency(model: str | None = None) -> tuple[list[Stage], float, str]:
         ttft = 0.0
         try:
             async for delta in backend.stream_chat(
-                chosen, [ChatMessage("user", heard or QUESTION)]
+                chosen,
+                [
+                    ChatMessage("system", system_prompt(voice=True)),
+                    ChatMessage("user", heard or QUESTION),
+                ],
             ):
                 if ttft == 0.0:
                     ttft = time.perf_counter() - t_start

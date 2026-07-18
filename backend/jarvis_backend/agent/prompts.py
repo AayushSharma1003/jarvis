@@ -7,6 +7,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "and avoid markdown tables or long lists unless asked."
 )
 
+# Appended for spoken exchanges. A short opening sentence is a latency feature:
+# the first TTS chunk can't start until the first sentence/clause closes.
+VOICE_SUFFIX = (
+    " This is a spoken conversation: reply in brief conversational sentences, "
+    "open with a short direct sentence, no markdown."
+)
 
-def system_prompt(conversation_override: str | None = None) -> str:
-    return conversation_override or DEFAULT_SYSTEM_PROMPT
+
+def system_prompt(conversation_override: str | None = None, voice: bool = False) -> str:
+    base = conversation_override or DEFAULT_SYSTEM_PROMPT
+    return base + VOICE_SUFFIX if voice else base

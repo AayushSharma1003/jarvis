@@ -131,11 +131,18 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
 ## Phase plan (sequencing, not deadlines)
 
 1. ✅ **Walking skeleton** — DONE.
-2. ⏭️ **Voice loop (NEXT)** — push-to-talk hotkey → Silero VAD endpointing →
-   whisper.cpp streaming STT → LLM → sentence-chunked Kokoro TTS playback, with
-   latency instrumentation wired into `jarvis doctor --latency`. Adds
-   onnxruntime + a ~200MB dev model fetch (`scripts/fetch_models.py`); first
-   real macOS mic-permission flow. Metric: end-of-speech→first-audio <1.5s (8GB).
+2. ✅ **Voice loop** — DONE (pending a live mic test by the user). Mic button/⌘M
+   → backend capture → Silero endpointing → whisper (Metal) at endpoint (NOT
+   streaming STT — measured unnecessary at 140ms/utterance) → LLM (voice-mode
+   prompt: short openers) → clause-chunked Kokoro fp32 → playback w/ barge-in
+   stop. `jarvis doctor --latency` measures **1.17–1.41s** end-of-speech→
+   first-audio vs the 1.5s budget on the 8GB M2. ~500MB model fetch
+   (`scripts/fetch_models.py`, sha256-pinned). 61 backend tests; voice
+   orchestration tested over WS with fake hardware (`VoiceIO` boundary).
+   Gotchas that cost time: int8 Kokoro is 2.4× slower than fp32 on Apple
+   Silicon; CoreML EP fragments the graph (don't); waiting for a full first
+   sentence blew the budget (3.92s) before clause/word-cap chunking.
+   NSMicrophoneUsageDescription lives in app/src-tauri/Info.plist.
 3. **Always-on + feel** — openWakeWord always-on (<3% CPU), wake-word barge-in,
    **the sphere UI** (4 states, audio-reactive — see docs/design/sphere.md),
    RAM tiering, onboarding v1.
@@ -172,7 +179,10 @@ cd app && npm install && npm run tauri dev      # full app (debug runs backend v
 
 ## Immediate next action
 
-Start **Phase 2, voice loop**, at the highest-risk piece first (whisper.cpp via
-pywhispercpp working on Apple Silicon with Metal, and the sidecar audio capture
-path). Confirm the plan with the user, then build STT → VAD → playback
-incrementally, keeping the text-chat path working throughout.
+**Have the user do a live mic test** (run the app, press ⌘M, speak): the whole
+loop is verified except a human actually talking into the microphone — the
+dev-terminal TCC mic grant and real-room VAD behavior are the untested links.
+Then start **Phase 3**: openWakeWord always-on, wake-word barge-in, and the
+sphere UI (docs/design/sphere.md; `voice.level` WS messages already stream
+10Hz levels for it, and `voice.state` maps 1:1 to the sphere's four states —
+loading/transcribing render as "thinking").

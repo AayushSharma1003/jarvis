@@ -36,7 +36,7 @@ _MD_STRIP = (
 
 MIN_CHARS = 15  # merge fragments shorter than this into the next sentence
 FIRST_CLAUSE_MIN_CHARS = 10  # a first clause this long is worth speaking early
-FIRST_MAX_WORDS = 12  # comma-less openers: cut at a word boundary past this
+FIRST_MAX_WORDS = 10  # comma-less openers: cut at a word boundary past this
 
 
 def speakable(text: str) -> str:
