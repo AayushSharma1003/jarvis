@@ -258,6 +258,49 @@ async def test_handle_wake_without_client_is_unhandled():
     assert await handle_wake(make_state()) is False
 
 
+async def test_handle_wake_broadcasts_to_every_connection():
+    """A newer connection (zombie page, diagnostic client) must not steal the
+    wake: every client hears wake.detected, and a generation on ANY connection
+    is barged in — not just the newest one's."""
+    state = make_state()
+    sent_a: list[dict] = []
+    sent_b: list[dict] = []
+
+    async def send_a(msg):
+        sent_a.append(msg)
+
+    async def send_b(msg):
+        sent_b.append(msg)
+
+    older = Connection(send=send_a)
+    older.generation = asyncio.create_task(asyncio.sleep(3600))
+    newer = Connection(send=send_b)
+    state.connections.extend([older, newer])
+
+    assert await handle_wake(state) is True
+    assert older.generation.cancelled()
+    assert sent_a == [protocol.wake_detected()]
+    assert sent_b == [protocol.wake_detected()]
+
+
+async def test_handle_wake_survives_a_dead_connection():
+    """A connection whose send raises (half-closed socket) is skipped; the
+    live one still hears the wake."""
+    state = make_state()
+    sent: list[dict] = []
+
+    async def dead_send(msg):
+        raise RuntimeError("socket closed")
+
+    async def live_send(msg):
+        sent.append(msg)
+
+    state.connections.extend([Connection(send=dead_send), Connection(send=live_send)])
+
+    assert await handle_wake(state) is True
+    assert sent == [protocol.wake_detected()]
+
+
 # --- over the websocket -----------------------------------------------------
 
 

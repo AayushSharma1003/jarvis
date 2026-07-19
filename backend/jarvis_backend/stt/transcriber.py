@@ -13,11 +13,26 @@ doctor --latency numbers in hand.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
 
 SAMPLE_RATE = 16_000
+
+# Whisper annotates non-speech as bracketed markers — "[BLANK_AUDIO]", "[Music]",
+# "(wind blowing)", "♪". Ambient noise regularly gets past VAD, and one of these
+# as the "utterance" turned into a real LLM turn in live testing. A segment is
+# dropped only when it is ENTIRELY such an annotation; mixed segments keep their
+# text.
+_NOISE_SEGMENT = re.compile(r"^(\[[^\]]*\]|\([^\)]*\)|[♪\s]+)$")
+
+
+def join_speech_segments(texts: Iterable[str]) -> str:
+    """Join whisper segments, dropping pure non-speech annotations."""
+    kept = [t for t in (t.strip() for t in texts) if t and not _NOISE_SEGMENT.match(t)]
+    return " ".join(kept).strip()
 
 
 class STTError(Exception):
@@ -55,4 +70,4 @@ class Transcriber:
         if audio.size < SAMPLE_RATE // 10:  # <100 ms can confuse decoders; treat as silence
             return ""
         segments = self._model.transcribe(audio, language=self._language)
-        return " ".join(s.text.strip() for s in segments).strip()
+        return join_speech_segments(s.text for s in segments)

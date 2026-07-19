@@ -120,7 +120,23 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
 7. **You can voice-test without a human:** synthesize with Kokoro, `afplay`
    through the speakers, and the real mic hears it — full wake→STT→LLM→TTS
    and barge-in verified this way. Latency numbers need a quiet machine (dev
-   servers running inflate 1.3s → 1.8s).
+   servers running inflate 1.3s → 1.8s). Barge-in over the app's own speech
+   needs `afplay -v 2`.
+8. **WKWebView suspension kills background JS:** with the window occluded or on
+   another Space, macOS suspends the WebContent process (RSS ~600KB) — frozen
+   JS can't answer wake.detected, while WebKit's networking process keeps the
+   WS TCP ESTABLISHED so it *looks* connected. Fixed with
+   `"backgroundThrottling": "disabled"` in tauri.conf.json (window options).
+   Also: every webview reload leaves the old WS connection behind as an
+   authenticated zombie — never assume connection count == live UIs.
+9. **wake.detected must be broadcast** (it was `connections[-1]`-only): any
+   newer client — zombie page, diagnostic script, future second window —
+   silently stole the wake. handle_wake now cancels all generations and
+   broadcasts; dead pages simply never answer with voice.start.
+10. **Whisper transcribes ambient noise as "[BLANK_AUDIO]"** (and friends),
+    which passed `if not text` and became a real LLM turn.
+    `join_speech_segments()` in stt/transcriber.py drops segments that are
+    entirely bracketed annotations → such turns end as no_speech.
 
 ## Repo map
 
@@ -175,7 +191,22 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    flag; watchdog trips on **render-call duration** (ema >12ms → 2D).
    Measured in-browser: **1.8ms CPU/frame** at full size, speaking state.
    three.js code-split (chat shell 261kB, orb chunk 540kB lazy).
-   NOT yet verified: live run in the Tauri WKWebView on the M2 (user test).
+   ✅ **M3.5 chat management DONE** (2026-07-19): the conversation sidebar —
+   list/switch/new/rename/delete, `Store.delete_conversation()`, and the
+   `conversation.rename`/`conversation.delete` WS messages (both answer by
+   **broadcasting the fresh list to every connection**, like wake.status).
+   Frontend state is now **keyed by conversation** (`threads` in
+   state/conversation.ts): a reply keeps generating in the chat it was asked
+   in when you switch away, and only there. `messages`/`streamingText` remain
+   mirrors of the active thread, so SphereOrb/MessageList were untouched.
+   Delete is a two-step inline confirm, **no undo** (honest undo needs a
+   soft-delete column the schema can't gain). 99 backend tests.
+   ✅ **Voice path + live Tauri run verified** (2026-07-19, acoustically, in
+   the real WKWebView app): wake turn, toggleVoice turn, no_speech slot
+   release, barge-in mid-speech, transcript routed to the open conversation.
+   No streamKey leak; what looked like one was three real bugs, all fixed
+   (gotchas 8-10). Still needs human eyes: sidebar/orb rendering in WKWebView,
+   the literal ⌘M keypress, and a long-idle background wake soak.
    Remaining: RAM tiering surfacing, onboarding v1 (M3.3).
 4. **Agency + security** — permission engine + taint + sandbox, tools ship WITH
    their security layer, extension loader + approval gate.
@@ -221,48 +252,56 @@ cd app && npm install && npm run tauri dev      # full app (debug runs backend v
 # Rust: export PATH="/opt/homebrew/opt/rustup/bin:$PATH" first (rustup via brew)
 ```
 
-## Chat history — stored but not navigable (decision point before Phase 3)
+## Chat management (M3.5, DONE) — how it works now
 
-**History IS persisted.** Every turn (typed and spoken) is written to the
-immutable SQLite tree at `~/Library/Application Support/jarvis/jarvis.sqlite3`;
-`jarvis doctor` shows the conversation count. The *backend* already exposes
-`conversations.list` and `conversation.history` over WS, and `Store` has
-`set_title()`, `set_active_leaf()`, `siblings()`, `path(leaf)` — branching-ready.
+Every turn (typed and spoken) is written to the immutable SQLite tree at
+`~/Library/Application Support/jarvis/jarvis.sqlite3`, and since M3.5 it is
+**navigable**: `conversations.list` on connect populates a sidebar; clicking a
+row sends `conversation.history`; "New chat" resets to the unsaved thread.
 
-**Why the user can't see past chats:** the *frontend* has no conversation-list
-UI. `App.tsx` renders only `<ChatView/>`; `state/conversation.ts` boots with
-`conversationId: null` and never sends `conversations.list`, so every launch
-starts a fresh conversation. Nothing is lost — it's just not surfaced.
+**The immutability promise, as amended** (architecture.md + conversations.py +
+schema.sql all say this now): no turn or message is ever rewritten or
+selectively removed — editing still means appending a sibling turn and moving
+the active leaf. `Store.delete_conversation()` is the single exception and drops
+a whole conversation *container*: user control over their own data, and a
+conversation is either wholly present or wholly gone.
 
-**Gaps to close for full chat management (user asked for this explicitly):**
-- **List + switch + new chat** — pure frontend: a sidebar that calls the
-  existing `conversations.list` / `conversation.history`; "new chat" = reset
-  `conversationId` to null. No backend work.
-- **Rename** — backend `set_title()` exists; needs a `conversation.rename` WS
-  message + dispatch + a UI affordance.
-- **Delete** — **not implemented anywhere.** Note the tension: the store is
-  deliberately append-only ("no update/delete for turns/messages" — the
-  immutability promise in architecture.md, restated in conversations.py's module
-  docstring, which must be amended if delete lands). Deleting a whole
-  *conversation* (the container) is defensible user-data control, not a breach of
-  that promise, but it needs a deliberate `delete_conversation()`.
-  **CASCADE is NOT available** (corrected 2026-07-19): schema.sql declares the FKs
-  **without `ON DELETE CASCADE`**, and db.py sets `PRAGMA foreign_keys = ON`, so a
-  plain `DELETE FROM conversations` **fails** on the FK constraint. Do ordered
-  deletes inside one transaction (messages → turns → conversation). Do NOT "fix"
-  this by editing schema.sql: `CREATE TABLE IF NOT EXISTS` means existing user
-  databases would never pick the change up, and there is no migration framework
-  (`SCHEMA_VERSION = "1"`, db.py).
-- Storage cost is a **non-issue**: text only, no audio stored; ~1KB/turn, so
-  heavy daily use is tens of MB/year — rounding error against the ~500MB voice
-  models and multi-GB LLM. Local-forever is the right default; delete is a
-  privacy/control feature, not a space-pressure one.
+**Things that will bite you if you touch this code:**
+1. **No CASCADE, ever.** schema.sql declares the FKs without `ON DELETE CASCADE`
+   and db.py sets `PRAGMA foreign_keys = ON`, so delete is ordered by hand
+   (messages → turns → conversation) in one transaction. Do NOT "fix" this in
+   schema.sql: `CREATE TABLE IF NOT EXISTS` means existing databases would never
+   pick it up, and there is no migration framework (`SCHEMA_VERSION = "1"`).
+2. **Delete races the generation.** `run_exchange` catches `CancelledError` and
+   *then* writes its turn, so `conversation.delete` must cancel-and-await the
+   generation before deleting — otherwise that append hits the FK constraint
+   against a conversation that no longer exists. `Connection.
+   generating_conversation_id` tracks the target; because a brand-new
+   conversation only reveals its id at `chat.start`, `_generation_send()` wraps
+   the sender and sniffs it (this is why `conn` isn't threaded through
+   `_generate`/`run_voice_exchange`). Regression test:
+   `test_delete_while_generating_into_it` — it fails if you remove the guard.
+3. **Frontend state is keyed by conversation.** `threads` in
+   state/conversation.ts, keyed by id or `NEW_THREAD` for the unsaved chat;
+   `streamKey` names the thread owning the single in-flight generation.
+   `messages`/`streamingText` are mirrors of the active thread — keep them in
+   step via `patchThread`/`showThread` or the sphere will read stale state.
+4. **One generation per connection** (backend answers BUSY). While a reply
+   generates in another chat, the composer is disabled with
+   `conversation.busyElsewhere` rather than being allowed to bounce off BUSY.
+5. **Errors carry no correlation id.** `CONVERSATION_NOT_FOUND` from a rename
+   must not tear down an unrelated in-flight stream — hence
+   `MANAGEMENT_ERROR_CODES`.
 
-This is Phase 5 in the original plan (with branching UI). **Recommendation:**
-pull *basic* conversation management (list/switch/new/rename/delete) forward to
-its own small milestone before or alongside Phase 3 — it's a glaring everyday
-gap — and leave *branch navigation* (the sibling/tree UI) in Phase 5. User to
-decide sequencing.
+**Known judgement call:** rename bumps `updated_at` (existing `set_title`
+behaviour), so a renamed chat jumps to the top of the list. Claude/ChatGPT sort
+by last *activity*. Left as-is rather than changing an existing store contract.
+
+Storage cost is a **non-issue**: text only, ~1KB/turn — tens of MB/year under
+heavy use. Delete is a privacy/control feature, not a space-pressure one.
+
+**Still Phase 5:** branch navigation (the sibling/tree UI). `Store.siblings()`
+exists and is tested; it is deliberately not surfaced yet.
 
 ## Immediate next action
 
@@ -270,13 +309,27 @@ decide sequencing.
 text chat, voice loop, "Hey Jarvis" always-on, and the sphere all work in the
 real Tauri app on the 8GB M2. User's words: "okay its working."
 
-**Next: M3.5 — chat management** (user's explicit ask, sequenced BEFORE
-Phase 4): conversation list + switch + new + rename + delete in the frontend,
-plus the `delete_conversation()` the backend lacks. Full brief with the exact
-backend/frontend surface and the delete gotcha: **docs/NEXT_SESSION.md**.
+**M3.5 chat management shipped** (2026-07-19), verified against a *scratch*
+database in a browser-hosted build: list/switch/new/rename/delete, background
+generation routing, delete-mid-generation (zero orphan rows,
+`PRAGMA foreign_key_check` empty), sphere dock/re-centre, narrow-window overlay,
+boot-time list load. 91 backend tests, ruff + tsc clean.
 
-Then M3.3 (RAM tiering surfacing + onboarding v1), then Phase 4 (agency +
-security). **Known issue to fix somewhere in there:** with no tools wired, the
-model confabulates actions — it told the user "Starting your playlist now" and
-named a song it cannot play. Real tools are Phase 4, but the system prompt
-(agent/prompts.py) should already forbid claiming completed actions.
+**Both M3.5 gaps CLOSED (2026-07-19, acoustically, in the real Tauri app):**
+wake turn, toggleVoice turn (⌘M's body), no_speech slot release, barge-in
+mid-speech, and transcript-to-open-conversation all verified live in WKWebView.
+No streamKey leak existed; the dead-looking wake was three real bugs, fixed
+this session (gotchas 8-10): WKWebView background suspension
+(`backgroundThrottling: "disabled"`), `connections[-1]` wake routing (now
+broadcast), and "[BLANK_AUDIO]" becoming an utterance (transcriber filter).
+The confabulation fix also landed: prompts.py now declares "no tools yet" —
+llama3.2:3b declines play-music/set-timer/open-app baits instead of claiming
+them. 99 backend tests, ruff + tsc clean.
+
+**User should eyeball when convenient** (not automatable from a headless
+session): sidebar + orb rendering in WKWebView, a literal ⌘M keypress, and
+"Hey Jarvis" after the app has sat hidden for an hour (the suspension fix's
+soak test).
+
+Then M3.3 (RAM tiering surfacing + onboarding v1 — **scope to be agreed with
+the user first**), then Phase 4 (agency + security).

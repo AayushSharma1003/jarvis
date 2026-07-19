@@ -70,19 +70,21 @@ class AppState:
 
 
 async def handle_wake(state: AppState) -> bool:
-    """The wake service heard the wake word. Barge in: cancel whatever the
-    newest client is generating (stops playback instantly), then hand the
-    decision to the client, which answers with voice.start. Returns False if
-    nobody is connected to hear it."""
-    if not state.connections:
-        return False
-    conn = state.connections[-1]
-    await conn.cancel_generation()
-    try:
-        await conn.send(protocol.wake_detected())
-    except Exception:
-        return False
-    return True
+    """The wake service heard the wake word. Barge in: cancel every in-flight
+    generation (stops playback instantly), then broadcast wake.detected; the
+    live UI answers with voice.start. Broadcast — not newest-connection —
+    because webview reloads leave stale zombie connections behind and a
+    diagnostic client must not steal the wake from the real window; dead pages
+    simply never answer. Returns False if nobody is connected to hear it."""
+    heard = False
+    for conn in list(state.connections):
+        await conn.cancel_generation()
+        try:
+            await conn.send(protocol.wake_detected())
+            heard = True
+        except Exception:
+            continue
+    return heard
 
 
 def create_app(state: AppState) -> FastAPI:
