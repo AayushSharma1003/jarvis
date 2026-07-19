@@ -242,9 +242,17 @@ starts a fresh conversation. Nothing is lost — it's just not surfaced.
   message + dispatch + a UI affordance.
 - **Delete** — **not implemented anywhere.** Note the tension: the store is
   deliberately append-only ("no update/delete for turns/messages" — the
-  immutability promise in architecture.md). Deleting a whole *conversation*
-  (the container) is defensible user-data control, not a breach of that promise,
-  but it needs a deliberate call + `DELETE ... CASCADE` (schema already has FKs).
+  immutability promise in architecture.md, restated in conversations.py's module
+  docstring, which must be amended if delete lands). Deleting a whole
+  *conversation* (the container) is defensible user-data control, not a breach of
+  that promise, but it needs a deliberate `delete_conversation()`.
+  **CASCADE is NOT available** (corrected 2026-07-19): schema.sql declares the FKs
+  **without `ON DELETE CASCADE`**, and db.py sets `PRAGMA foreign_keys = ON`, so a
+  plain `DELETE FROM conversations` **fails** on the FK constraint. Do ordered
+  deletes inside one transaction (messages → turns → conversation). Do NOT "fix"
+  this by editing schema.sql: `CREATE TABLE IF NOT EXISTS` means existing user
+  databases would never pick the change up, and there is no migration framework
+  (`SCHEMA_VERSION = "1"`, db.py).
 - Storage cost is a **non-issue**: text only, no audio stored; ~1KB/turn, so
   heavy daily use is tens of MB/year — rounding error against the ~500MB voice
   models and multi-GB LLM. Local-forever is the right default; delete is a
@@ -258,12 +266,17 @@ decide sequencing.
 
 ## Immediate next action
 
-**M3.2 (sphere) built and browser-verified** — see phase plan above for what
-landed and the sphere gotchas section for the traps. **Pending: the user's
-live run** (`npm run tauri dev`) to feel the orb during a real voice turn on
-the 8GB M2 — states were exercised via the dev store handle, not a live mic.
+**Phase 3 M3.1 + M3.2 shipped and live-verified by the user** (2026-07-19):
+text chat, voice loop, "Hey Jarvis" always-on, and the sphere all work in the
+real Tauri app on the 8GB M2. User's words: "okay its working."
 
-**Next: M3.3 — RAM tiering surfacing + onboarding v1** (the remaining Phase 3
-scope; slips first per the user). Alternative next milestone if the user
-prefers: chat history / conversation management (see section above) — still
-queued, user chose Phase 3 first.
+**Next: M3.5 — chat management** (user's explicit ask, sequenced BEFORE
+Phase 4): conversation list + switch + new + rename + delete in the frontend,
+plus the `delete_conversation()` the backend lacks. Full brief with the exact
+backend/frontend surface and the delete gotcha: **docs/NEXT_SESSION.md**.
+
+Then M3.3 (RAM tiering surfacing + onboarding v1), then Phase 4 (agency +
+security). **Known issue to fix somewhere in there:** with no tools wired, the
+model confabulates actions — it told the user "Starting your playlist now" and
+named a song it cannot play. Real tools are Phase 4, but the system prompt
+(agent/prompts.py) should already forbid claiming completed actions.
