@@ -3,6 +3,11 @@
 There is deliberately no update or delete for turns/messages — immutability is a
 schema-level promise (docs/architecture.md). Editing a message in the UI means
 appending a sibling turn and moving the active leaf.
+
+The one exception is `delete_conversation`, which removes a whole conversation
+*container* and everything under it. That is user control over their own data,
+not a hole in the immutability promise: no turn or message is ever rewritten or
+selectively removed, and a conversation is either wholly present or wholly gone.
 """
 
 from __future__ import annotations
@@ -102,6 +107,29 @@ class Store:
             cur = self._conn.execute(
                 "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
                 (title, _now(), conversation_id),
+            )
+        if cur.rowcount == 0:
+            raise StorageError("CONVERSATION_NOT_FOUND", conversation_id)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        """Delete a conversation and everything beneath it, atomically.
+
+        The FKs in schema.sql have no ON DELETE CASCADE and db.py enables
+        `PRAGMA foreign_keys = ON`, so a bare DELETE on conversations fails the
+        constraint — children must go first, in one transaction. Adding CASCADE
+        to schema.sql would NOT help: it uses CREATE TABLE IF NOT EXISTS, so
+        databases that already exist would never pick the change up, and there
+        is no migration framework.
+        """
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM messages WHERE turn_id IN"
+                " (SELECT id FROM turns WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
+            self._conn.execute("DELETE FROM turns WHERE conversation_id = ?", (conversation_id,))
+            cur = self._conn.execute(
+                "DELETE FROM conversations WHERE id = ?", (conversation_id,)
             )
         if cur.rowcount == 0:
             raise StorageError("CONVERSATION_NOT_FOUND", conversation_id)

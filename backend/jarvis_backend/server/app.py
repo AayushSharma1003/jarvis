@@ -28,6 +28,8 @@ from .voice import VoiceIO, run_voice_exchange
 
 AUTH_TIMEOUT_S = 5.0
 WS_POLICY_VIOLATION = 1008
+# Matches the auto-title length in _generate / run_voice_exchange.
+TITLE_MAX_CHARS = 80
 
 
 @dataclass
@@ -38,10 +40,20 @@ class Connection:
 
     send: Any
     generation: asyncio.Task | None = None
+    # Which conversation the in-flight generation writes into, so a delete can
+    # stop it before pulling the rows out from under it. None until chat.start
+    # for a brand-new conversation (the id doesn't exist yet).
+    generating_conversation_id: str | None = None
 
     @property
     def busy(self) -> bool:
         return self.generation is not None and not self.generation.done()
+
+    async def cancel_generation(self) -> None:
+        if self.busy:
+            self.generation.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.generation
 
 
 @dataclass
@@ -65,10 +77,7 @@ async def handle_wake(state: AppState) -> bool:
     if not state.connections:
         return False
     conn = state.connections[-1]
-    if conn.busy:
-        conn.generation.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await conn.generation
+    await conn.cancel_generation()
     try:
         await conn.send(protocol.wake_detected())
     except Exception:
@@ -132,12 +141,50 @@ def create_app(state: AppState) -> FastAPI:
             pass
         finally:
             state.connections.remove(conn)
-            if conn.busy:
-                conn.generation.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await conn.generation
+            await conn.cancel_generation()
 
     return app
+
+
+def _generation_send(conn: Connection):
+    """conn.send, but it notes the conversation the generation settled on.
+
+    A generation started with no conversation_id creates one mid-flight and only
+    reveals it in chat.start; without this the connection couldn't tell whether
+    a delete targets the conversation it is actively writing into. Sniffing the
+    outbound message keeps that knowledge in one place for both the text and
+    voice paths, instead of threading `conn` through two orchestrators."""
+
+    async def send(msg: dict[str, Any]) -> None:
+        if msg.get("type") == "chat.start":
+            conn.generating_conversation_id = msg.get("conversation_id")
+        await conn.send(msg)
+
+    return send
+
+
+def _conversations_payload(state: AppState) -> dict[str, Any]:
+    return {
+        "type": "conversations",
+        "conversations": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+            }
+            for c in state.store.list_conversations()
+        ],
+    }
+
+
+async def _broadcast_conversations(state: AppState) -> None:
+    """Push the fresh list to every open UI. Rename/delete change what other
+    windows are showing, so they re-sync the same way wake.status does."""
+    payload = _conversations_payload(state)
+    for c in list(state.connections):
+        with contextlib.suppress(Exception):
+            await c.send(payload)
 
 
 async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> None:
@@ -157,7 +204,10 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             if conn.busy:
                 await send(protocol.error("BUSY"))
                 return
-            conn.generation = asyncio.create_task(run_voice_exchange(state, send, msg))
+            conn.generating_conversation_id = msg.get("conversation_id")
+            conn.generation = asyncio.create_task(
+                run_voice_exchange(state, _generation_send(conn), msg)
+            )
 
         elif mtype == "chat.send":
             if conn.busy:
@@ -167,7 +217,10 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             if not isinstance(content, str) or not content.strip():
                 await send(protocol.error("BAD_MESSAGE", "content required"))
                 return
-            conn.generation = asyncio.create_task(_generate(state, send, msg, content))
+            conn.generating_conversation_id = msg.get("conversation_id")
+            conn.generation = asyncio.create_task(
+                _generate(state, _generation_send(conn), msg, content)
+            )
 
         elif mtype == "wake.set":
             if state.wake is None:
@@ -200,20 +253,30 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             )
 
         elif mtype == "conversations.list":
-            await send(
-                {
-                    "type": "conversations",
-                    "conversations": [
-                        {
-                            "id": c.id,
-                            "title": c.title,
-                            "created_at": c.created_at,
-                            "updated_at": c.updated_at,
-                        }
-                        for c in state.store.list_conversations()
-                    ],
-                }
-            )
+            await send(_conversations_payload(state))
+
+        elif mtype == "conversation.rename":
+            cid = msg.get("conversation_id", "")
+            title = msg.get("title")
+            if not isinstance(title, str) or not title.strip():
+                await send(protocol.error("BAD_MESSAGE", "title required"))
+                return
+            state.store.set_title(cid, title.strip()[:TITLE_MAX_CHARS])
+            await _broadcast_conversations(state)
+
+        elif mtype == "conversation.delete":
+            cid = msg.get("conversation_id", "")
+            if not isinstance(cid, str) or not cid:
+                await send(protocol.error("BAD_MESSAGE", "conversation_id required"))
+                return
+            # Deleting what we're generating into would race: run_exchange
+            # persists its turn even when cancelled, so stop it and let that
+            # write land BEFORE the rows go away — otherwise the append hits
+            # the FK constraint against a conversation that no longer exists.
+            if conn.generating_conversation_id == cid:
+                await conn.cancel_generation()
+            state.store.delete_conversation(cid)
+            await _broadcast_conversations(state)
 
         elif mtype == "conversation.history":
             cid = msg.get("conversation_id", "")

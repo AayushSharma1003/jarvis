@@ -16,6 +16,21 @@
     "empty": "Local-first. Nothing leaves this machine.",
     "interrupted": "(stopped)"
   },
+  "conversation": {
+    "new": "New chat",
+    "empty": "No conversations yet.",
+    "untitled": "Untitled chat",
+    "listLabel": "Conversations",
+    "toggleList": "Show conversations",
+    "hideList": "Hide conversations",
+    "rename": "Rename",
+    "renameLabel": "Conversation title",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "confirmDelete": "Delete this chat?",
+    "generating": "Replying…",
+    "busyElsewhere": "Jarvis is still replying in another chat."
+  },
   "model": {
     "label": "Model"
   },

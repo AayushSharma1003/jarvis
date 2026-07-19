@@ -72,5 +72,59 @@ def test_unknown_conversation(store):
 
 
 def test_immutability_no_update_api(store):
-    """The Store deliberately exposes no way to change a persisted message."""
-    assert not [m for m in dir(store) if "update_message" in m or "delete" in m]
+    """The Store exposes no way to change or selectively remove a persisted
+    message or turn. `delete_conversation` is the deliberate exception: it drops
+    a whole conversation container (user data control), never a piece of one."""
+    mutators = [
+        m
+        for m in dir(store)
+        if not m.startswith("_") and ("update" in m or "delete" in m or "remove" in m)
+    ]
+    assert mutators == ["delete_conversation"]
+
+
+def test_delete_conversation_removes_turns_and_messages(store):
+    cid = store.create_conversation(title="t")
+    _turn(store, cid, "one", "1")
+    _turn(store, cid, "two", "2")
+    other = store.create_conversation(title="keep")
+    keep_turn = _turn(store, other, "mine", "ok")
+
+    store.delete_conversation(cid)
+
+    with pytest.raises(StorageError) as e:
+        store.get_conversation(cid)
+    assert e.value.code == "CONVERSATION_NOT_FOUND"
+    assert [c.id for c in store.list_conversations()] == [other]
+    # The FKs carry no ON DELETE CASCADE, so a naive delete would have raised;
+    # assert the children are really gone and the neighbour is untouched.
+    conn = store._conn
+    assert conn.execute("SELECT COUNT(*) c FROM turns").fetchone()["c"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"] == 2
+    assert [t.id for t in store.path(other)] == [keep_turn]
+
+
+def test_delete_conversation_with_branches(store):
+    """A branched tree has turns that aren't on the active path — they go too."""
+    cid = store.create_conversation()
+    t1 = _turn(store, cid, "one", "1")
+    _turn(store, cid, "two", "2")
+    _turn(store, cid, "two-edited", "2b", parent=t1)  # off-path sibling
+
+    store.delete_conversation(cid)
+
+    conn = store._conn
+    assert conn.execute("SELECT COUNT(*) c FROM turns").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"] == 0
+
+
+def test_delete_unknown_conversation(store):
+    with pytest.raises(StorageError) as e:
+        store.delete_conversation("nope")
+    assert e.value.code == "CONVERSATION_NOT_FOUND"
+
+
+def test_delete_empty_conversation(store):
+    cid = store.create_conversation()
+    store.delete_conversation(cid)
+    assert store.list_conversations() == []

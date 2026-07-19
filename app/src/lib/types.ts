@@ -11,6 +11,13 @@ export interface ModelEntry {
   size_bytes: number | null;
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -46,15 +53,7 @@ export type ServerMessage =
       interrupted: boolean;
     }
   | { type: "models"; default: string; models: ModelEntry[] }
-  | {
-      type: "conversations";
-      conversations: {
-        id: string;
-        title: string | null;
-        created_at: string;
-        updated_at: string;
-      }[];
-    }
+  | { type: "conversations"; conversations: ConversationSummary[] }
   | { type: "history"; conversation_id: string; turns: HistoryTurn[] }
   | { type: "wake.status"; enabled: boolean; available: boolean }
   | { type: "wake.detected" }
@@ -76,4 +75,6 @@ export type ClientMessage =
   | { type: "models.list" }
   | { type: "conversations.list" }
   | { type: "conversation.history"; conversation_id: string }
+  | { type: "conversation.rename"; conversation_id: string; title: string }
+  | { type: "conversation.delete"; conversation_id: string }
   | { type: "wake.set"; enabled: boolean };

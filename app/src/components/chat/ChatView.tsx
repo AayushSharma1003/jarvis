@@ -1,9 +1,10 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
-import { useConversation } from "../../state/conversation";
+import { isBusyElsewhere, useConversation } from "../../state/conversation";
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
+import { ConversationList } from "./ConversationList";
 import { MessageList } from "./MessageList";
 
 // three.js is ~550 kB minified — split it out so the chat shell paints first
@@ -20,9 +21,51 @@ const STATUS_DOT: Record<string, string> = {
   "backend-lost": "bg-red-500",
 };
 
+const SIDEBAR_KEY = "jarvis.sidebar.open";
+const NARROW_QUERY = "(max-width: 640px)";
+
+function MenuIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="h-4 w-4"
+      aria-hidden
+    >
+      <path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Below this width the sidebar overlays the chat instead of pushing it —
+ *  a 640px window has no room to give 256px away permanently. */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
 export function ChatView() {
   const { t } = useTranslation();
   const s = useConversation();
+  const narrow = useNarrow();
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => localStorage.getItem(SIDEBAR_KEY) !== "0",
+  );
+
+  const toggleSidebar = () => {
+    setSidebarOpen((open) => {
+      localStorage.setItem(SIDEBAR_KEY, open ? "0" : "1");
+      return !open;
+    });
+  };
 
   // Push-to-talk hotkey: ⌘M / Ctrl+M toggles the voice loop.
   useEffect(() => {
@@ -43,83 +86,135 @@ export function ChatView() {
     visualStateOf(s.voiceState) !== "idle" ||
     (s.messages.length === 0 && s.streamingText === null);
 
+  // A reply generating in a conversation you're not looking at still occupies
+  // the backend's single generation slot — say so rather than letting the send
+  // bounce off a BUSY error.
+  const busyElsewhere = isBusyElsewhere(s);
+
+  const afterSelect = () => {
+    if (narrow) setSidebarOpen(false);
+  };
+
   return (
-    <div className="relative flex h-full flex-col bg-zinc-900 text-zinc-100">
-      <header
-        data-tauri-drag-region
-        className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5"
-      >
-        <span className={`h-2 w-2 rounded-full ${STATUS_DOT[s.status]}`} />
-        <span className="text-sm font-medium">{t("app.title")}</span>
-        <span className="text-xs text-zinc-500">
-          {s.voiceState !== "idle" ? t(`voice.${s.voiceState}`) : t(`status.${s.status}`)}
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          {s.wakeAvailable && (
-            <button
-              onClick={() => s.setWakeEnabled(!s.wakeEnabled)}
-              aria-pressed={s.wakeEnabled}
-              title={s.wakeEnabled ? t("wake.disable") : t("wake.enable")}
-              className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
-                s.wakeEnabled
-                  ? "bg-sky-950 text-sky-300 hover:bg-sky-900"
-                  : "bg-zinc-800 text-zinc-500 hover:bg-zinc-700"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  s.wakeEnabled ? "animate-pulse bg-sky-400" : "bg-zinc-600"
-                }`}
-              />
-              {t("wake.label")}
-            </button>
-          )}
-          <select
-            value={s.currentModel}
-            onChange={(e) => s.setModel(e.target.value)}
-            disabled={s.models.length === 0}
-            aria-label={t("model.label")}
-            className="max-w-44 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
+    <div className="relative flex h-full bg-zinc-900 text-zinc-100">
+      {sidebarOpen && narrow && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="absolute inset-0 z-20 bg-black/60"
+          aria-hidden
+        />
+      )}
+      {sidebarOpen && (
+        <aside className={narrow ? "absolute inset-y-0 left-0 z-30 shadow-2xl" : "shrink-0"}>
+          <ConversationList
+            conversations={s.conversations}
+            activeId={s.conversationId}
+            streamingId={s.streamKey}
+            onSelect={(id) => {
+              s.switchTo(id);
+              afterSelect();
+            }}
+            onNew={() => {
+              s.newChat();
+              afterSelect();
+            }}
+            onRename={s.rename}
+            onDelete={s.remove}
+          />
+        </aside>
+      )}
+
+      <div className="relative flex h-full min-w-0 flex-1 flex-col">
+        <header
+          data-tauri-drag-region
+          className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5"
+        >
+          <button
+            onClick={toggleSidebar}
+            aria-expanded={sidebarOpen}
+            aria-label={sidebarOpen ? t("conversation.hideList") : t("conversation.toggleList")}
+            title={sidebarOpen ? t("conversation.hideList") : t("conversation.toggleList")}
+            className="-ml-1 rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
           >
-            {s.models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id}
-              </option>
-            ))}
-          </select>
-        </div>
-      </header>
+            <MenuIcon />
+          </button>
+          <span className={`h-2 w-2 rounded-full ${STATUS_DOT[s.status]}`} />
+          <span className="text-sm font-medium">{t("app.title")}</span>
+          <span className="text-xs text-zinc-500">
+            {s.voiceState !== "idle" ? t(`voice.${s.voiceState}`) : t(`status.${s.status}`)}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            {s.wakeAvailable && (
+              <button
+                onClick={() => s.setWakeEnabled(!s.wakeEnabled)}
+                aria-pressed={s.wakeEnabled}
+                title={s.wakeEnabled ? t("wake.disable") : t("wake.enable")}
+                className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+                  s.wakeEnabled
+                    ? "bg-sky-950 text-sky-300 hover:bg-sky-900"
+                    : "bg-zinc-800 text-zinc-500 hover:bg-zinc-700"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    s.wakeEnabled ? "animate-pulse bg-sky-400" : "bg-zinc-600"
+                  }`}
+                />
+                {t("wake.label")}
+              </button>
+            )}
+            <select
+              value={s.currentModel}
+              onChange={(e) => s.setModel(e.target.value)}
+              disabled={s.models.length === 0}
+              aria-label={t("model.label")}
+              className="max-w-44 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
+            >
+              {s.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id}
+                </option>
+              ))}
+            </select>
+          </div>
+        </header>
 
-      <Suspense fallback={null}>
-        <SphereOrb />
-      </Suspense>
-      <div
-        aria-hidden="true"
-        className="shrink-0 transition-[height] duration-500 ease-out"
-        style={{ height: orbCentered ? 300 : 0 }}
-      />
+        <Suspense fallback={null}>
+          <SphereOrb />
+        </Suspense>
+        <div
+          aria-hidden="true"
+          className="shrink-0 transition-[height] duration-500 ease-out"
+          style={{ height: orbCentered ? 300 : 0 }}
+        />
 
-      <MessageList messages={s.messages} streamingText={s.streamingText} />
+        <MessageList messages={s.messages} streamingText={s.streamingText} />
 
-      {s.errorCode && (
-        <div className="mx-4 mb-2 rounded-lg bg-red-950/60 px-3 py-2 text-xs text-red-300">
-          {errorText(s.errorCode)}
-        </div>
-      )}
-      {s.voiceHint && !s.errorCode && (
-        <div className="mx-4 mb-2 rounded-lg bg-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
-          {t(`voice.hint.${s.voiceHint}`)}
-        </div>
-      )}
+        {s.errorCode && (
+          <div className="mx-4 mb-2 rounded-lg bg-red-950/60 px-3 py-2 text-xs text-red-300">
+            {errorText(s.errorCode)}
+          </div>
+        )}
+        {s.voiceHint && !s.errorCode && (
+          <div className="mx-4 mb-2 rounded-lg bg-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
+            {t(`voice.hint.${s.voiceHint}`)}
+          </div>
+        )}
+        {busyElsewhere && !s.errorCode && (
+          <div className="mx-4 mb-2 rounded-lg bg-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
+            {t("conversation.busyElsewhere")}
+          </div>
+        )}
 
-      <Composer
-        disabled={s.status !== "ready"}
-        streaming={s.streamingText !== null}
-        voiceState={s.voiceState}
-        onSend={s.send}
-        onStop={s.stop}
-        onVoiceToggle={s.toggleVoice}
-      />
+        <Composer
+          disabled={s.status !== "ready" || busyElsewhere}
+          streaming={s.streamingText !== null}
+          voiceState={s.voiceState}
+          onSend={s.send}
+          onStop={s.stop}
+          onVoiceToggle={s.toggleVoice}
+        />
+      </div>
     </div>
   );
 }

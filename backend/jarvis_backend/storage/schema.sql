@@ -1,8 +1,13 @@
 -- Normative schema. See docs/architecture.md: messages are IMMUTABLE rows in a
 -- turn-grouped tree. A "turn" is the atomic branching unit: one user message
 -- plus the full assistant response span (including, later, tool calls/results).
--- Branching = inserting a new turn with the same parent_turn_id. Rows are never
--- updated or deleted; conversations.active_leaf_turn_id selects the live path.
+-- Branching = inserting a new turn with the same parent_turn_id. Turn and
+-- message rows are never updated, and never deleted individually;
+-- conversations.active_leaf_turn_id selects the live path. Deleting a whole
+-- conversation removes its rows wholesale (Store.delete_conversation) — note
+-- the FKs below have NO ON DELETE CASCADE, so that delete is ordered by hand:
+-- messages → turns → conversation. Adding CASCADE here would not reach the
+-- databases that already exist (CREATE TABLE IF NOT EXISTS, no migrations).
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
