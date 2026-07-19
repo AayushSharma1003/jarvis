@@ -125,6 +125,12 @@ export const useConversation = create<ConversationState>((set, get) => ({
   setModel: (model: string) => set({ currentModel: model }),
 }));
 
+// Dev console handle (vite dev only): lets you drive voiceState/voiceLevel by
+// hand to exercise the sphere without a live mic turn.
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__jarvisStore = useConversation;
+}
+
 /** The wake word was heard (backend already cancelled any active reply). */
 function startVoiceFromWake(get: () => ConversationState): void {
   const { voiceState, streamingText, conversationId, currentModel } = get();

@@ -1,9 +1,16 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { useConversation } from "../../state/conversation";
+import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
+
+// three.js is ~550 kB minified — split it out so the chat shell paints first
+// and the orb fades in a beat later.
+const SphereOrb = lazy(() =>
+  import("../sphere/SphereOrb").then((m) => ({ default: m.SphereOrb })),
+);
 
 const STATUS_DOT: Record<string, string> = {
   ready: "bg-emerald-500",
@@ -29,8 +36,15 @@ export function ChatView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // The orb takes center stage during voice states and on an empty chat;
+  // the spacer below the header keeps messages flowing under it (same
+  // 500 ms ease as the orb's own move in SphereOrb).
+  const orbCentered =
+    visualStateOf(s.voiceState) !== "idle" ||
+    (s.messages.length === 0 && s.streamingText === null);
+
   return (
-    <div className="flex h-full flex-col bg-zinc-900 text-zinc-100">
+    <div className="relative flex h-full flex-col bg-zinc-900 text-zinc-100">
       <header
         data-tauri-drag-region
         className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5"
@@ -75,6 +89,15 @@ export function ChatView() {
           </select>
         </div>
       </header>
+
+      <Suspense fallback={null}>
+        <SphereOrb />
+      </Suspense>
+      <div
+        aria-hidden="true"
+        className="shrink-0 transition-[height] duration-500 ease-out"
+        style={{ height: orbCentered ? 300 : 0 }}
+      />
 
       <MessageList messages={s.messages} streamingText={s.streamingText} />
 

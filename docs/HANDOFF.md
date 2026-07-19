@@ -162,9 +162,21 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    — the pip package would drag scipy/sklearn into the bundle. VAD-gated
    pipeline (wake/pipeline.py): adaptive energy gate → Silero → chain, so
    the expensive embedding model sleeps in silence. 78 backend tests.
-   Remaining: **the sphere UI** (4 states, audio-reactive —
-   docs/design/sphere.md; adaptive placement: small in header, expands
-   during voice), RAM tiering surfacing, onboarding v1.
+   ✅ **M3.2 sphere UI DONE** (2026-07-19): the signature orb —
+   app/src/components/sphere/{Sphere,SphereFallback2D,SphereOrb,params,
+   useAudioLevels}. Vanilla three.js (no R3F), ~6k shader-displaced points,
+   Fresnel shell (NOT transmission — approved perf deviation), half-res
+   UnrealBloom, navy in-scene vignette, four states from shared
+   STATE_PARAMS. **Adaptive placement**: mini-orb docked in the header
+   center while chatting, glides to 240px center stage during voice states
+   / empty chat (one canvas, CSS-transitioned container). Canvas-2D
+   fallback is live behavior-identical (same params module). Renderer
+   selection: WebGL probe + persisted `jarvis.sphere.fallback` localStorage
+   flag; watchdog trips on **render-call duration** (ema >12ms → 2D).
+   Measured in-browser: **1.8ms CPU/frame** at full size, speaking state.
+   three.js code-split (chat shell 261kB, orb chunk 540kB lazy).
+   NOT yet verified: live run in the Tauri WKWebView on the M2 (user test).
+   Remaining: RAM tiering surfacing, onboarding v1 (M3.3).
 4. **Agency + security** — permission engine + taint + sandbox, tools ship WITH
    their security layer, extension loader + approval gate.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
@@ -179,12 +191,25 @@ v1 default = wake-word + hotkey interrupt (no AEC needed). v1 opt-in = full VAD
 barge-in with a headphones/beamforming-mic warning. Proper AEC = post-v1
 milestone, doesn't block v1.
 
-## Sphere UI (Phase 3, user-supplied references)
+## Sphere UI (built in M3.2 — hard-won gotchas)
 
-Glass sphere on near-black with a cyan→purple audio-reactive particle waveform
-inside, Fresnel rim glow, bloom, floor reflection. Full target + Three.js plan:
-**docs/design/sphere.md**; images in **docs/design/sphere-refs/**. Mandatory
-canvas-2D fallback for flaky Linux WebGL. Smoothness on 8GB > fidelity.
+Design target: **docs/design/sphere.md** + **docs/design/sphere-refs/**.
+Things that cost time — don't rediscover:
+1. **CanvasTexture needs `colorSpace = SRGBColorSpace`** or the OutputPass
+   brightens it — the "seamless" backdrop rendered lighter than the page.
+2. **UnrealBloom writes alpha=1**: a transparent canvas turns into an opaque
+   square. Solution: opaque canvas cleared to the app bg (#18181b zinc-900,
+   MUST stay in sync with ChatView) + in-scene radial navy vignette that
+   fades to that color — edges dissolve, and the rounded-full container clip
+   lands exactly where the vignette hits zero.
+3. **Watchdog on render-call duration, never frame cadence** — rAF throttling
+   (occluded window, battery, embedded webviews) makes cadence lie and would
+   permanently flag capable GPUs into the 2D fallback (happened in dev).
+4. **Docked-size compensation**: fixed-pixel additive points saturate white in
+   a 32px canvas — uSize and brightness scale with canvas height, bloom
+   disabled under 100px.
+5. Dev affordances: `window.__jarvisStore` (DEV only) drives
+   voiceState/voiceLevel by hand; host div exposes `data-render-ms` (ema).
 
 ## Dev commands
 
@@ -233,17 +258,12 @@ decide sequencing.
 
 ## Immediate next action
 
-**M3.1 (wake word) shipped and verified** — see phase plan above. User
-decisions on record: wake toggle is opt-in + persistent (their explicit ask),
-sphere placement is **adaptive** (small orb in header while chatting, expands
-to centerpiece during voice states).
+**M3.2 (sphere) built and browser-verified** — see phase plan above for what
+landed and the sphere gotchas section for the traps. **Pending: the user's
+live run** (`npm run tauri dev`) to feel the orb during a real voice turn on
+the 8GB M2 — states were exercised via the dev store handle, not a live mic.
 
-**Next: M3.2 — the sphere** (docs/design/sphere.md + sphere-refs/).
-`voice.level` already streams 10Hz levels and `voice.state` maps 1:1 to the
-four sphere states (loading/transcribing → "thinking"). Plan approved by user:
-three + @types/three only, vanilla Three.js (no react-three-fiber), custom
-Fresnel-rim shader instead of transmission (approved deviation — perf),
-~8–12k points, half-res bloom, DPR cap 1.5, FPS watchdog → SphereFallback2D
-(canvas-2D, mandatory). Then M3.3: RAM tiering surfacing + onboarding v1
-(slips first). Chat history / conversation management (see section above)
-still queued — user chose Phase 3 first.
+**Next: M3.3 — RAM tiering surfacing + onboarding v1** (the remaining Phase 3
+scope; slips first per the user). Alternative next milestone if the user
+prefers: chat history / conversation management (see section above) — still
+queued, user chose Phase 3 first.
