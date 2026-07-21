@@ -1,6 +1,9 @@
 # Contributing
 
-> Status: pre-alpha; contribution workflow will firm up once phase 1 lands.
+> Status: pre-alpha, phase 3 of 6. Text chat, the voice loop and the wake word work;
+> tool use and the permission engine are next and not yet built. Issues and discussion
+> are welcome now; the PR workflow will firm up once the security layer lands, because
+> that's the part where a well-meaning patch can do real damage.
 
 ## Where to contribute
 

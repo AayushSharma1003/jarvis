@@ -303,6 +303,33 @@ heavy use. Delete is a privacy/control feature, not a space-pressure one.
 **Still Phase 5:** branch navigation (the sibling/tree UI). `Store.siblings()`
 exists and is tested; it is deliberately not surfaced yet.
 
+## Publishing / GitHub (as of 2026-07-21)
+
+The repo is going public so the user can show it as portfolio work — that is an
+explicit goal now, and it raises the bar on README/docs quality.
+
+- **Remote exists, nothing pushed yet:** `gh repo create jarvis --public
+  --source=. --remote=origin` ran on 2026-07-21 →
+  `https://github.com/AayushSharma1003/jarvis`, remote `origin` wired. The
+  landing page is still empty; `git push -u origin main` has NOT been run.
+- **Pre-push safety scan is DONE and clean** (working tree): no secrets, no
+  `*.sqlite`/`.env`/`*.pem`, no file >1MB, no model weights. `.gitignore`
+  correctly covers node_modules/, target/, .venv/, `*.onnx`/`*.bin`, `.env`,
+  `.claude/`. Only the *working tree* was scanned — historical commits were
+  not audited (`git log --all --diff-filter=A --name-only` if paranoid).
+- **MISSING: README.md and LICENSE.** For a portfolio repo the README *is* the
+  artifact — the landing page is what a recruiter/engineer actually reads.
+  Material worth surfacing that the code doesn't advertise: 2.4% idle CPU
+  always-on wake on 8GB, 1.17–1.41s end-of-speech→first-audio, vendored ONNX
+  wake chain (avoids scipy/sklearn in the bundle), taint-tracking security
+  model, immutable branching-ready message tree, 99 tests + 3-OS CI.
+  A LICENSE (MIT or Apache-2.0) is also needed — "community-friendliness" is
+  on the standing-authorization ladder and an unlicensed public repo is not
+  legally open source. **User was offered this and has not yet answered.**
+- Commit history is fine (conventional prefixes + milestone tags); the
+  auto-commit mislabelling only affected the earliest Phase-1 commit. Do NOT
+  offer to rewrite history.
+
 ## Immediate next action
 
 **Phase 3 M3.1 + M3.2 shipped and live-verified by the user** (2026-07-19):
@@ -329,7 +356,24 @@ them. 99 backend tests, ruff + tsc clean.
 **User should eyeball when convenient** (not automatable from a headless
 session): sidebar + orb rendering in WKWebView, a literal ⌘M keypress, and
 "Hey Jarvis" after the app has sat hidden for an hour (the suspension fix's
-soak test).
+soak test — the real check on gotcha 8; if it fails, the fix didn't take).
 
-Then M3.3 (RAM tiering surfacing + onboarding v1 — **scope to be agreed with
-the user first**), then Phase 4 (agency + security).
+**Three open decisions, all waiting on the user:**
+1. **README + LICENSE before the push?** (recommended — see Publishing above)
+2. **M3.3 scope.** Proposal on the table: (a) RAM tier surfaced in the model
+   picker with "why this model" copy, (b) first-run onboarding = mic permission
+   walkthrough + model download progress + wake opt-in + one guided voice turn,
+   (c) two small fixes below. Nothing else — onboarding sprawls easily.
+3. **Rename ordering** — preserve last-*activity* sort instead of bumping
+   `updated_at`? Recommended yes; small, batch into M3.3.
+
+**Known bug found 2026-07-19, NOT fixed (deliberate):** the *first* voice turn
+after app start clips the opening words — `voice.start` runs `io.load()`
+(~2.5s: whisper Metal shaders + Kokoro graph) BEFORE opening the mic, so speech
+during the load is lost. Pre-existing since Phase 2, not an M3.5 regression.
+Fix options: open capture first and buffer during load, or warm engines at boot
+(costs RAM on the 8GB target). Fold into M3.3.
+
+Then Phase 4 (agency + security) — the largest phase, and the one where
+shipping a half-built permission engine is worse than not shipping. Cut the
+tool list before cutting the security layer.

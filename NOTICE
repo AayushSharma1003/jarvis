@@ -1,0 +1,86 @@
+JARVIS
+Copyright 2026 Aayush Sharma
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software and machine-learning models developed by third
+parties. Their terms are reproduced or referenced below and continue to apply to
+those components.
+
+================================================================================
+Vendored code
+================================================================================
+
+backend/jarvis_backend/wake/detector.py
+
+    The streaming melspectrogram / speech-embedding buffer logic mirrors
+    openWakeWord's `openwakeword.utils.AudioFeatures`, reimplemented against
+    onnxruntime so the shipped sidecar does not depend on scipy or
+    scikit-learn. Scores match the reference implementation.
+
+    openWakeWord — Copyright David Scripka
+    https://github.com/dscripka/openWakeWord
+    Licensed under the Apache License, Version 2.0.
+
+================================================================================
+Models downloaded at run time (scripts/fetch_models.py)
+================================================================================
+
+No model weights are contained in this repository. `scripts/fetch_models.py` is
+user-invoked and fetches each file from its upstream source over pinned URLs
+with SHA-256 verification. The licenses below are the upstream terms and apply
+to the downloaded files, not to this repository's source code.
+
+Wake word — openWakeWord v0.5.1 release assets
+    melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx
+    https://github.com/dscripka/openWakeWord
+    openWakeWord's pre-trained models are distributed under Creative Commons
+    Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0),
+    because datasets with unknown or restrictive licensing were used in
+    training. The shared speech-embedding backbone originates from Google's
+    `speech_embedding` TFHub module, published under Apache-2.0.
+    https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+    NOTE: the NonCommercial term belongs to these downloaded weights, not to
+    JARVIS itself. Anyone intending commercial use should replace the wake-word
+    model — `scripts/train_wake_word.py` trains a drop-in replacement offline.
+
+Voice activity detection — Silero VAD
+    silero_vad.onnx
+    Copyright Silero Team — https://github.com/snakers4/silero-vad
+    Licensed under the MIT License.
+
+Speech to text — Whisper (ggml build)
+    ggml-base.bin
+    OpenAI Whisper models, converted for whisper.cpp by Georgi Gerganov.
+    https://github.com/ggerganov/whisper.cpp — https://github.com/openai/whisper
+    Licensed under the MIT License.
+
+Text to speech — Kokoro
+    kokoro-v1.0.onnx, voices-v1.0.bin
+    Kokoro-82M — https://huggingface.co/hexgrad/Kokoro-82M
+    ONNX conversion and release assets by kokoro-onnx
+    https://github.com/thewh1teagle/kokoro-onnx
+    Model weights licensed under the Apache License, Version 2.0.
+
+================================================================================
+Principal runtime dependencies
+================================================================================
+
+Python sidecar
+    onnxruntime (MIT), pywhispercpp / whisper.cpp (MIT), kokoro-onnx (MIT),
+    sounddevice + PortAudio (MIT), FastAPI (MIT), uvicorn (BSD-3-Clause),
+    httpx (BSD-3-Clause), numpy (BSD-3-Clause), platformdirs (MIT),
+    psutil (BSD-3-Clause)
+
+Desktop app
+    Tauri (MIT / Apache-2.0), React (MIT), three.js (MIT), zustand (MIT),
+    i18next (MIT), Tailwind CSS (MIT), Vite (MIT)
+
+Language models
+    Served by Ollama (MIT), which is detected or installed separately and is
+    never bundled. Individual model weights carry their own licenses from
+    their publishers.
+
+Each dependency's full license text ships with that dependency; this file
+records attribution, not a substitute for those texts.

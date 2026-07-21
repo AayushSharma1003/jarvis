@@ -23,8 +23,10 @@ app/src-tauri/gen/
 *.gguf
 *.bin
 *.safetensors
-backend/models/
-models/
+# NOTE: `dir/*` not `dir/`, so the `!models/README.md` re-include below works —
+# git cannot re-include a file whose parent directory is itself excluded.
+backend/models/*
+models/*
 
 # Local data
 *.sqlite
