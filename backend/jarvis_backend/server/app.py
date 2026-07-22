@@ -21,6 +21,7 @@ from ..llm import capabilities
 from ..llm.base import ChatBackend, LLMError
 from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
 from ..storage.conversations import StorageError, Store
+from ..tools.registry import Registry
 from ..wake.detector import WakeError
 from ..wake.service import WakeService
 from . import protocol, readiness
@@ -65,9 +66,31 @@ class AppState:
     config: Config
     voice_io: VoiceIO | None = None  # None ⇒ voice.start answers VOICE_UNAVAILABLE
     wake: WakeService | None = None  # None ⇒ wake.set answers WAKE_UNAVAILABLE
+    # None ⇒ no tools are offered at all. The registry carries its own security
+    # gate (tools/registry.py), so this is a switch for *whether* tools exist,
+    # never for whether they are checked.
+    registry: Registry | None = None
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
+
+    async def registry_for(self, model: str) -> Registry | None:
+        """Tools are offered only to models measured able to decline them.
+
+        A model that fires spurious calls manufactures permission dialogs the
+        user never asked for — the confirmation-fatigue failure mode
+        docs/security-model.md names as an attack surface. `optin` and
+        `unsupported` models simply never see the schema, so llama3.2:3b
+        cannot answer "what's 17 times 4?" with a shell command.
+        See llm/capabilities.py and docs/tool-calling.md.
+
+        The capability probe is cached per model by the adapter, so this is a
+        dictionary lookup after the first call.
+        """
+        if self.registry is None:
+            return None
+        caps = await self.backend.model_capabilities(model)
+        return self.registry if capabilities.classify(model, caps) == capabilities.ON else None
 
 
 async def handle_wake(state: AppState) -> bool:
@@ -350,6 +373,8 @@ async def _generate(state: AppState, send, msg: dict[str, Any], content: str) ->
             user_text=content,
             on_delta=lambda text: send(protocol.chat_delta(text)),
             parent_turn_id=msg.get("parent_turn_id"),
+            registry=await state.registry_for(model),
+            on_span=lambda span: send(protocol.tool_span(span)),
         )
         if result.error_code:
             await send(protocol.error(result.error_code, result.error_detail))

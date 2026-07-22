@@ -30,6 +30,7 @@ from .server.auth import make_token
 from .server.voice import RealVoiceIO
 from .storage import db
 from .storage.conversations import Store
+from .tools import default_registry
 from .wake.service import WakeService
 
 PARENT_POLL_S = 2.0
@@ -48,7 +49,12 @@ def run() -> None:
     store = Store(db.connect(config.data_dir / "jarvis.sqlite3"))
     backend = OllamaBackend(config.ollama_url)
     state = AppState(
-        token=token, store=store, backend=backend, config=config, voice_io=RealVoiceIO()
+        token=token,
+        store=store,
+        backend=backend,
+        config=config,
+        voice_io=RealVoiceIO(),
+        registry=default_registry(),
     )
     state.wake = _make_wake_service(state, config)
     app = create_app(state)

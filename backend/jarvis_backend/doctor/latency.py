@@ -95,23 +95,27 @@ def run_latency(model: str | None = None) -> tuple[list[Stage], float, str]:
 
     async def first_sentence() -> tuple[str, float, float]:
         from ..agent.prompts import system_prompt
-        from ..llm.base import ChatMessage
+        from ..llm.base import ChatMessage, TextDelta
 
         chosen = model or pick_model(await backend.list_models(), config.default_model)
         chunker = SentenceChunker()
         t_start = time.perf_counter()
         ttft = 0.0
         try:
-            async for delta in backend.stream_chat(
+            # No tools: this measures the voice path's LLM leg, and offering
+            # tools would change both the prompt length and what comes back.
+            async for event in backend.stream_chat(
                 chosen,
                 [
                     ChatMessage("system", system_prompt(voice=True)),
                     ChatMessage("user", heard or QUESTION),
                 ],
             ):
+                if not isinstance(event, TextDelta):
+                    continue
                 if ttft == 0.0:
                     ttft = time.perf_counter() - t_start
-                if sentences := chunker.feed(delta):
+                if sentences := chunker.feed(event.text):
                     return sentences[0], ttft, time.perf_counter() - t_start
             return chunker.flush(), ttft, time.perf_counter() - t_start
         finally:

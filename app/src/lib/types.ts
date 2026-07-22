@@ -42,6 +42,16 @@ export interface ConversationSummary {
   updated_at: string;
 }
 
+/** One tool call and its outcome. `code` is machine-readable; the wording
+ *  lives in i18n/en.json under `tool.code.*`. */
+export interface ToolSpanData {
+  name: string;
+  arguments: Record<string, unknown>;
+  content: string;
+  ok: boolean;
+  code: string;
+}
+
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -70,6 +80,7 @@ export type ServerMessage =
   | { type: "voice.level"; level: number }
   | { type: "chat.start"; conversation_id: string; model: string }
   | { type: "chat.delta"; text: string }
+  | ({ type: "tool.span"; call_id: string } & ToolSpanData)
   | {
       type: "chat.done";
       conversation_id: string;

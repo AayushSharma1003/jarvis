@@ -24,13 +24,16 @@ import type {
   RamTier,
   ReadinessCheck,
   ServerMessage,
+  ToolSpanData,
   VoiceState,
 } from "../lib/types";
 
 export interface UiMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
+  /** Present only when role === "tool": what the assistant ran and got back. */
+  tool?: ToolSpanData;
 }
 
 export type AppStatus = "starting" | SocketStatus | "backend-lost";
@@ -124,13 +127,29 @@ function showThread(set: SetState, conversationId: string | null): void {
   });
 }
 
-/** Flatten a history path into chat bubbles. Tool messages are dropped —
- *  UiMessage is user|assistant, and surfacing tool spans is phase 4's job. */
+/** Flatten a history path into chat bubbles and tool spans.
+ *
+ *  Tool rows store the span as JSON (agent/loop.py ToolSpan.to_json). A row we
+ *  can't parse is skipped rather than shown as raw JSON: the transcript is also
+ *  what gets read aloud in voice mode, and a stray blob there is exactly the
+ *  failure the malformed-call filter exists to prevent. */
 function messagesFromHistory(turns: HistoryTurn[]): UiMessage[] {
   return turns.flatMap((turn) =>
-    turn.messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content })),
+    turn.messages.flatMap((m): UiMessage[] => {
+      if (m.role === "tool") {
+        try {
+          const span = JSON.parse(m.content) as ToolSpanData;
+          if (typeof span?.name !== "string") return [];
+          return [{ id: m.id, role: "tool", content: "", tool: span }];
+        } catch {
+          return [];
+        }
+      }
+      // An empty assistant row is the "model returned nothing" placeholder the
+      // backend writes to keep the turn shape stable; it has nothing to render.
+      if (!m.content) return [];
+      return [{ id: m.id, role: m.role as "user" | "assistant", content: m.content }];
+    }),
   );
 }
 
@@ -384,11 +403,37 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       }));
       break;
     }
+    case "tool.span": {
+      // The assistant may have said something before reaching for the tool.
+      // Seal that text into its own bubble first so the live transcript reads
+      // in the same order the backend persists it (assistant, tool, assistant)
+      // — otherwise a reload would silently reorder the conversation.
+      const key = get().streamKey;
+      if (key === null) break;
+      const { type: _type, call_id, ...span } = msg;
+      patchThread(set, key, (t) => {
+        const said = t.streamingText;
+        return {
+          streamingText: "",
+          messages: [
+            ...t.messages,
+            ...(said
+              ? [{ id: crypto.randomUUID(), role: "assistant" as const, content: said }]
+              : []),
+            { id: call_id || crypto.randomUUID(), role: "tool" as const, content: "", tool: span },
+          ],
+        };
+      });
+      break;
+    }
     case "chat.done": {
       const key = get().streamKey;
       if (key !== null) {
         patchThread(set, key, (t) =>
-          t.streamingText !== null
+          // Empty means a tool span already sealed the last bubble and the
+          // model added nothing after it — appending here would leave a blank
+          // bubble hanging under the tool span.
+          t.streamingText
             ? {
                 streamingText: null,
                 messages: [

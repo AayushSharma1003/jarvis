@@ -158,6 +158,20 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     (4.0B beats 3.2B inside the budget). `pick_model` now skips catalog-tagged
     `reasoning` models when choosing FOR the user; a configured model still
     wins. Measurements: docs/tool-calling.md.
+    **Corollary that saved the transcript:** the Ollama adapter reads only
+    `message.content` and ignores `message.thinking`, so with thinking
+    *separated* the monologue never becomes a TextDelta and cannot be spoken.
+    Do not "helpfully" start streaming the thinking field without deciding
+    what voice mode does with it.
+13. **Small models PRINT tool calls instead of emitting them.** llama3.2:3b
+    leaked 4 in 33 calls as ordinary assistant prose —
+    `{"name":"run_command","parameters\":{\"command":"git status"}}` — which
+    renders in the transcript AND gets handed to Kokoro. Worse, it is a silent
+    failure: the tool never ran, so the user's request just didn't happen.
+    `agent/toolfilter.py` withholds a delta stream that starts to look like a
+    printed call and drops it, surfacing a failed span instead. It only fires
+    when the JSON names a **registered** tool, so a user asking for JSON still
+    gets their answer — without that guard any JSON reply would be at risk.
 
 ## Repo map
 
@@ -268,6 +282,21 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    `catalog/models.toml`. Fail-safe throughout: a missing catalog disables
    tools rather than enabling them. `models.list` carries `tools` per model;
    `jarvis doctor` has a `tool use` line. 130 backend tests.
+   ✅ **M4.1 tool plumbing DONE** (2026-07-22): the wire, with nothing
+   dangerous on it. `stream_chat` now yields `TextDelta | ToolCall` and takes
+   a `tools` schema; `run_exchange` is a multi-round loop (cap
+   `MAX_TOOL_ROUNDS = 4`, and the final pass is offered NO tools so the model
+   must answer in words). Tool spans persist as `role='tool'` rows —
+   `schema.sql` already allowed it, so no migration. `tools/registry.py` does
+   signature→JSON-schema introspection (extensions reuse it in phase 5) and
+   **takes its security gate as a constructor argument**, so calling a tool
+   without consulting the security layer is not an expressible operation.
+   M4.1 ships `security/permissions.py`'s **SafeOnlyGate**, which refuses
+   every `ask`/`dangerous` tool: the confirmation machinery is M4.2 and until
+   it exists there is no honest way to run one. The only tool is
+   `get_datetime`. `agent/toolfilter.py` suppresses tool calls the model
+   *prints* as prose (gotcha 13). New `tool.span` WS message + a collapsed
+   `ToolSpan` component. 172 backend tests.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -386,15 +415,21 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 complete; Phase 4 started.** M4.0 (model capability gate) is done
-and green. **Next is M4.1: tool plumbing with zero side effects** — structured
-`stream_chat` events, the multi-round agent loop, `tools/registry.py`, tool
-spans in the message tree (`role='tool'` is already allowed by schema.sql, no
-migration needed), the malformed-call suppressor, and transcript rendering.
-It ships exactly one side-effect-free tool (`get_datetime`) to prove the loop.
-Deferred *into* M4.1 from M4.0 on purpose: the readiness row and the model
-picker's tool copy — user-facing warnings about tools should not ship before
-any tool exists.
+**Phases 1-3 complete; Phase 4 in progress.** M4.0 and M4.1 are done and green
+(172 backend tests). **Next is M4.2: the permission engine + confirmation** —
+and it is the schedule risk of the whole phase, because the confirm broker
+touches cancellation, the single generation slot, and multi-window state, which
+are the three places this codebase has already produced subtle bugs (gotchas
+8-9). Needed: `security/confirm.py` (async broker, correlation ids, timeout →
+deny, **no UI connected → deny**, `chat.stop` while a confirm is pending, first
+window to answer wins, a confirm racing `conversation.delete`), the real Gate
+replacing `SafeOnlyGate`, "allow for this session" held **in memory only**, a
+spoken "I need your OK — check the window" for voice mode, and the dialog with
+default focus on **Deny**.
+
+Still deferred from M4.0, now due whenever the picker is next touched: the
+readiness row and the model picker's tool copy (`optin` models should say why
+tools are off).
 
 **Two open items from M4.0:**
 1. `qwen3:8b` sits in the catalog as the 16GB default with **no**

@@ -16,6 +16,22 @@
     "empty": "Local-first. Nothing leaves this machine.",
     "interrupted": "(stopped)"
   },
+  "tool": {
+    "used": "Used {{name}}",
+    "failed": "Couldn't use {{name}}",
+    "failedUnknown": "A tool call didn't work",
+    "arguments": "with",
+    "result": "got",
+    "noDetail": "No details recorded.",
+    "code": {
+      "TOOL_NOT_FOUND": "no such tool",
+      "TOOL_BAD_ARGUMENTS": "wrong arguments",
+      "TOOL_FAILED": "it errored",
+      "TOOL_CONFIRMATION_UNAVAILABLE": "needs your permission, which isn't built yet",
+      "TOOL_CALL_MALFORMED": "the model garbled the request",
+      "UNKNOWN": "unknown problem"
+    }
+  },
   "conversation": {
     "new": "New chat",
     "empty": "No conversations yet.",

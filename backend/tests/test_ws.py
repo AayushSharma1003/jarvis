@@ -10,7 +10,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis_backend.config import Config
-from jarvis_backend.llm.base import ChatBackend, ChatMessage, LLMError, ModelInfo
+from jarvis_backend.llm.base import (
+    ChatBackend,
+    ChatMessage,
+    LLMError,
+    ModelInfo,
+    TextDelta,
+    ToolCall,
+)
 from jarvis_backend.server.app import AppState, create_app
 from jarvis_backend.storage import db
 from jarvis_backend.storage.conversations import Store
@@ -25,31 +32,36 @@ class FakeBackend(ChatBackend):
         self.chunks = chunks
         self.fail_code = fail_code
         self.last_messages: list[ChatMessage] | None = None
+        self.last_tools: list | None = None
 
     async def list_models(self):
         return [ModelInfo(id="fake:3b", parameter_size="3B")]
 
-    async def stream_chat(self, model, messages):
+    async def stream_chat(self, model, messages, tools=None):
         self.last_messages = messages
+        self.last_tools = tools
         if self.fail_code:
             raise LLMError(self.fail_code)
         for c in self.chunks:
-            yield c
+            # Plain strings stay readable in the tests that only care about
+            # prose; anything else is already a StreamEvent.
+            yield TextDelta(c) if isinstance(c, str) else c
 
 
 class StallingBackend(FakeBackend):
     """Emits one chunk then hangs, so a generation stays genuinely in flight
     until something cancels it."""
 
-    async def stream_chat(self, model, messages):
+    async def stream_chat(self, model, messages, tools=None):
         self.last_messages = messages
-        yield "partial"
+        self.last_tools = tools
+        yield TextDelta("partial")
         await asyncio.sleep(3600)
 
 
 @pytest.fixture
 def make_client(tmp_path):
-    def _make(backend=None):
+    def _make(backend=None, registry=None):
         state = AppState(
             token=TOKEN,
             store=Store(db.connect(":memory:")),
@@ -60,10 +72,26 @@ def make_client(tmp_path):
                 config_path=tmp_path / "c.toml",
                 data_dir=tmp_path,
             ),
+            registry=registry,
         )
         return TestClient(create_app(state)), state
 
     return _make
+
+
+@pytest.fixture
+def curated(monkeypatch):
+    """Treat the fake model as catalog-approved for tools.
+
+    Without this the capability gate correctly refuses to offer tools to an
+    unvetted model, which is its whole job — see test_tools_are_withheld_from
+    _an_uncurated_model for the other side of it."""
+    from jarvis_backend.llm import catalog
+
+    monkeypatch.setattr(catalog, "tool_calling_ids", lambda: frozenset({"fake:3b"}))
+    monkeypatch.setattr(
+        "jarvis_backend.llm.capabilities.tool_calling_ids", lambda: frozenset({"fake:3b"})
+    )
 
 
 @contextmanager
@@ -182,6 +210,63 @@ def test_models_list(make_client):
         assert msg["type"] == "models"
         assert msg["default"] == "fake:3b"
         assert msg["models"][0]["id"] == "fake:3b"
+
+
+def _tool_registry():
+    from jarvis_backend.security.permissions import SAFE
+    from jarvis_backend.tools.registry import Registry
+
+    class AllowAll:
+        async def check(self, name, risk, arguments):
+            from jarvis_backend.security.permissions import Decision
+
+            return Decision.allow()
+
+    r = Registry(AllowAll())
+    r.register(lambda: "Tuesday 21 July", risk=SAFE, name="get_datetime", description="d")
+    return r
+
+
+def test_tool_span_reaches_the_client(make_client, curated):
+    """The UI must see tool activity as it happens, or a tool turn is just an
+    unexplained pause."""
+    backend = FakeBackend(chunks=[ToolCall("c1", "get_datetime", {}), TextDelta("It's Tuesday.")])
+    client, _ = make_client(backend, registry=_tool_registry())
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "what day is it?"})
+        assert ws.receive_json()["type"] == "chat.start"
+        types = []
+        span = None
+        while (m := ws.receive_json())["type"] != "chat.done":
+            types.append(m["type"])
+            if m["type"] == "tool.span":
+                span = m
+        assert span is not None, types
+        assert span["name"] == "get_datetime"
+        assert span["ok"] is True
+        assert span["content"] == "Tuesday 21 July"
+
+
+def test_tools_are_offered_to_a_curated_model(make_client, curated):
+    backend = FakeBackend(chunks=[TextDelta("hi")])
+    client, _ = make_client(backend, registry=_tool_registry())
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "hi"})
+        _drain_chat(ws)
+    assert backend.last_tools is not None
+    assert backend.last_tools[0]["function"]["name"] == "get_datetime"
+
+
+def test_tools_are_withheld_from_an_uncurated_model(make_client):
+    """The capability gate, end to end over the wire. `fake:3b` is not in the
+    catalog, so it never sees a tool schema — which is what stops a model
+    measured at 22% restraint from answering arithmetic with a shell command."""
+    backend = FakeBackend(chunks=[TextDelta("hi")])
+    client, _ = make_client(backend, registry=_tool_registry())
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "hi"})
+        _drain_chat(ws)
+    assert backend.last_tools is None
 
 
 def test_models_list_carries_tool_support(make_client):

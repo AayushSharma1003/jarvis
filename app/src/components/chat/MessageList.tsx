@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { UiMessage } from "../../state/conversation";
+import { ToolSpan } from "./ToolSpan";
 
 interface Props {
   messages: UiMessage[];
@@ -11,6 +12,7 @@ interface Props {
 
 function Bubble({ role, content }: { role: UiMessage["role"]; content: string }) {
   const user = role === "user";
+  if (!content) return null;
   return (
     <div className={`flex ${user ? "justify-end" : "justify-start"}`}>
       <div
@@ -44,9 +46,13 @@ export function MessageList({ messages, streamingText, subtitle }: Props) {
 
   return (
     <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-      {messages.map((m) => (
-        <Bubble key={m.id} role={m.role} content={m.content} />
-      ))}
+      {messages.map((m) =>
+        m.role === "tool" && m.tool ? (
+          <ToolSpan key={m.id} span={m.tool} />
+        ) : (
+          <Bubble key={m.id} role={m.role} content={m.content} />
+        ),
+      )}
       {streamingText !== null && (
         <Bubble role="assistant" content={streamingText || "…"} />
       )}

@@ -3,11 +3,40 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
-from .base import ChatBackend, ChatMessage, LLMError, ModelInfo
+from .base import ChatBackend, ChatMessage, LLMError, ModelInfo, StreamEvent, TextDelta, ToolCall
+
+
+def _parse_tool_call(raw: dict[str, Any]) -> ToolCall | None:
+    """One wire tool_call → ToolCall, or None if it is unusable.
+
+    Ollama nests the useful parts under "function" and supplies its own call
+    id (0.32.1 emits e.g. "call_68km2vlk"); we mint one when it doesn't, since
+    the id is what correlates a result back to its request. `arguments` has
+    been observed as a JSON *string* on some runtimes and an object on others,
+    so both are accepted. A call without a name is dropped rather than
+    invented: a nameless request cannot be routed to a tool, and guessing is
+    exactly the sort of thing the permission engine exists to prevent.
+    """
+    fn = raw.get("function") or {}
+    name = fn.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = None
+    if not isinstance(args, dict):
+        args = {}
+    call_id = raw.get("id") or fn.get("id") or f"call_{uuid.uuid4().hex[:12]}"
+    return ToolCall(id=str(call_id), name=name, arguments=args)
 
 
 class OllamaBackend(ChatBackend):
@@ -66,14 +95,37 @@ class OllamaBackend(ChatBackend):
             )
         return models
 
+    @staticmethod
+    def _wire(m: ChatMessage) -> dict[str, Any]:
+        """One ChatMessage in Ollama's wire shape.
+
+        Tool results go back as {"role":"tool","name":...,"content":...} and an
+        assistant turn that requested tools carries them under "tool_calls" —
+        both verified against 0.32.1 in tests/manual/probe_tool_calling.py,
+        where the model correctly grounded its answer in the returned result.
+        """
+        out: dict[str, Any] = {"role": m.role, "content": m.content}
+        if m.tool_calls:
+            out["tool_calls"] = [
+                {"function": {"name": c.name, "arguments": c.arguments}} for c in m.tool_calls
+            ]
+        if m.tool_name:
+            out["name"] = m.tool_name
+        return out
+
     async def stream_chat(
-        self, model: str, messages: list[ChatMessage]
-    ) -> AsyncIterator[str]:
-        payload = {
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        payload: dict[str, Any] = {
             "model": model,
             "stream": True,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [self._wire(m) for m in messages],
         }
+        if tools:
+            payload["tools"] = tools
         try:
             async with self._client.stream(
                 "POST", f"{self.base_url}/api/chat", json=payload
@@ -92,9 +144,13 @@ class OllamaBackend(ChatBackend):
                         raise LLMError("LLM_STREAM_ERROR", f"bad NDJSON line: {line[:200]}") from e
                     if chunk.get("error"):
                         raise LLMError("LLM_STREAM_ERROR", chunk["error"])
-                    delta = (chunk.get("message") or {}).get("content", "")
+                    message = chunk.get("message") or {}
+                    delta = message.get("content", "")
                     if delta:
-                        yield delta
+                        yield TextDelta(delta)
+                    for call in message.get("tool_calls") or []:
+                        if parsed := _parse_tool_call(call):
+                            yield parsed
                     if chunk.get("done"):
                         return
         except httpx.ConnectError as e:

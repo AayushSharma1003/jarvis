@@ -3,7 +3,7 @@
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
                  conversation.history, ping, voice.start, voice.stop, wake.set
 Server → client: ready, chat.start, chat.delta, chat.done, models,
-                 conversations, history, error, pong,
+                 conversations, history, error, pong, tool.span,
                  voice.state, stt.text, voice.level, wake.status, wake.detected
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
@@ -43,6 +43,25 @@ def chat_done(conversation_id: str, turn_id: str, interrupted: bool = False) -> 
         "conversation_id": conversation_id,
         "turn_id": turn_id,
         "interrupted": interrupted,
+    }
+
+
+def tool_span(span: Any) -> dict[str, Any]:
+    """One tool call and its outcome, sent as it happens so the transcript can
+    show activity rather than an unexplained pause.
+
+    `content` is deliberately included: the user is entitled to see what the
+    assistant was actually told, especially once tainted content can steer it.
+    `code` is machine-readable — the frontend owns the wording.
+    """
+    return {
+        "type": "tool.span",
+        "call_id": span.call_id,
+        "name": span.name,
+        "arguments": span.arguments,
+        "content": span.content,
+        "ok": span.ok,
+        "code": span.code,
     }
 
 
