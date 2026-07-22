@@ -166,7 +166,7 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
 ## Phase plan (sequencing, not deadlines)
 
 1. ✅ **Walking skeleton** — DONE.
-2. ✅ **Voice loop** — DONE (pending a live mic test by the user). Mic button/⌘M
+2. ✅ **Voice loop** — DONE and live-verified. Mic button/⌘M
    → backend capture → Silero endpointing → whisper (Metal) at endpoint (NOT
    streaming STT — measured unnecessary at 140ms/utterance) → LLM (voice-mode
    prompt: short openers) → clause-chunked Kokoro fp32 → playback w/ barge-in
@@ -178,7 +178,8 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    Silicon; CoreML EP fragments the graph (don't); waiting for a full first
    sentence blew the budget (3.92s) before clause/word-cap chunking.
    NSMicrophoneUsageDescription lives in app/src-tauri/Info.plist.
-3. **Always-on + feel** — IN PROGRESS. ✅ **M3.1 wake word DONE** (2026-07-18):
+3. ✅ **Always-on + feel** — DONE (2026-07-22; there is no M3.4, the numbering
+   skipped it). ✅ **M3.1 wake word DONE** (2026-07-18):
    always-on "Hey Jarvis" at **2.4% idle CPU** (budget <3%), persistent UI
    toggle (state.toml), wake-word barge-in (interrupts playback instantly),
    verified acoustically E2E (speaker→mic: wake → question → spoken reply →
@@ -228,8 +229,10 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    no longer bumps `updated_at` (`set_title(..., touch=False)`), so the
    sidebar keeps last-*activity* order. **First-turn clipping fixed** — see
    gotcha 11 and "First voice turn" below. 108 backend tests.
-4. **Agency + security** — permission engine + taint + sandbox, tools ship WITH
-   their security layer, extension loader + approval gate.
+4. **Agency + security** — ⬅ **NEXT, and the largest phase.** Permission engine
+   + taint + sandbox, tools ship WITH their security layer, extension loader +
+   approval gate. Shipping a half-built permission engine is worse than not
+   shipping: cut the tool list before cutting the security layer.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -325,7 +328,7 @@ heavy use. Delete is a privacy/control feature, not a space-pressure one.
 **Still Phase 5:** branch navigation (the sibling/tree UI). `Store.siblings()`
 exists and is tested; it is deliberately not surfaced yet.
 
-## Publishing / GitHub (as of 2026-07-21)
+## Publishing / GitHub (as of 2026-07-22)
 
 The repo is going public so the user can show it as portfolio work — that is an
 explicit goal now, and it raises the bar on README/docs quality.
@@ -339,20 +342,18 @@ explicit goal now, and it raises the bar on README/docs quality.
   correctly covers node_modules/, target/, .venv/, `*.onnx`/`*.bin`, `.env`,
   `.claude/`. Only the *working tree* was scanned — historical commits were
   not audited (`git log --all --diff-filter=A --name-only` if paranoid).
-- **MISSING: README.md and LICENSE.** For a portfolio repo the README *is* the
-  artifact — the landing page is what a recruiter/engineer actually reads.
-  Material worth surfacing that the code doesn't advertise: 2.4% idle CPU
-  always-on wake on 8GB, 1.17–1.41s end-of-speech→first-audio, vendored ONNX
-  wake chain (avoids scipy/sklearn in the bundle), taint-tracking security
-  model, immutable branching-ready message tree, 99 tests + 3-OS CI.
-  A LICENSE (MIT or Apache-2.0) is also needed — "community-friendliness" is
-  on the standing-authorization ladder and an unlicensed public repo is not
-  legally open source. **User was offered this and has not yet answered.**
+- ✅ **README + LICENSE landed** (commit 7f6c754): portfolio README,
+  Apache-2.0 LICENSE, third-party NOTICE. Test/feature counts inside the
+  README drift as milestones land — re-check them before the push.
 - Commit history is fine (conventional prefixes + milestone tags); the
   auto-commit mislabelling only affected the earliest Phase-1 commit. Do NOT
   offer to rewrite history.
 
 ## Immediate next action
+
+**Phases 1-3 are complete (3 of 6).** Next is Phase 4, agency + security —
+the largest phase in the plan, and the one where a half-built permission
+engine is worse than none. Do not start it until the user says so.
 
 **Phase 3 M3.1 + M3.2 shipped and live-verified by the user** (2026-07-19):
 text chat, voice loop, "Hey Jarvis" always-on, and the sphere all work in the
