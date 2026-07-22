@@ -397,10 +397,13 @@ exists and is tested; it is deliberately not surfaced yet.
 The repo is going public so the user can show it as portfolio work — that is an
 explicit goal now, and it raises the bar on README/docs quality.
 
-- **Remote exists, nothing pushed yet:** `gh repo create jarvis --public
-  --source=. --remote=origin` ran on 2026-07-21 →
-  `https://github.com/AayushSharma1003/jarvis`, remote `origin` wired. The
-  landing page is still empty; `git push -u origin main` has NOT been run.
+- ✅ **Pushed 2026-07-22.** `gh repo create jarvis --public --source=. --remote=origin`
+  ran 2026-07-21 → https://github.com/AayushSharma1003/jarvis; `git push -u origin
+  main` landed on 2026-07-22 through `302c714` (M4.1). Sanity check any time:
+  `git status -sb` must show `## main...origin/main` with no `[ahead N]`.
+  **Gotcha for future commit blocks:** the environment auto-commits the working
+  tree before the block runs, so `git commit` finds nothing, exits non-zero, and
+  an `&&`-chained `git push` never fires. Chain push blocks with `;` not `&&`.
 - **Pre-push safety scan is DONE and clean** (working tree): no secrets, no
   `*.sqlite`/`.env`/`*.pem`, no file >1MB, no model weights. `.gitignore`
   correctly covers node_modules/, target/, .venv/, `*.onnx`/`*.bin`, `.env`,
@@ -461,10 +464,11 @@ The confabulation fix also landed: prompts.py now declares "no tools yet" —
 llama3.2:3b declines play-music/set-timer/open-app baits instead of claiming
 them. 99 backend tests, ruff + tsc clean.
 
-**User should eyeball when convenient** (not automatable from a headless
-session): sidebar + orb rendering in WKWebView, a literal ⌘M keypress, and
-"Hey Jarvis" after the app has sat hidden for an hour (the suspension fix's
-soak test — the real check on gotcha 8; if it fails, the fix didn't take).
+**Live-verified by the user 2026-07-22** in the real Tauri app: sidebar, orb,
+the green ready dot, and a literal ⌘M keypress all work. **Still needs eyes:**
+"Hey Jarvis" after the app has sat hidden for an hour (the real check on gotcha
+8 — if it fails, the suspension fix didn't take), and the M4.1 tool span
+rendering in WKWebView (verified in a browser-hosted build, not the real webview).
 
 **M3.3 landed 2026-07-22** (readiness gate, RAM tiering, rename ordering,
 first-turn clipping). Verified in a browser-hosted build against a real
@@ -486,8 +490,10 @@ hang it off.
 
 **Still open:**
 1. Whether the gate should also appear for *warnings* (today: failures only).
-2. Sidebar/orb in WKWebView, a literal ⌘M keypress, the hour-long background
-   wake soak — all need the user's eyes.
+2. The hour-long background wake soak, and the tool span in WKWebView.
+3. The voice path *with tools* has never been heard acoustically — it shares
+   `run_exchange` and passes with the `VoiceIO` fake, but no spoken tool turn
+   has actually happened.
 
 ## First voice turn (fixed 2026-07-22) — what it actually was
 
