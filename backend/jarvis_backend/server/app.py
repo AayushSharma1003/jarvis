@@ -18,11 +18,11 @@ from .. import __version__
 from ..agent.loop import run_exchange
 from ..config import Config
 from ..llm.base import ChatBackend, LLMError
-from ..llm.tiering import pick_model
+from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
 from ..storage.conversations import StorageError, Store
 from ..wake.detector import WakeError
 from ..wake.service import WakeService
-from . import protocol
+from . import protocol, readiness
 from .auth import origin_allowed, token_valid
 from .voice import VoiceIO, run_voice_exchange
 
@@ -243,16 +243,31 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             default = ""
             with contextlib.suppress(LLMError):
                 default = pick_model(models, state.config.default_model)
+            # The RAM tier travels with the list so the picker can explain
+            # itself: which model was auto-chosen, and which ones this machine
+            # would struggle with. Numbers only — the copy lives in i18n.
+            budget = tier_budget_b()
             await send(
                 {
                     "type": "models",
                     "default": default,
+                    "source": "configured" if state.config.default_model else "auto",
+                    "tier": {"ram_gb": round(ram_gb(), 1), "budget_b": budget},
                     "models": [
-                        {"id": m.id, "parameter_size": m.parameter_size, "size_bytes": m.size_bytes}
+                        {
+                            "id": m.id,
+                            "parameter_size": m.parameter_size,
+                            "size_bytes": m.size_bytes,
+                            "params_b": (p := params_b(m)),
+                            "over_budget": p is not None and p > budget,
+                        }
                         for m in models
                     ],
                 }
             )
+
+        elif mtype == "system.readiness":
+            await send(await readiness.payload(state))
 
         elif mtype == "conversations.list":
             await send(_conversations_payload(state))
@@ -263,7 +278,9 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             if not isinstance(title, str) or not title.strip():
                 await send(protocol.error("BAD_MESSAGE", "title required"))
                 return
-            state.store.set_title(cid, title.strip()[:TITLE_MAX_CHARS])
+            # touch=False: the sidebar sorts by last activity, and a rename is
+            # not activity — see Store.set_title.
+            state.store.set_title(cid, title.strip()[:TITLE_MAX_CHARS], touch=False)
             await _broadcast_conversations(state)
 
         elif mtype == "conversation.delete":

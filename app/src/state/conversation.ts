@@ -21,6 +21,8 @@ import type {
   ConversationSummary,
   HistoryTurn,
   ModelEntry,
+  RamTier,
+  ReadinessCheck,
   ServerMessage,
   VoiceState,
 } from "../lib/types";
@@ -53,6 +55,10 @@ export interface ConversationState {
   errorCode: string | null;
   models: ModelEntry[];
   currentModel: string;
+  modelSource: "configured" | "auto";
+  tier: RamTier | null; // what this machine can run; null until models arrive
+  readiness: ReadinessCheck[] | null; // null = not checked yet
+  ready: boolean; // false only once a check has actually failed
   conversations: ConversationSummary[];
   conversationId: string | null; // the conversation on screen; null = new chat
   threads: Record<string, Thread>;
@@ -70,6 +76,7 @@ export interface ConversationState {
   toggleVoice: () => void;
   setWakeEnabled: (enabled: boolean) => void;
   setModel: (model: string) => void;
+  recheckReadiness: () => void;
   newChat: () => void;
   switchTo: (conversationId: string) => void;
   rename: (conversationId: string, title: string) => void;
@@ -132,6 +139,10 @@ export const useConversation = create<ConversationState>((set, get) => ({
   errorCode: null,
   models: [],
   currentModel: "",
+  modelSource: "auto",
+  tier: null,
+  readiness: null,
+  ready: true, // optimistic: never flash the gate before we've asked
   conversations: [],
   conversationId: null,
   threads: {},
@@ -157,8 +168,12 @@ export const useConversation = create<ConversationState>((set, get) => ({
         (status) => {
           set({ status });
           if (status === "ready") {
+            // A fresh connection doesn't inherit the old one's failure — an
+            // "Ollama unreachable" banner must not outlive starting Ollama.
+            set({ errorCode: null });
             socket?.send({ type: "models.list" });
             socket?.send({ type: "conversations.list" });
+            socket?.send({ type: "system.readiness" });
           }
         },
       );
@@ -215,6 +230,13 @@ export const useConversation = create<ConversationState>((set, get) => ({
   },
 
   setModel: (model: string) => set({ currentModel: model }),
+
+  // Re-runs the gate after the user has gone and fixed something (started
+  // Ollama, pulled a model, fetched the voice assets) without restarting.
+  recheckReadiness: () => {
+    socket?.send({ type: "system.readiness" });
+    socket?.send({ type: "models.list" });
+  },
 
   newChat: () => {
     // Don't wipe the unsaved thread if it's mid-generation — its chat.start is
@@ -327,8 +349,13 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
     case "models":
       set({
         models: msg.models,
+        tier: msg.tier,
+        modelSource: msg.source,
         currentModel: get().currentModel || msg.default,
       });
+      break;
+    case "readiness":
+      set({ readiness: msg.checks, ready: msg.ready });
       break;
     case "chat.start": {
       const { streamKey, conversationId } = get();

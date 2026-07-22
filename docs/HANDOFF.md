@@ -137,6 +137,15 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     which passed `if not text` and became a real LLM turn.
     `join_speech_segments()` in stt/transcriber.py drops segments that are
     entirely bracketed annotations → such turns end as no_speech.
+11. **Kokoro's load silently starves the microphone.** Loading the Kokoro
+    onnxruntime session + its first synthesis takes ~2.2 s and saturates every
+    core; while it runs, PortAudio delivers only **33-38%** of input chunks —
+    and sets **no overflow flag**, so nothing warns you. Measured by bisecting
+    the load with a chunk counter (whisper and Silero are ~100%, innocent).
+    That is why `RealVoiceIO.load()` loads only VAD + whisper and TTS loads
+    lazily on first `synthesize()`, when the mic is already closed. Do not
+    "tidy" Kokoro back into load(). Symptom if you do: the first voice turn
+    transcribes as the tail of what was said.
 
 ## Repo map
 
@@ -207,7 +216,18 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    No streamKey leak; what looked like one was three real bugs, all fixed
    (gotchas 8-10). Still needs human eyes: sidebar/orb rendering in WKWebView,
    the literal ⌘M keypress, and a long-idle background wake soak.
-   Remaining: RAM tiering surfacing, onboarding v1 (M3.3).
+   ✅ **M3.3 readiness + tiering DONE** (2026-07-22): `system.readiness` (new
+   `server/readiness.py`) reports codes-only gate checks — llm, model, voice
+   models, wake models, microphone — with `ready` false only on a *fail*, so
+   missing voice models warn without blocking text chat. The frontend gate
+   (`components/onboarding/Readiness.tsx`) replaces the message list, keeps
+   the sidebar reachable, and offers copyable fix commands + a "Check again".
+   `models.list` now carries the RAM tier, per-model `params_b` and
+   `over_budget`, so the picker reads "llama3.2:3b · 3.2B" / "qwen2.5:7b ·
+   7.6B — tight on 8GB" and the empty chat explains the auto-choice. Rename
+   no longer bumps `updated_at` (`set_title(..., touch=False)`), so the
+   sidebar keeps last-*activity* order. **First-turn clipping fixed** — see
+   gotcha 11 and "First voice turn" below. 108 backend tests.
 4. **Agency + security** — permission engine + taint + sandbox, tools ship WITH
    their security layer, extension loader + approval gate.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
@@ -293,9 +313,11 @@ conversation is either wholly present or wholly gone.
    must not tear down an unrelated in-flight stream — hence
    `MANAGEMENT_ERROR_CODES`.
 
-**Known judgement call:** rename bumps `updated_at` (existing `set_title`
-behaviour), so a renamed chat jumps to the top of the list. Claude/ChatGPT sort
-by last *activity*. Left as-is rather than changing an existing store contract.
+**Settled in M3.3:** rename used to bump `updated_at`, so a renamed chat jumped
+to the top. `set_title` now takes `touch: bool = True` and the WS handler passes
+`touch=False` — renaming isn't activity, sending a message is. The default
+keeps the old store contract for every other caller. Regression test:
+`test_rename_keeps_last_activity_order`.
 
 Storage cost is a **non-issue**: text only, ~1KB/turn — tens of MB/year under
 heavy use. Delete is a privacy/control feature, not a space-pressure one.
@@ -358,21 +380,56 @@ session): sidebar + orb rendering in WKWebView, a literal ⌘M keypress, and
 "Hey Jarvis" after the app has sat hidden for an hour (the suspension fix's
 soak test — the real check on gotcha 8; if it fails, the fix didn't take).
 
-**Three open decisions, all waiting on the user:**
-1. **README + LICENSE before the push?** (recommended — see Publishing above)
-2. **M3.3 scope.** Proposal on the table: (a) RAM tier surfaced in the model
-   picker with "why this model" copy, (b) first-run onboarding = mic permission
-   walkthrough + model download progress + wake opt-in + one guided voice turn,
-   (c) two small fixes below. Nothing else — onboarding sprawls easily.
-3. **Rename ordering** — preserve last-*activity* sort instead of bumping
-   `updated_at`? Recommended yes; small, batch into M3.3.
+**M3.3 landed 2026-07-22** (readiness gate, RAM tiering, rename ordering,
+first-turn clipping). Verified in a browser-hosted build against a real
+backend on a scratch data dir: the gate rendering with Ollama pointed at a
+dead port, the warning rows with copyable commands, "Check again", recovery
+to a healthy backend, the tier-annotated picker (`qwen2.5:7b · 7.6B — tight
+on 8GB` is real, from this machine), and a full text turn. The first-turn fix
+was verified acoustically over the speakers and the real mic.
 
-**Known bug found 2026-07-19, NOT fixed (deliberate):** the *first* voice turn
-after app start clips the opening words — `voice.start` runs `io.load()`
-(~2.5s: whisper Metal shaders + Kokoro graph) BEFORE opening the mic, so speech
-during the load is lost. Pre-existing since Phase 2, not an M3.5 regression.
-Fix options: open capture first and buffer during load, or warm engines at boot
-(costs RAM on the 8GB target). Fold into M3.3.
+**Onboarding scope was deliberately cut** to the readiness gate. The original
+proposal had a mic-permission walkthrough, model-download progress, a wake
+opt-in step and a guided first voice turn. Reasons for cutting, in order:
+a download UI needs a cancel/resume path and a progress protocol (that belongs
+with the installer, not the chat window); macOS cannot be *asked* whether mic
+permission was granted without AVFoundation, so a "walkthrough" would be
+theatre (the gate says where the setting lives instead); and the wake toggle
+plus ⌘M are already one click each. Reopen it when there's an installer to
+hang it off.
+
+**Still open:**
+1. Whether the gate should also appear for *warnings* (today: failures only).
+2. Sidebar/orb in WKWebView, a literal ⌘M keypress, the hour-long background
+   wake soak — all need the user's eyes.
+
+## First voice turn (fixed 2026-07-22) — what it actually was
+
+The *first* voice turn after app start used to clip the opening words. The
+obvious half of the cause was ordering: `voice.start` ran `io.load()` before
+opening the mic. Fixing only that did **not** fix the bug — it just moved the
+loss, because the load itself starves CoreAudio (gotcha 11). Both halves were
+needed:
+
+1. **Open the mic first, buffer the load window.** `MicCapture`'s queue is now
+   8 s deep and `backlog()` drains it in one go; `run_voice_exchange` feeds the
+   backlog to the endpointer before live iteration. If nothing was said, it
+   calls `endpointer.reset()` so a silent load doesn't spend the no-speech
+   timeout the user hasn't seen yet.
+2. **Keep Kokoro out of the load** (gotcha 11), which shrank the pre-listening
+   window from ~2.6 s to ~0.45 s as a bonus.
+
+Measured acoustically (speaker → real mic, `say` starting the instant
+`voice.start` was sent, counting "one … ten"):
+
+| | before | after |
+|---|---|---|
+| "listening" reached | 2.6-4.1 s | **0.5 s** cold, 0.11 s warm |
+| transcript | `6-7-8-9-10`, `5678910` | `1 2 3 4 5 6 7 8 9 10` (3/3 cold runs) |
+
+Not warming engines at boot was deliberate: it would have cost ~500 MB resident
+on the 8 GB target for users who never speak, and it does not fix push-to-talk
+one second after launch.
 
 Then Phase 4 (agency + security) — the largest phase, and the one where
 shipping a half-built permission engine is worse than not shipping. Cut the

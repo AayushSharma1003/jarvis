@@ -102,12 +102,21 @@ class Store:
         ).fetchall()
         return [ConversationSummary(**r) for r in rows]
 
-    def set_title(self, conversation_id: str, title: str) -> None:
+    def set_title(self, conversation_id: str, title: str, *, touch: bool = True) -> None:
+        """Rename a conversation.
+
+        `touch=False` leaves `updated_at` alone. The sidebar sorts by it, so a
+        rename would otherwise jump the conversation to the top — but renaming
+        is not activity, and every other assistant sorts by last *activity*.
+        Appending turns still bumps it, which is the behaviour that matters.
+        """
+        sql = "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?"
+        params: tuple = (title, _now(), conversation_id)
+        if not touch:
+            sql = "UPDATE conversations SET title = ? WHERE id = ?"
+            params = (title, conversation_id)
         with self._conn:
-            cur = self._conn.execute(
-                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                (title, _now(), conversation_id),
-            )
+            cur = self._conn.execute(sql, params)
         if cur.rowcount == 0:
             raise StorageError("CONVERSATION_NOT_FOUND", conversation_id)
 

@@ -4,6 +4,13 @@ The PortAudio callback runs on a native thread; chunks cross into asyncio via
 call_soon_threadsafe onto a bounded queue. If the consumer stalls, we drop the
 oldest audio rather than block the audio thread (a glitch beats a deadlock).
 
+MicCapture's queue is deliberately deep. A voice exchange opens the mic
+*before* loading the engines so the opening words are never lost, and nothing
+consumes the stream until the load finishes — so the queue is the pre-roll
+buffer for that window. `backlog()` drains it in one go before live iteration
+begins. The wake worker's SyncMicCapture keeps the small queue: it drains
+continuously, and if it ever stalls, dropping old audio is what we want.
+
 macOS note: the first stream open triggers the system microphone-permission
 prompt (attributed to the app bundle in production, the terminal in dev). A
 denied permission yields *silence*, not an error — the endpointer's no-speech
@@ -21,13 +28,16 @@ from ..stt.vad import CHUNK_SAMPLES, SAMPLE_RATE
 from .devices import AudioError
 
 QUEUE_CHUNKS = 64  # ~2 s of buffered audio before we start dropping
+# Deep enough to cover a cold engine load (~2.5 s) with room to spare, so no
+# word spoken during it is dropped. 8 s ≈ 512 KB.
+PREBUFFER_CHUNKS = 8 * SAMPLE_RATE // CHUNK_SAMPLES
 
 
 class MicCapture:
-    """One capture stream. start() → chunks() → close(). Not reusable."""
+    """One capture stream. start() → backlog() → chunks() → close()."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=QUEUE_CHUNKS)
+        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=PREBUFFER_CHUNKS)
         self._loop = asyncio.get_running_loop()
         self._stream = None
 
@@ -57,6 +67,19 @@ class MicCapture:
         if self._queue.full():
             self._queue.get_nowait()  # drop oldest
         self._queue.put_nowait(chunk)
+
+    def backlog(self) -> list[np.ndarray]:
+        """Everything captured but not yet consumed, oldest first.
+
+        Call once before iterating chunks(): it is the audio spoken while the
+        engines were still loading. Draining it separately (rather than letting
+        chunks() serve it) gives the caller the boundary between "history" and
+        "live", which the endpointer needs — see run_voice_exchange.
+        """
+        out: list[np.ndarray] = []
+        while not self._queue.empty():
+            out.append(self._queue.get_nowait())
+        return out
 
     async def chunks(self) -> AsyncIterator[np.ndarray]:
         while True:

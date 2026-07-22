@@ -231,6 +231,29 @@ def test_rename_broadcasts_new_title(make_client):
         assert msg["conversations"][0]["title"] == "Groceries"
 
 
+def test_rename_keeps_last_activity_order(make_client):
+    """A rename must not jump a conversation to the top of the sidebar.
+
+    The list sorts by updated_at, which is what "last activity" means here.
+    Renaming an old chat is not activity; sending a message to it is.
+    """
+    client, _ = make_client()
+    with connect(client) as ws:
+        older = _start_conversation(ws, "first chat")
+        newer = _start_conversation(ws, "second chat")
+
+        ws.send_json({"type": "conversation.rename", "conversation_id": older, "title": "Renamed"})
+        msg = ws.receive_json()
+        assert [c["id"] for c in msg["conversations"]] == [newer, older]
+        assert msg["conversations"][1]["title"] == "Renamed"
+
+        # ...but a real turn in it does move it to the top.
+        ws.send_json({"type": "chat.send", "content": "more", "conversation_id": older})
+        _drain_chat(ws)
+        ws.send_json({"type": "conversations.list"})
+        assert [c["id"] for c in ws.receive_json()["conversations"]] == [older, newer]
+
+
 def test_rename_requires_a_title(make_client):
     client, _ = make_client()
     with connect(client) as ws:

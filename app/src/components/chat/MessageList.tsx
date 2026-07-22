@@ -5,6 +5,8 @@ import type { UiMessage } from "../../state/conversation";
 interface Props {
   messages: UiMessage[];
   streamingText: string | null;
+  /** Shown under the empty-chat line — currently "why this model". */
+  subtitle?: string;
 }
 
 function Bubble({ role, content }: { role: UiMessage["role"]; content: string }) {
@@ -23,7 +25,7 @@ function Bubble({ role, content }: { role: UiMessage["role"]; content: string })
   );
 }
 
-export function MessageList({ messages, streamingText }: Props) {
+export function MessageList({ messages, streamingText, subtitle }: Props) {
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -33,8 +35,9 @@ export function MessageList({ messages, streamingText }: Props) {
 
   if (messages.length === 0 && streamingText === null) {
     return (
-      <div className="flex flex-1 items-center justify-center px-8 text-center text-sm text-zinc-500">
-        {t("chat.empty")}
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center">
+        <p className="text-sm text-zinc-500">{t("chat.empty")}</p>
+        {subtitle && <p className="max-w-sm text-xs text-zinc-600">{subtitle}</p>}
       </div>
     );
   }

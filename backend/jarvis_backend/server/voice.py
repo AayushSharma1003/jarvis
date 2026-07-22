@@ -22,7 +22,7 @@ import numpy as np
 from ..agent.loop import run_exchange
 from ..audio.devices import AudioError
 from ..llm.tiering import pick_model
-from ..stt.endpointing import Endpointer, Event
+from ..stt.endpointing import Endpointer, Event, State
 from ..stt.transcriber import STTError
 from ..tts.base import TTSError
 from ..tts.chunker import SentenceChunker
@@ -41,6 +41,7 @@ class VoiceUnavailable(Exception):
 
 class Capture(Protocol):
     def start(self) -> None: ...
+    def backlog(self) -> list[np.ndarray]: ...  # audio buffered before we started reading
     def chunks(self) -> AsyncIterator[np.ndarray]: ...
     def close(self) -> None: ...
 
@@ -77,24 +78,49 @@ class RealVoiceIO:
 
     def __init__(self) -> None:
         self._loaded = False
+        self._tts: Any = None
         self._player: Any = None
 
     def load(self) -> None:
+        """Load what *listening* needs. Blocking, idempotent.
+
+        Kokoro is deliberately not loaded here. Its onnxruntime session setup
+        plus first synthesis takes ~2.2 s and saturates every core, and that
+        starves the CoreAudio callback thread badly enough to lose two thirds
+        of the microphone input — measured: 33-38% of chunks delivered while
+        it runs, with no PortAudio overflow flag to warn you. Since the mic is
+        open from the start of the exchange (so the opening words survive),
+        that lost audio is exactly what the user is saying. TTS loads on the
+        first synthesize() instead, once the mic is closed and the CPU is ours.
+        Whisper and Silero are fine to load here: measured at ~100% and no
+        louder than one utterance of decoding.
+        """
         if self._loaded:
             return
         from ..assets import path_for
         from ..stt.transcriber import Transcriber
         from ..stt.vad import SileroVAD
-        from ..tts.kokoro import KokoroTTS
 
+        # Fail on a missing voice *now* rather than three states later, without
+        # paying for the session: the old load() surfaced this at the same point.
+        for asset in ("kokoro-model", "kokoro-voices"):
+            if not path_for(asset).is_file():
+                raise TTSError("TTS_MODEL_MISSING", str(path_for(asset)))
         self._vad = SileroVAD(path_for("silero-vad"))
         self._stt = Transcriber(path_for("whisper-base"))
-        self._tts = KokoroTTS(path_for("kokoro-model"), path_for("kokoro-voices"))
-        # Warm both engines: first whisper run compiles Metal shaders, first
-        # Kokoro run pays onnxruntime graph setup. Do it here, not mid-utterance.
+        # First whisper run compiles Metal shaders — do it here, not mid-utterance.
         self._stt.transcribe(np.zeros(16_000, dtype=np.float32))
-        self._tts.synthesize("Ready.")
         self._loaded = True
+
+    def _ensure_tts(self) -> Any:
+        if self._tts is None:
+            from ..assets import path_for
+            from ..tts.kokoro import KokoroTTS
+
+            tts = KokoroTTS(path_for("kokoro-model"), path_for("kokoro-voices"))
+            tts.synthesize("Ready.")  # onnxruntime graph setup, off the mic's back
+            self._tts = tts
+        return self._tts
 
     def open_capture(self) -> Capture:
         from ..audio.capture import MicCapture
@@ -117,7 +143,7 @@ class RealVoiceIO:
         return self._stt.transcribe(audio)
 
     def synthesize(self, text: str) -> tuple[np.ndarray, int]:
-        return self._tts.synthesize(text)
+        return self._ensure_tts().synthesize(text)
 
     def make_endpointer(self) -> Endpointer:
         return Endpointer()
@@ -146,7 +172,22 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
             wake_held = False
 
     try:
+        # The mic opens BEFORE the engines load. The first exchange after app
+        # start pays ~0.45 s in io.load() (whisper's Metal shaders) and people
+        # start talking the instant they trigger a turn, so loading first meant
+        # the opening words were never captured at all. MicCapture's queue
+        # holds that window; backlog() collects it below. See RealVoiceIO.load
+        # for why TTS is not part of it.
         await send(protocol.voice_state("loading"))
+        if wake is not None:
+            wake.suppress()
+            wake_held = True
+        try:
+            capture = io.open_capture()
+        except AudioError as e:
+            await send(protocol.error(e.code, e.detail))
+            await send(protocol.voice_state("idle", reason="error"))
+            return
         try:
             await asyncio.to_thread(io.load)
             player = io.player()
@@ -163,31 +204,35 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
 
         # ---- listen ----
         await send(protocol.voice_state("listening"))
-        if wake is not None:
-            wake.suppress()
-            wake_held = True
-        try:
-            capture = io.open_capture()
-        except AudioError as e:
-            await send(protocol.error(e.code, e.detail))
-            await send(protocol.voice_state("idle", reason="error"))
-            return
         endpointer = io.make_endpointer()
         utterance = None
         last_level = 0.0
-        async for chunk in capture.chunks():
-            event = endpointer.feed(chunk, io.vad_prob(chunk))
-            now = time.monotonic()
-            if now - last_level >= LEVEL_INTERVAL_S:
-                last_level = now
-                rms = float(np.sqrt(np.mean(chunk * chunk)))
-                await send(protocol.voice_level(min(1.0, rms * _LISTEN_LEVEL_GAIN)))
-            if event == Event.TIMEOUT:
-                await send(protocol.voice_state("idle", reason="no_speech"))
-                return
-            if event == Event.SPEECH_END:
+        # Replay the load window first. No level updates for it: it is history,
+        # and the sphere would get a burst of stale RMS in a single tick.
+        backlog = capture.backlog()
+        for chunk in backlog:
+            if endpointer.feed(chunk, io.vad_prob(chunk)) == Event.SPEECH_END:
                 utterance = endpointer.utterance()
                 break
+        if utterance is None and endpointer.state is not State.SPEECH:
+            # Only room tone while the engines loaded (or a no-speech timeout
+            # on it). Start the wait from when the user could see "listening"
+            # rather than spending the budget on audio nobody was prompted for.
+            endpointer.reset()
+        if utterance is None:  # the whole utterance can land inside the load window
+            async for chunk in capture.chunks():
+                event = endpointer.feed(chunk, io.vad_prob(chunk))
+                now = time.monotonic()
+                if now - last_level >= LEVEL_INTERVAL_S:
+                    last_level = now
+                    rms = float(np.sqrt(np.mean(chunk * chunk)))
+                    await send(protocol.voice_level(min(1.0, rms * _LISTEN_LEVEL_GAIN)))
+                if event == Event.TIMEOUT:
+                    await send(protocol.voice_state("idle", reason="no_speech"))
+                    return
+                if event == Event.SPEECH_END:
+                    utterance = endpointer.utterance()
+                    break
         capture.close()
         capture = None
         _release_wake()

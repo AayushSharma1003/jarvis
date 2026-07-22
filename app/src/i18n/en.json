@@ -32,7 +32,29 @@
     "busyElsewhere": "Jarvis is still replying in another chat."
   },
   "model": {
-    "label": "Model"
+    "label": "Model",
+    "option": "{{id}} · {{params}}B",
+    "optionOverBudget": "{{id}} · {{params}}B — tight on {{ram}}GB",
+    "whyAuto": "Auto-selected for this machine: {{ram}}GB RAM, so models up to about {{budget}}B parameters. Larger ones will run, slowly.",
+    "whyConfigured": "Set in your config file. This machine has {{ram}}GB RAM, comfortable up to about {{budget}}B parameters."
+  },
+  "readiness": {
+    "title": "Jarvis isn't ready yet",
+    "recheck": "Check again",
+    "code": {
+      "OLLAMA_UNREACHABLE": "Can't reach Ollama — it needs to be installed and running before Jarvis can think.",
+      "BACKEND_UNAVAILABLE": "The language-model backend didn't answer.",
+      "NO_MODELS": "Ollama is running but has no models. Pull one to get started.",
+      "MODEL_NOT_FOUND": "The model in your config ({{model}}) isn't installed.",
+      "VOICE_MODELS_MISSING": "Voice models aren't downloaded, so speech is off. Typing still works.",
+      "WAKE_MODELS_MISSING": "Wake-word models aren't downloaded, so “Hey Jarvis” is off.",
+      "NO_INPUT_DEVICE": "No microphone found. Typing still works.",
+      "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works."
+    },
+    "run": "Run this:",
+    "copy": "Copy",
+    "copied": "Copied",
+    "micPermissionNote": "If Jarvis never hears you, check System Settings → Privacy & Security → Microphone."
   },
   "wake": {
     "label": "“Hey Jarvis”",

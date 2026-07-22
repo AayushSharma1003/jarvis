@@ -9,6 +9,22 @@ export interface ModelEntry {
   id: string;
   parameter_size: string | null;
   size_bytes: number | null;
+  params_b: number | null; // parsed parameter count, billions
+  over_budget: boolean; // too big for this machine's RAM tier
+}
+
+/** What this machine can comfortably run — drives the picker's "why". */
+export interface RamTier {
+  ram_gb: number;
+  budget_b: number;
+}
+
+/** One row of the first-run gate. `code` is absent when status is "ok". */
+export interface ReadinessCheck {
+  id: "llm" | "model" | "voice_models" | "wake_models" | "microphone";
+  status: "ok" | "warn" | "fail";
+  code?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface ConversationSummary {
@@ -52,7 +68,14 @@ export type ServerMessage =
       turn_id: string;
       interrupted: boolean;
     }
-  | { type: "models"; default: string; models: ModelEntry[] }
+  | {
+      type: "models";
+      default: string;
+      source: "configured" | "auto";
+      tier: RamTier;
+      models: ModelEntry[];
+    }
+  | { type: "readiness"; ready: boolean; checks: ReadinessCheck[] }
   | { type: "conversations"; conversations: ConversationSummary[] }
   | { type: "history"; conversation_id: string; turns: HistoryTurn[] }
   | { type: "wake.status"; enabled: boolean; available: boolean }
@@ -73,6 +96,7 @@ export type ClientMessage =
   | { type: "voice.start"; conversation_id?: string; model?: string }
   | { type: "voice.stop" }
   | { type: "models.list" }
+  | { type: "system.readiness" }
   | { type: "conversations.list" }
   | { type: "conversation.history"; conversation_id: string }
   | { type: "conversation.rename"; conversation_id: string; title: string }

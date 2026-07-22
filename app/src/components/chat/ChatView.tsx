@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { isBusyElsewhere, useConversation } from "../../state/conversation";
+import { Readiness } from "../onboarding/Readiness";
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
 import { ConversationList } from "./ConversationList";
@@ -91,6 +92,24 @@ export function ChatView() {
   // bounce off a BUSY error.
   const busyElsewhere = isBusyElsewhere(s);
 
+  // Nothing can be asked until the backend reports a usable setup. Warnings
+  // (no voice models, no mic) don't gate anything: typing still works.
+  const blocked = s.readiness !== null && !s.ready;
+
+  // "Why this model" — the RAM tier the backend picked against.
+  const tierNote = s.tier
+    ? t(s.modelSource === "configured" ? "model.whyConfigured" : "model.whyAuto", {
+        ram: s.tier.ram_gb,
+        budget: s.tier.budget_b,
+      })
+    : undefined;
+
+  const modelLabel = (m: (typeof s.models)[number]) => {
+    if (m.params_b === null) return m.id;
+    const key = m.over_budget ? "model.optionOverBudget" : "model.option";
+    return t(key, { id: m.id, params: m.params_b, ram: s.tier?.ram_gb ?? "?" });
+  };
+
   const afterSelect = () => {
     if (narrow) setSidebarOpen(false);
   };
@@ -168,11 +187,12 @@ export function ChatView() {
               onChange={(e) => s.setModel(e.target.value)}
               disabled={s.models.length === 0}
               aria-label={t("model.label")}
-              className="max-w-44 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
+              title={tierNote}
+              className="max-w-56 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
             >
               {s.models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.id}
+                  {modelLabel(m)}
                 </option>
               ))}
             </select>
@@ -188,9 +208,19 @@ export function ChatView() {
           style={{ height: orbCentered ? 300 : 0 }}
         />
 
-        <MessageList messages={s.messages} streamingText={s.streamingText} />
+        {blocked ? (
+          <Readiness checks={s.readiness ?? []} onRecheck={s.recheckReadiness} />
+        ) : (
+          <MessageList
+            messages={s.messages}
+            streamingText={s.streamingText}
+            subtitle={tierNote}
+          />
+        )}
 
-        {s.errorCode && (
+        {/* While the gate is up it already explains the problem in full; the
+            error banner would just say "can't reach Ollama" a second time. */}
+        {s.errorCode && !blocked && (
           <div className="mx-4 mb-2 rounded-lg bg-red-950/60 px-3 py-2 text-xs text-red-300">
             {errorText(s.errorCode)}
           </div>
@@ -207,7 +237,7 @@ export function ChatView() {
         )}
 
         <Composer
-          disabled={s.status !== "ready" || busyElsewhere}
+          disabled={s.status !== "ready" || busyElsewhere || blocked}
           streaming={s.streamingText !== null}
           voiceState={s.voiceState}
           onSend={s.send}

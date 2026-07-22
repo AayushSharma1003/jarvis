@@ -37,7 +37,7 @@ def tier_budget_b(total_ram_gb: float | None = None) -> float:
     return _MAX_BUDGET_B
 
 
-def _params_b(model: ModelInfo) -> float | None:
+def params_b(model: ModelInfo) -> float | None:
     """Parameter count in billions, from runtime metadata or the model name."""
     for source in (model.parameter_size, model.id):
         if not source:
@@ -62,9 +62,9 @@ def pick_model(
         raise LLMError("MODEL_NOT_FOUND", configured)
 
     budget = tier_budget_b(total_ram_gb)
-    in_budget = [(p, m.id) for m in models if (p := _params_b(m)) is not None and p <= budget]
+    in_budget = [(p, m.id) for m in models if (p := params_b(m)) is not None and p <= budget]
     if in_budget:
         return max(in_budget)[1]
     # Everything is over budget (or unparseable): smallest known, else first.
-    known = [(p, m.id) for m in models if (p := _params_b(m)) is not None]
+    known = [(p, m.id) for m in models if (p := params_b(m)) is not None]
     return min(known)[1] if known else models[0].id

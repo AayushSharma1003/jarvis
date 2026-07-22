@@ -28,10 +28,19 @@ SPEECH = np.full(CHUNK_SAMPLES, 0.8, dtype=np.float32)
 class FakeCapture:
     def __init__(self, script: list[np.ndarray]):
         self._script = script
+        self._backlog: list[np.ndarray] = []
         self.closed = False
 
     def start(self) -> None:
         pass
+
+    def feed_backlog(self, chunks: list[np.ndarray]) -> None:
+        """Audio that arrived while nothing was reading the stream."""
+        self._backlog.extend(chunks)
+
+    def backlog(self) -> list[np.ndarray]:
+        out, self._backlog = self._backlog, []
+        return out
 
     async def chunks(self):
         for c in self._script:
@@ -173,6 +182,53 @@ def test_full_voice_exchange(make_voice_client):
     turns = state.store.path(done["conversation_id"])
     assert turns[-1].messages[0].content == "hello jarvis"
     assert turns[-1].messages[1].content == "This is the reply. It has two parts."
+
+
+class SlowLoadVoiceIO(FakeVoiceIO):
+    """The engines take real time to load and the user talks straight through it.
+
+    load() is where the first exchange after app start spends ~2.5 s (whisper's
+    Metal shaders, Kokoro's graph). Anything said in that window only survives
+    if the mic was opened *before* the load, so the audio is sitting in the
+    buffer by the time we start reading.
+    """
+
+    def __init__(self, spoken_during_load: list[np.ndarray], script, **kw):
+        super().__init__(script, **kw)
+        self._spoken_during_load = spoken_during_load
+
+    def load(self) -> None:
+        assert self.captures, "the mic must be open before the engines load"
+        self.captures[-1].feed_backlog(self._spoken_during_load)
+
+
+def test_speech_during_engine_load_is_not_clipped(make_voice_client):
+    # The whole utterance lands while load() runs; the live stream is silence.
+    io = SlowLoadVoiceIO(utterance_script(), [SILENCE] * 200, max_wait_ms=640)
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        msgs = drain_voice(ws)
+
+    assert [m for m in msgs if m["type"] == "error"] == []
+    assert [m for m in msgs if m["type"] == "stt.text"] == [
+        {"type": "stt.text", "text": "hello jarvis"}
+    ]
+
+
+def test_silent_load_does_not_spend_the_no_speech_budget(make_voice_client):
+    # Room tone during a long load must not count against the listening window:
+    # the user hasn't been shown "listening" yet. 100 chunks of backlog is well
+    # past max_wait, so a naive replay would time out before they could speak.
+    io = SlowLoadVoiceIO([SILENCE] * 100, utterance_script(), max_wait_ms=640)
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        msgs = drain_voice(ws)
+
+    assert [m for m in msgs if m["type"] == "stt.text"] == [
+        {"type": "stt.text", "text": "hello jarvis"}
+    ]
 
 
 def test_no_speech_times_out(make_voice_client):
