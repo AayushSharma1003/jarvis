@@ -146,6 +146,18 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     lazily on first `synthesize()`, when the mic is already closed. Do not
     "tidy" Kokoro back into load(). Symptom if you do: the first voice turn
     transcribes as the tail of what was said.
+12. **Reasoning models are a latency trap, and `think: false` does not save
+    you.** qwen3:4b has the best tool discipline of anything measured (33/33)
+    and is still unusable as a default: its thinking pass runs entirely before
+    the first *content* token — **20s** on the 8GB M2 against a ~0.65s LLM-leg
+    budget. Setting `"think": false` does not disable the reasoning, it stops
+    Ollama **separating** it: the monologue then arrives in `message.content`
+    with raw `<think>` tags, so it renders in the transcript and gets **spoken
+    aloud** (`tts/chunker.py`'s markdown stripper doesn't touch `<think>`).
+    Consequence: merely *installing* qwen3:4b used to make it the 8GB default
+    (4.0B beats 3.2B inside the budget). `pick_model` now skips catalog-tagged
+    `reasoning` models when choosing FOR the user; a configured model still
+    wins. Measurements: docs/tool-calling.md.
 
 ## Repo map
 
@@ -229,10 +241,33 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    no longer bumps `updated_at` (`set_title(..., touch=False)`), so the
    sidebar keeps last-*activity* order. **First-turn clipping fixed** — see
    gotcha 11 and "First voice turn" below. 108 backend tests.
-4. **Agency + security** — ⬅ **NEXT, and the largest phase.** Permission engine
-   + taint + sandbox, tools ship WITH their security layer, extension loader +
-   approval gate. Shipping a half-built permission engine is worse than not
-   shipping: cut the tool list before cutting the security layer.
+4. **Agency + security** — ⬅ **IN PROGRESS, and the largest phase.** Permission
+   engine + taint + sandbox, tools ship WITH their security layer. Shipping a
+   half-built permission engine is worse than not shipping: cut the tool list
+   before cutting the security layer. **Scope agreed 2026-07-22:** M4.0 model
+   capability gate → M4.1 tool plumbing (zero side effects) → M4.2 permission
+   engine + confirmation → M4.3 filesystem sandbox + file tools + taint →
+   M4.4 shell → M4.5 web_fetch + SSRF. Ships **files, shell, web_fetch**.
+   **Cut:** extension loader + approval gate → phase 5; clipboard → phase 5;
+   `web_search` → phase 5 or never (no search API on a zero budget, and
+   scraping is an unrequested network dependency); `take_screenshot` → cut
+   from v1 (every model in the 8GB budget is text-only).
+   ✅ **M4.0 model capability gate DONE** (2026-07-22): tool use is gated on
+   the model, because *"can this model decline a tool?"* turned out to be a
+   security property. Measured with `backend/tests/manual/probe_tool_calling.py`
+   (11 cases, routing vs restraint, malformed-leak and warm-TTFT gates):
+   llama3.2:3b restraint **22%** — it answers "what's 17 times 4?" by running
+   `echo 17*4` in a shell, and "what does idempotent mean?" with a web fetch,
+   which under the taint rules would escalate every later call. Prompt
+   hardening made it **worse** (76%→67%). qwen2.5:3b is better (77%) and still
+   fails. qwen3:4b is perfect (33/33) and disqualified on latency (gotcha 12).
+   **No model in the 8GB ≤4.5B budget clears both gates, so the 8GB tier ships
+   tools opt-in.** New: `llm/capabilities.py` (three states — `on` curated +
+   measured, `optin` capable-but-unvetted → OFF by default, `unsupported` →
+   hard no) and `llm/catalog.py`, the first ever reader of
+   `catalog/models.toml`. Fail-safe throughout: a missing catalog disables
+   tools rather than enabling them. `models.list` carries `tools` per model;
+   `jarvis doctor` has a `tool use` line. 130 backend tests.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -351,9 +386,24 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 are complete (3 of 6).** Next is Phase 4, agency + security —
-the largest phase in the plan, and the one where a half-built permission
-engine is worse than none. Do not start it until the user says so.
+**Phases 1-3 complete; Phase 4 started.** M4.0 (model capability gate) is done
+and green. **Next is M4.1: tool plumbing with zero side effects** — structured
+`stream_chat` events, the multi-round agent loop, `tools/registry.py`, tool
+spans in the message tree (`role='tool'` is already allowed by schema.sql, no
+migration needed), the malformed-call suppressor, and transcript rendering.
+It ships exactly one side-effect-free tool (`get_datetime`) to prove the loop.
+Deferred *into* M4.1 from M4.0 on purpose: the readiness row and the model
+picker's tool copy — user-facing warnings about tools should not ship before
+any tool exists.
+
+**Two open items from M4.0:**
+1. `qwen3:8b` sits in the catalog as the 16GB default with **no**
+   `tool-calling` tag, because nobody has measured it — it needs a probe run
+   on the RTX A6000 box. Expect the same hybrid-reasoning latency trap as
+   qwen3:4b (gotcha 12).
+2. The 8GB tier ships tools **opt-in**. If a user opts in, qwen2.5:3b is the
+   model to point them at (77% restraint, 0 malformed, 0.22s TTFT) — never
+   llama3.2:3b (22%, 4 malformed).
 
 **Phase 3 M3.1 + M3.2 shipped and live-verified by the user** (2026-07-19):
 text chat, voice loop, "Hey Jarvis" always-on, and the sphere all work in the

@@ -184,6 +184,23 @@ def test_models_list(make_client):
         assert msg["models"][0]["id"] == "fake:3b"
 
 
+def test_models_list_carries_tool_support(make_client):
+    """Every model entry states whether it may be handed a tool schema.
+
+    FakeBackend inherits ChatBackend.model_capabilities, which returns None
+    ("can't say"), and fake:3b isn't in the catalog — so it lands on the
+    fail-safe default. A model must never arrive without this field: the
+    frontend would then have to guess, and guessing wrong means offering tools
+    to a model measured at 22% restraint (see docs/tool-calling.md).
+    """
+    client, _ = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "models.list"})
+        msg = ws.receive_json()
+        assert all("tools" in m for m in msg["models"])
+        assert msg["models"][0]["tools"] == "optin"
+
+
 def test_history_roundtrip(make_client):
     client, _ = make_client()
     with connect(client) as ws:

@@ -17,6 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from .. import __version__
 from ..agent.loop import run_exchange
 from ..config import Config
+from ..llm import capabilities
 from ..llm.base import ChatBackend, LLMError
 from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
 from ..storage.conversations import StorageError, Store
@@ -247,6 +248,10 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             # itself: which model was auto-chosen, and which ones this machine
             # would struggle with. Numbers only — the copy lives in i18n.
             budget = tier_budget_b()
+            # Tool state per model: "on" (curated + measured), "optin"
+            # (capable template, unvetted — off by default) or "unsupported".
+            # See llm/capabilities.py for why unvetted defaults to off.
+            tools = await capabilities.resolve(state.backend, models)
             await send(
                 {
                     "type": "models",
@@ -260,6 +265,7 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
                             "size_bytes": m.size_bytes,
                             "params_b": (p := params_b(m)),
                             "over_budget": p is not None and p > budget,
+                            "tools": tools[m.id],
                         }
                         for m in models
                     ],

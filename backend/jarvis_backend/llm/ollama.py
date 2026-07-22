@@ -20,9 +20,33 @@ class OllamaBackend(ChatBackend):
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(connect=5.0, read=None, write=10.0, pool=5.0)
         )
+        # /api/show results per model id. A model's capabilities cannot change
+        # without a re-pull, and models.list runs on every UI connect, so this
+        # keeps the tool-capability gate off the critical path.
+        self._capabilities: dict[str, list[str]] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def model_capabilities(self, model: str) -> list[str] | None:
+        """Ollama reports e.g. ["completion", "tools"] (verified on 0.32.1)."""
+        if model in self._capabilities:
+            return self._capabilities[model]
+        try:
+            resp = await self._client.post(
+                f"{self.base_url}/api/show", json={"model": model}, timeout=30.0
+            )
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities")
+        except (httpx.HTTPError, ValueError):
+            # Unknown, not unsupported — and deliberately NOT cached, so a
+            # transient blip doesn't pin a model into the wrong state for the
+            # life of the process.
+            return None
+        if not isinstance(caps, list):
+            return None
+        self._capabilities[model] = caps
+        return caps
 
     async def list_models(self) -> list[ModelInfo]:
         try:

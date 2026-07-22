@@ -43,3 +43,14 @@ class ChatBackend(ABC):
     def stream_chat(
         self, model: str, messages: list[ChatMessage]
     ) -> AsyncIterator[str]: ...
+
+    async def model_capabilities(self, model: str) -> list[str] | None:
+        """Runtime-reported capabilities, e.g. ["completion", "tools"].
+
+        `None` means this backend cannot say — an older runtime, a cloud
+        adapter with no such endpoint, or a failed probe. Callers must read
+        that as "unknown", NEVER as "unsupported"; llm/capabilities.classify
+        is the one place that distinction is made. Not abstract, so an adapter
+        that can't answer simply inherits the honest default.
+        """
+        return None

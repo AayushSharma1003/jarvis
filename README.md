@@ -10,11 +10,11 @@ and no network traffic you didn't ask for.
 
 <!-- DEMO GIF: record "Hey Jarvis" → question → spoken answer, sphere reacting. -->
 
-> **Status: pre-alpha, phase 3 of 6.** The voice loop is real and works end to end on an
-> 8 GB M2: wake word, endpointing, transcription, local LLM, streaming speech, barge-in,
-> and an audio-reactive sphere. Tool use and the permission engine — the parts that make
-> this an *assistant* rather than a voice chatbot — are designed in detail and not yet
-> built. [What works today](#what-works-today) is honest about the line.
+> **Status: pre-alpha, 3 of 6 phases complete.** The voice loop is real and works end to
+> end on an 8 GB M2: wake word, endpointing, transcription, local LLM, streaming speech,
+> barge-in, and an audio-reactive sphere. Tool use and the permission engine — the parts
+> that make this an *assistant* rather than a voice chatbot — are designed in detail and
+> not yet built. [What works today](#what-works-today) is honest about the line.
 
 ---
 
@@ -31,7 +31,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **99 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. |
+| Backend test suite | **108 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. |
 
 Four decisions this project is actually about:
 
@@ -58,7 +58,7 @@ Four decisions this project is actually about:
 
 | | Status | |
 |---|---|---|
-| **Text chat** | ✅ working | Streaming, stop/interrupt, conversation sidebar (list / switch / rename / delete), model picker, reconnect with backoff, full i18n. |
+| **Text chat** | ✅ working | Streaming, stop/interrupt, conversation sidebar (list / switch / rename / delete), RAM-tier-aware model picker, a setup readiness gate, reconnect with backoff, full i18n. |
 | **Voice loop** | ✅ working | Hotkey or wake word → Silero VAD endpointing → whisper.cpp (Metal) → local LLM → clause-chunked Kokoro TTS → playback with barge-in. |
 | **"Hey Jarvis" always-on** | ✅ working | Vendored openWakeWord chain behind an adaptive energy gate + VAD, so the expensive embedding model sleeps in silence. Wake word also interrupts playback. |
 | **The sphere** | ✅ working | Audio-reactive orb, four states, docks into the header while you chat and glides to centre stage when you speak. WebGL with a 2D fallback. |
@@ -194,8 +194,15 @@ The things that cost real time, kept so nobody rediscovers them:
 - **Tauri 2 needs an explicit capabilities file** or the webview gets zero IPC permissions
   and `event.listen` fails silently — which presents as "the backend didn't start".
 
+- **A model that can't decline a tool is a security problem, not a quality one.**
+  llama3.2:3b answers "what's 17 times 4?" by running `echo 17*4` in a shell, 3 times
+  out of 3. Every spurious call is a permission dialog the user didn't provoke, and
+  confirmation fatigue is the documented way permission engines fail. Tool use is
+  therefore gated on the model, and unvetted models default to off —
+  [with measurements](docs/tool-calling.md).
+
 More: [architecture.md](docs/architecture.md) · [latency.md](docs/latency.md) ·
-[docs/design/sphere.md](docs/design/sphere.md)
+[tool-calling.md](docs/tool-calling.md) · [docs/design/sphere.md](docs/design/sphere.md)
 
 ---
 
@@ -220,8 +227,8 @@ problem later instead of a refactor.
 
 1. ✅ **Walking skeleton** — Tauri shell + sidecar + streaming text chat + SQLite tree.
 2. ✅ **Voice loop** — VAD, whisper.cpp, Kokoro, barge-in, inside the latency budget.
-3. 🚧 **Always-on + feel** — wake word ✅, sphere ✅, chat management ✅, onboarding + model tiering in progress.
-4. **Agency + security** — permission engine, taint tracking, sandbox; tools ship *with* their security layer.
+3. ✅ **Always-on + feel** — wake word, sphere, chat management, readiness gate, RAM tiering.
+4. 🚧 **Agency + security** — permission engine, taint tracking, sandbox; tools ship *with* their security layer. Ships files, shell and `web_fetch`. The [model capability gate](docs/tool-calling.md) is done: tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property.
 5. **Extended scope** — branch navigation UI, `jarvis install <url>`, model catalog UI, custom wake words.
 6. **Ship** — installers, docs, a tagged unsigned release with checksums.
 

@@ -3,19 +3,45 @@
 # (zero automatic phone-home, per docs/security-model.md §6).
 # Onboarding and the Settings model browser render from this file.
 #
-# tags: tool-calling | chat | vision | small | coding
+# tags: tool-calling | chat | vision | small | coding | reasoning
 # tier: min RAM in GB for a good experience
+#
+# The `tool-calling` tag is LOAD-BEARING, not descriptive: it is what lets
+# llm/capabilities.py hand a model a tool schema by default. Only add it to a
+# model somebody has actually run through
+# backend/tests/manual/probe_tool_calling.py with a PASS. Measurements and the
+# reasoning behind the bar live in docs/tool-calling.md.
+#
+# The `reasoning` tag means the model emits a thinking pass before its answer.
+# Those models can be excellent at tools and still be unusable as a default:
+# qwen3:4b scores 33/33 on tool discipline and takes 20 s to its first content
+# token on an 8 GB M2, against a voice budget of ~0.65 s for the whole LLM leg.
+# Never make a `reasoning` model a tier default without measuring warm TTFT.
 
 [[models]]
 id = "qwen3:4b"
 tier = 8
-tags = ["chat", "tool-calling", "small"]
-note = "Default on 8GB machines"
+tags = ["chat", "tool-calling", "small", "reasoning"]
+note = """Best measured tool discipline of anything in the 8GB budget (33/33 —
+routing 15/15, restraint 18/18, zero malformed). NOT a default: reasoning puts
+its first content token ~20s away, which the voice path cannot pay. Choose it
+deliberately for text-mode tool work."""
 
 [[models]]
 id = "qwen3:8b"
 tier = 16
-tags = ["chat", "tool-calling"]
-note = "Default on 16GB machines"
+tags = ["chat", "reasoning"]
+note = """UNVERIFIED — no `tool-calling` tag until somebody runs the probe on a
+16GB+ machine. Same hybrid-reasoning family as qwen3:4b, so expect both the
+strong tool discipline and the first-token latency trap."""
+
+[[models]]
+id = "qwen2.5:3b"
+tier = 8
+tags = ["chat", "small"]
+note = """Fast (0.22s warm TTFT) and the best-behaved small model measured, but
+restraint is 77% against a 95% bar — it answers "what's 17 times 4?" by running
+a shell command 5/5. No tool-calling tag. Still the better 3B if a user opts
+into tools anyway: llama3.2:3b scores 22%."""
 
 # ... curated list grows here; every entry needs a rationale in `note`.

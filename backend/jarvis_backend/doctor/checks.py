@@ -114,9 +114,26 @@ def _ollama(base_url: str, configured_model: str) -> list[Check]:
     ]
     checks = [Check("ollama", OK, f"v{version} at {base_url}, {len(models)} model(s) installed")]
     try:
+        from ..llm.catalog import reasoning_ids
+
         chosen = pick_model(models, configured_model)
         source = "configured" if configured_model else "auto-selected for RAM tier"
-        checks.append(Check("model", OK, f"{chosen} ({source})"))
+        # Auto-selection already skips reasoning models, so reaching this with
+        # one means the user asked for it explicitly — worth saying what it
+        # costs, because the symptom (voice hangs) looks like a bug.
+        if chosen in reasoning_ids():
+            checks.append(
+                Check(
+                    "model",
+                    WARN,
+                    f"{chosen} ({source}) — reasoning model: its thinking pass runs"
+                    " before the first token, so voice will feel broken"
+                    " (~20s measured on 8GB). See docs/tool-calling.md.",
+                )
+            )
+        else:
+            checks.append(Check("model", OK, f"{chosen} ({source})"))
+        checks.append(_tool_support(base_url, chosen))
     except LLMError as e:
         if e.code == "NO_MODELS":
             checks.append(
@@ -125,6 +142,37 @@ def _ollama(base_url: str, configured_model: str) -> list[Check]:
         else:
             checks.append(Check("model", FAIL, f"{e.code} {e.detail}"))
     return checks
+
+
+def _tool_support(base_url: str, model: str) -> Check:
+    """Whether this model may be handed a tool schema (llm/capabilities.py).
+
+    Reported by doctor rather than in the app UI on purpose: phase 4 is still
+    building the tool layer, so a warning inside the product would be about a
+    feature the user cannot reach yet. Developers picking a model need the
+    answer now — it is the difference between an assistant that can act and one
+    that manufactures permission dialogs for "what's 17 times 4?".
+    """
+    from ..llm.capabilities import ON, OPTIN, classify
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{base_url}/api/show", json={"model": model})
+            resp.raise_for_status()
+            caps = resp.json().get("capabilities")
+    except (httpx.HTTPError, ValueError):
+        caps = None
+    state = classify(model, caps if isinstance(caps, list) else None)
+    if state == ON:
+        return Check("tool use", OK, f"{model} is curated for tool calling")
+    if state == OPTIN:
+        return Check(
+            "tool use",
+            WARN,
+            f"{model} is not curated for tool calling — off by default;"
+            " see docs/tool-calling.md for measurements and alternatives",
+        )
+    return Check("tool use", WARN, f"{model} has no tool support in its chat template")
 
 
 def _voice_models() -> Check:

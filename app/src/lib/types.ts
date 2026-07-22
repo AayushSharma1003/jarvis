@@ -5,12 +5,20 @@ export interface BackendInfo {
   token: string;
 }
 
+/** May this model be handed a tool schema?
+ *  "on"          curated in catalog/models.toml and measured
+ *  "optin"       capable template, unvetted — off unless the user enables it
+ *  "unsupported" the chat template has no tool support at all
+ *  Backend reasoning: backend/jarvis_backend/llm/capabilities.py */
+export type ToolSupport = "on" | "optin" | "unsupported";
+
 export interface ModelEntry {
   id: string;
   parameter_size: string | null;
   size_bytes: number | null;
   params_b: number | null; // parsed parameter count, billions
   over_budget: boolean; // too big for this machine's RAM tier
+  tools: ToolSupport;
 }
 
 /** What this machine can comfortably run — drives the picker's "why". */
