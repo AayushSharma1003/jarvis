@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from ..llm.base import ChatBackend, ChatMessage, LLMError, TextDelta, ToolCall
+from ..security.permissions import ToolContext
 from ..storage.conversations import Message, Store
 from ..tools.registry import Registry, ToolResult
 from .prompts import system_prompt
@@ -105,6 +106,12 @@ async def run_exchange(
     tools = registry.schemas() if registry is not None and len(registry) else None
     tool_names = {t["function"]["name"] for t in tools} if tools else set()
 
+    # One context for the whole exchange, so its deny-memo spans every round: a
+    # model refused a tool in round 1 must not get a second dialog for the same
+    # call in round 2. It dies with the exchange, which is exactly the lifetime
+    # "for this request" should mean.
+    context = ToolContext(conversation_id=conversation_id, voice=voice_mode)
+
     messages = [
         ChatMessage(
             "system",
@@ -175,7 +182,7 @@ async def run_exchange(
             messages.append(ChatMessage("assistant", text, tool_calls=tuple(calls)))
             for call in calls:
                 result: ToolResult = await registry.invoke(
-                    call.id, call.name, call.arguments
+                    call.id, call.name, call.arguments, context
                 )
                 span = ToolSpan(
                     call_id=call.id,

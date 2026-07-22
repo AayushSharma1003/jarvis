@@ -7,7 +7,12 @@ import pytest
 
 from jarvis_backend import assets
 from jarvis_backend.llm.base import LLMError, ModelInfo
-from tests.test_ws import FakeBackend, connect, make_client  # noqa: F401 - fixture
+from tests.test_ws import (  # noqa: F401 - fixtures
+    FakeBackend,
+    connect,
+    curated,
+    make_client,
+)
 
 
 class UnreachableBackend(FakeBackend):
@@ -109,3 +114,61 @@ def test_models_list_carries_the_ram_tier(make_client):  # noqa: F811
     assert by_id["huge:70b"]["params_b"] == 70.0
     assert by_id["huge:70b"]["over_budget"] is True
     assert msg["default"] == "fake:3b"
+
+
+# -- the tools row (deferred from M4.0, due with the permission engine) ------
+
+
+def _tools_row(client):
+    return _by_id(_ask(client))["tools"]
+
+
+def test_tools_row_is_ok_for_a_curated_model(make_client, curated):  # noqa: F811
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    row = _tools_row(client)
+    assert row["status"] == "ok"
+    assert row["data"]["model"] == "fake:3b"
+
+
+def test_tools_row_warns_for_an_unvetted_model(make_client):  # noqa: F811
+    """No `curated` fixture: fake:3b isn't in the catalog, so tools are off by
+    default and the gate should say why rather than leaving the user guessing
+    at a model that quietly can't do anything."""
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    row = _tools_row(client)
+    assert row["status"] == "warn"
+    assert row["code"] == "TOOLS_OPTIN"
+
+
+def test_tools_row_never_blocks_the_gate(make_client):  # noqa: F811
+    """Tools being off costs the user actions, not conversation — exactly the
+    reasoning that keeps missing voice models a warning."""
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    msg = _ask(client)
+    assert _by_id(msg)["tools"]["status"] == "warn"
+    assert msg["ready"] is True
+
+
+def test_tools_row_reports_a_hard_no_separately(make_client):  # noqa: F811
+    """A model whose template has no tool support cannot be opted into, so it
+    gets its own code — switching models is the only fix."""
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    class NoToolsBackend(FakeBackend):
+        async def model_capabilities(self, model):
+            return ["completion"]
+
+    client, _ = make_client(NoToolsBackend(), registry=default_registry(SafeOnlyGate()))
+    row = _tools_row(client)
+    assert row["status"] == "warn"
+    assert row["code"] == "TOOLS_UNSUPPORTED"

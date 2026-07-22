@@ -1,10 +1,12 @@
 """WebSocket message protocol. JSON objects with a `type` discriminator.
 
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
-                 conversation.history, ping, voice.start, voice.stop, wake.set
+                 conversation.history, ping, voice.start, voice.stop, wake.set,
+                 confirm.respond, voice.say
 Server → client: ready, chat.start, chat.delta, chat.done, models,
                  conversations, history, error, pong, tool.span,
-                 voice.state, stt.text, voice.level, wake.status, wake.detected
+                 voice.state, stt.text, voice.level, wake.status, wake.detected,
+                 confirm.request, confirm.close
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
 
@@ -63,6 +65,45 @@ def tool_span(span: Any) -> dict[str, Any]:
         "ok": span.ok,
         "code": span.code,
     }
+
+
+def confirm_request(
+    *,
+    confirm_id: str,
+    name: str,
+    risk: str,
+    arguments: dict[str, Any],
+    conversation_id: str = "",
+    voice: bool = False,
+) -> dict[str, Any]:
+    """Ask every open UI to confirm one tool call.
+
+    `id` is the correlation id the backend minted; only an answer naming it
+    counts, and only once (security/confirm.py). `risk` travels so the dialog
+    can withhold "allow for this session" on a dangerous tool — the backend
+    refuses to honour it there regardless, but the button shouldn't lie.
+    `voice` tells the UI a spoken turn is waiting, so it can ask the backend to
+    say so out loud; the wording is the frontend's, per the i18n rule.
+    """
+    return {
+        "type": "confirm.request",
+        "id": confirm_id,
+        "name": name,
+        "risk": risk,
+        "arguments": arguments,
+        "conversation_id": conversation_id,
+        "voice": voice,
+    }
+
+
+def confirm_close(confirm_id: str, reason: str) -> dict[str, Any]:
+    """Dismiss a dialog nobody needs answered any more.
+
+    Sent when the confirmation was answered (so the *other* windows close
+    theirs), timed out, or was cancelled with its generation. A dialog that
+    outlives its call is how users learn to click Allow without reading.
+    """
+    return {"type": "confirm.close", "id": confirm_id, "reason": reason}
 
 
 def voice_state(state: str, reason: str = "") -> dict[str, Any]:

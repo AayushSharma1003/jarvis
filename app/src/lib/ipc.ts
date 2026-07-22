@@ -91,6 +91,18 @@ export async function getBackendInfo(): Promise<BackendInfo> {
   });
 }
 
+/** Bring the window to the front. Best-effort and silent on failure.
+ *
+ *  Closing the window hides the app to the tray (lib.rs prevents the close), so
+ *  a confirmation raised by a wake-word turn would otherwise render into a
+ *  window nobody can see — and go unanswered until it times out into a deny. */
+export function showWindow(): void {
+  if (!inTauri()) return;
+  void import("@tauri-apps/api/core").then(({ invoke }) =>
+    invoke("show_window").catch((e) => debugLog(`ipc: show_window failed: ${String(e)}`)),
+  );
+}
+
 export function onBackendExited(handler: () => void): void {
   if (!inTauri()) return;
   void import("@tauri-apps/api/event").then(({ listen }) =>

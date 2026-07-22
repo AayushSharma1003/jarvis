@@ -172,6 +172,20 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     printed call and drops it, surfacing a failed span instead. It only fires
     when the JSON names a **registered** tool, so a user asking for JSON still
     gets their answer — without that guard any JSON reply would be at risk.
+14. **Dismiss the confirm dialog with an AWAITED send, not a background task.**
+    The instinct on `except asyncio.CancelledError` is to fire the dismissal as
+    an independent task, on the theory that awaiting inside a cancellation
+    handler will re-raise. It does not here — the cancellation has already been
+    delivered — and firing it loses the race: `chat.done` for the cancelled turn
+    goes out first and the dialog flickers on screen *after* the turn it belonged
+    to is gone. `run_voice_exchange` already awaits its final `voice.state` in
+    exactly this position, so the pattern was proven before this. Regression
+    test: `test_chat_stop_while_a_confirm_is_pending`.
+    **Related trap in the tests:** a delete-during-confirm test that asserts only
+    the *end state* passes with the cancel guard removed — the rows are gone
+    either way and the FK violation surfaces later, in a task nobody awaits. The
+    assertion that actually bites is **ordering**: `confirm.close` and
+    `chat.done` must appear before the `conversations` broadcast.
 
 ## Repo map
 
@@ -297,6 +311,28 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    `get_datetime`. `agent/toolfilter.py` suppresses tool calls the model
    *prints* as prose (gotcha 13). New `tool.span` WS message + a collapsed
    `ToolSpan` component. 172 backend tests.
+   ✅ **M4.2 permission engine + confirmation DONE** (2026-07-22): tools can
+   now ask. `security/confirm.py` is an async broker — backend-minted
+   correlation ids, broadcast to every window, first answer wins, single-use
+   ids, and **every** way of not getting an answer (no UI, send failed,
+   timeout, broker raised) ends in a deny. `PermissionGate` replaces
+   SafeOnlyGate (which stays as the no-broker fallback). "Allow for this
+   session" is keyed on **tool + exact arguments**, memory-only, and never
+   honoured for `dangerous` — enforced server-side, not by hiding the button.
+   A refusal is remembered for the rest of the exchange so a nagging model
+   can't manufacture a second dialog. **The dialog is an in-app React modal,
+   not a native OS one** — security-model.md §1 was amended with the reasoning
+   (short version: the webview is in the answer path either way, so native
+   bought nothing and cost the third button, Deny-default focus, Linux
+   portability and headless verification). Default focus is **Deny**, Escape
+   denies, focus is trapped. New WS messages: `confirm.request`,
+   `confirm.close`, `confirm.respond`, and **`voice.say`** — the frontend
+   sends the sentence to speak so the backend can voice "I need your OK" while
+   authoring no English (the i18n rule vs. backend-side TTS). Also landed: the
+   deferred M4.0 readiness `tools` row + picker copy, `[tools]
+   allow_dangerous` config, and a catch-all in `_generate`/`run_voice_exchange`
+   so an unexpected exception no longer strands the UI holding `streamKey`
+   forever. 217 backend tests.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -418,21 +454,25 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 complete; Phase 4 in progress.** M4.0 and M4.1 are done and green
-(172 backend tests). **Next is M4.2: the permission engine + confirmation** —
-and it is the schedule risk of the whole phase, because the confirm broker
-touches cancellation, the single generation slot, and multi-window state, which
-are the three places this codebase has already produced subtle bugs (gotchas
-8-9). Needed: `security/confirm.py` (async broker, correlation ids, timeout →
-deny, **no UI connected → deny**, `chat.stop` while a confirm is pending, first
-window to answer wins, a confirm racing `conversation.delete`), the real Gate
-replacing `SafeOnlyGate`, "allow for this session" held **in memory only**, a
-spoken "I need your OK — check the window" for voice mode, and the dialog with
-default focus on **Deny**.
+**Phases 1-3 complete; Phase 4 in progress.** M4.0, M4.1 and M4.2 are done and
+green (217 backend tests, 2 Rust). **Next is M4.3: the filesystem sandbox +
+file tools + taint.** The permission engine it needs now exists, so M4.3 is the
+first milestone that ships a tool with real side effects — `write_file` is the
+one that finally makes the dialog earn its keep in production rather than under
+`JARVIS_DEV_TOOLS`.
 
-Still deferred from M4.0, now due whenever the picker is next touched: the
-readiness row and the model picker's tool copy (`optin` models should say why
-tools are off).
+Two things M4.2 deliberately left for M4.3 to pick up:
+1. `ToolContext` (security/permissions.py) is where the taint fields go —
+   `tainted` and `taint_source`. It is already threaded from `run_exchange`
+   through `Registry.invoke` to the gate, so taint needs no new plumbing, and
+   §3's "the dialog says why" has a place to render from (ConfirmDialog has the
+   block for it).
+2. A session grant should be **invalidated by taint**: once untrusted content
+   enters, a previously-approved exact call must re-confirm. The broker's grant
+   check is one `if` at the top of `ConfirmBroker.request` — that is the hook.
+
+Still deferred from M4.0: nothing. The readiness `tools` row and the picker's
+tool copy landed with M4.2.
 
 **Two open items from M4.0:**
 1. `qwen3:8b` sits in the catalog as the 16GB default with **no**
@@ -490,10 +530,16 @@ hang it off.
 
 **Still open:**
 1. Whether the gate should also appear for *warnings* (today: failures only).
-2. The hour-long background wake soak, and the tool span in WKWebView.
-3. The voice path *with tools* has never been heard acoustically — it shares
-   `run_exchange` and passes with the `VoiceIO` fake, but no spoken tool turn
-   has actually happened.
+2. The hour-long background wake soak — still the only real test of gotcha 8.
+3. ✅ **CLOSED 2026-07-22.** The voice path with tools was heard acoustically
+   during M4.2: speaker → real mic → whisper → `echo` tool call → the dialog
+   (marked "from a spoken request") → **"I need your OK — check the window"
+   spoken aloud** → answered → tool ran → spoken reply → idle. The tool span
+   also rendered correctly in that run.
+4. **New:** the dialog has only been seen in a browser-hosted build, not the
+   real WKWebView, and `show_window` (the Rust command that reveals the window
+   when a confirm arrives while the app is hidden in the tray) has never been
+   exercised — there is no way to hide to the tray outside the real app.
 
 ## First voice turn (fixed 2026-07-22) — what it actually was
 

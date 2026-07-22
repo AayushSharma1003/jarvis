@@ -1,14 +1,30 @@
 mod sidecar;
 mod tray;
 
-use tauri::{Emitter, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+
+/// Reveal and focus the main window.
+///
+/// Closing the window only hides the app (the tray is the primary surface), so
+/// a permission dialog raised by a wake-word turn would render somewhere the
+/// user cannot see it and go unanswered until the confirmation times out into a
+/// deny. Called from the frontend on confirm.request.
+#[tauri::command]
+fn show_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
 
 pub fn run() {
     tauri::Builder::default()
         .manage(sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::backend_info,
-            sidecar::frontend_log
+            sidecar::frontend_log,
+            show_window
         ])
         .setup(|app| {
             tray::init(app)?;

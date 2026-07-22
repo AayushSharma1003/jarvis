@@ -61,7 +61,7 @@ class StallingBackend(FakeBackend):
 
 @pytest.fixture
 def make_client(tmp_path):
-    def _make(backend=None, registry=None):
+    def _make(backend=None, registry=None, confirm=None):
         state = AppState(
             token=TOKEN,
             store=Store(db.connect(":memory:")),
@@ -73,7 +73,10 @@ def make_client(tmp_path):
                 data_dir=tmp_path,
             ),
             registry=registry,
+            confirm=confirm,
         )
+        if confirm is not None:
+            confirm.bind(lambda: state.connections)
         return TestClient(create_app(state)), state
 
     return _make
@@ -217,7 +220,7 @@ def _tool_registry():
     from jarvis_backend.tools.registry import Registry
 
     class AllowAll:
-        async def check(self, name, risk, arguments):
+        async def check(self, name, risk, arguments, context):
             from jarvis_backend.security.permissions import Decision
 
             return Decision.allow()
@@ -439,3 +442,206 @@ def test_delete_leaves_other_conversations_alone(make_client):
         ws.send_json({"type": "conversation.delete", "conversation_id": drop})
         msg = ws.receive_json()
         assert [c["id"] for c in msg["conversations"]] == [keep]
+
+
+# -- confirmation over the wire (M4.2) --------------------------------------
+
+
+class ToolOnceBackend(FakeBackend):
+    """Asks for a tool on the first round, then answers in words.
+
+    A fixed chunk list re-requests the tool on every round, which would raise a
+    fresh dialog each time and make the message order untestable. This is also
+    what a working model actually does.
+    """
+
+    def __init__(self, call, reply="done"):
+        super().__init__()
+        self.call = call
+        self.reply = reply
+
+    async def stream_chat(self, model, messages, tools=None):
+        self.last_messages = messages
+        self.last_tools = tools
+        # "Have I already been given a result?" — true on later rounds of the
+        # same exchange, false again on the next turn. Counting calls instead
+        # would make a second turn silently stop asking for the tool.
+        answered = any(m.role == "tool" for m in messages)
+        if tools and not answered:
+            yield self.call
+        else:
+            yield TextDelta(self.reply)
+
+
+ECHO_CALL = ToolCall("c1", "echo", {"text": "hi"})
+
+
+def _confirming_client(make_client, *, timeout=5.0, risk=None, call=ECHO_CALL):
+    """A client whose one tool needs confirmation, wired to a real broker."""
+    from jarvis_backend.security.confirm import ConfirmBroker
+    from jarvis_backend.security.permissions import ASK, PermissionGate
+    from jarvis_backend.tools.registry import Registry
+
+    broker = ConfirmBroker(timeout=timeout)
+    registry = Registry(PermissionGate(broker))
+    registry.register(
+        lambda text: f"echoed {text}", risk=risk or ASK, name="echo", description="d"
+    )
+    client, state = make_client(ToolOnceBackend(call), registry=registry, confirm=broker)
+    return client, state, broker
+
+
+def _until(ws, *types):
+    """Drain until one of `types` arrives, returning (message, everything before)."""
+    seen = []
+    while (msg := ws.receive_json())["type"] not in types:
+        seen.append(msg)
+    return msg, seen
+
+
+def test_confirm_request_reaches_the_client_and_an_answer_runs_the_tool(make_client, curated):
+    client, _, _ = _confirming_client(make_client)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        req, _ = _until(ws, "confirm.request")
+        # Everything the dialog needs to describe the call truthfully.
+        assert req["name"] == "echo"
+        assert req["arguments"] == {"text": "hi"}
+        assert req["risk"] == "ask"
+        assert req["id"]
+
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "once"})
+        _, rest = _until(ws, "chat.done")
+        span = next(m for m in rest if m["type"] == "tool.span")
+        assert span["ok"] is True
+        assert span["content"] == "echoed hi"
+        assert any(m["type"] == "confirm.close" for m in rest)
+
+
+def test_a_denied_call_becomes_a_failed_span(make_client, curated):
+    """The user must be able to see that they refused something, and the model
+    must be told so it can say so instead of inventing a result."""
+    client, _, _ = _confirming_client(make_client)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        req, _ = _until(ws, "confirm.request")
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "deny"})
+        _, rest = _until(ws, "chat.done")
+        spans = [m for m in rest if m["type"] == "tool.span"]
+        assert len(spans) == 1
+        assert spans[0]["ok"] is False
+        assert spans[0]["code"] == "TOOL_DENIED"
+
+
+def test_a_forged_confirm_id_does_not_approve_anything(make_client, curated):
+    """There is no message a client can send that grants permission out of
+    nowhere: an answer only counts against an id the backend is waiting on."""
+    client, _, _ = _confirming_client(make_client, timeout=0.2)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        _until(ws, "confirm.request")
+        ws.send_json({"type": "confirm.respond", "id": "forged", "answer": "session"})
+        _, rest = _until(ws, "chat.done")
+        spans = [m for m in rest if m["type"] == "tool.span"]
+        assert spans[0]["code"] == "TOOL_CONFIRM_TIMEOUT"
+
+
+def test_chat_stop_while_a_confirm_is_pending(make_client, curated):
+    """The dialog must not outlive the call it was asking about."""
+    client, _, broker = _confirming_client(make_client, timeout=30.0)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        req, _ = _until(ws, "confirm.request")
+
+        ws.send_json({"type": "chat.stop"})
+        _, seen = _until(ws, "chat.done", "error")
+        closes = [m for m in seen if m["type"] == "confirm.close"]
+        assert closes, [m["type"] for m in seen]
+        assert closes[0]["id"] == req["id"]
+        assert closes[0]["reason"] == "cancelled"
+    assert broker.pending_count == 0
+
+
+def test_delete_while_a_confirm_is_pending(make_client, curated):
+    """conversation.delete cancels the generation parked on the confirm, and
+    the cancelled turn's write must still land before the rows go away."""
+    client, state, broker = _confirming_client(make_client, timeout=30.0)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        start, _ = _until(ws, "chat.start")
+        _until(ws, "confirm.request")
+
+        ws.send_json(
+            {"type": "conversation.delete", "conversation_id": start["conversation_id"]}
+        )
+        msg, before = _until(ws, "conversations")
+        assert msg["conversations"] == []
+        # The ordering IS the test. Both the dismissal and the cancelled turn's
+        # chat.done must land BEFORE the delete broadcast — that is what proves
+        # the generation was stopped and allowed to finish writing first. Assert
+        # only the end state and this passes even with the guard removed, because
+        # the rows are gone either way and the FK violation happens later, in a
+        # task nobody is watching.
+        kinds = [m["type"] for m in before]
+        assert "confirm.close" in kinds, kinds
+        assert "chat.done" in kinds, kinds
+    conn = state.store._conn
+    assert conn.execute("SELECT COUNT(*) c FROM turns").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"] == 0
+    assert list(conn.execute("PRAGMA foreign_key_check")) == []
+    assert broker.pending_count == 0
+
+
+def test_disconnecting_mid_confirm_leaves_nothing_pending(make_client, curated):
+    """Closing the window cancels the generation waiting on the dialog; a
+    leaked future would hold the generation slot with it."""
+    client, _, broker = _confirming_client(make_client, timeout=30.0)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        _until(ws, "confirm.request")
+    assert broker.pending_count == 0
+
+
+def test_every_window_sees_the_confirm_and_any_may_answer(make_client, curated):
+    """gotcha 9 at the protocol level: a second window must not be able to
+    silently swallow a confirmation meant for the user."""
+    client, _, _ = _confirming_client(make_client)
+    with connect(client) as generating, connect(client) as watcher:
+        generating.send_json({"type": "chat.send", "content": "echo hi"})
+        req, _ = _until(generating, "confirm.request")
+        mirrored, _ = _until(watcher, "confirm.request")
+        assert mirrored["id"] == req["id"]
+
+        watcher.send_json({"type": "confirm.respond", "id": req["id"], "answer": "deny"})
+        _, rest = _until(generating, "chat.done")
+        spans = [m for m in rest if m["type"] == "tool.span"]
+        assert spans[0]["code"] == "TOOL_DENIED"
+
+
+def test_a_safe_tool_never_raises_a_confirm(make_client, curated):
+    """Fatigue control: only tools that need permission may interrupt."""
+    from jarvis_backend.security.permissions import SAFE
+
+    client, _, _ = _confirming_client(make_client, risk=SAFE)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        _, seen = _until(ws, "chat.done")
+        assert "confirm.request" not in [m["type"] for m in seen]
+
+
+def test_a_session_grant_survives_into_the_next_turn(make_client, curated):
+    """The promise "for this session" spans conversations and turns; only a
+    restart forgets it (nothing is written down)."""
+    client, _, _ = _confirming_client(make_client)
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "echo hi"})
+        req, _ = _until(ws, "confirm.request")
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "session"})
+        _until(ws, "chat.done")
+
+        # A brand-new conversation, same call: no dialog this time.
+        ws.send_json({"type": "chat.send", "content": "echo hi again"})
+        _, rest = _until(ws, "chat.done")
+        assert "confirm.request" not in [m["type"] for m in rest]
+        span = next(m for m in rest if m["type"] == "tool.span")
+        assert span["ok"] is True

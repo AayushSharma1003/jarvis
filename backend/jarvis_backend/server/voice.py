@@ -149,8 +149,16 @@ class RealVoiceIO:
         return Endpointer()
 
 
-async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
-    """The whole voice turn. Runs as the connection's generation task."""
+async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> None:
+    """The whole voice turn. Runs as the connection's generation task.
+
+    `conn` is threaded through for exactly one reason: to publish the sentence
+    queue, so `voice.say` can have the backend speak a line the *frontend*
+    wrote (the confirmation prompt — the backend must not author English). The
+    conversation id deliberately still travels the other way, sniffed out of
+    chat.start by `_generation_send`, because it doesn't exist yet when the
+    task starts.
+    """
     io: VoiceIO | None = state.voice_io
     if io is None:
         await send(protocol.error("VOICE_UNAVAILABLE"))
@@ -260,6 +268,12 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
 
         chunker = SentenceChunker()
         sentences: asyncio.Queue[str | None] = asyncio.Queue()
+        # Reachable from `voice.say` for as long as this turn is speaking.
+        # _synth_worker consumes strictly in order, so a prompt pushed here
+        # lands behind whatever the model has already said — acceptable,
+        # because at a tool call it has usually said very little.
+        if conn is not None:
+            conn.voice_sentences = sentences
         speaking = asyncio.Event()
         synth_task = asyncio.create_task(_synth_worker(io, player, sentences, send, speaking))
         level_task = asyncio.create_task(_level_reporter(player, send, speaking))
@@ -304,11 +318,22 @@ async def run_voice_exchange(state, send, msg: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):
             await send(protocol.voice_state("idle", reason="stopped"))
         raise
+    except Exception:  # noqa: BLE001
+        # Same reasoning as _generate's catch-all, plus one more: this task also
+        # owns the voice state machine, so dying silently strands the UI in
+        # "thinking" with the sphere spinning and the mic button showing stop.
+        if player is not None:
+            player.stop()
+        with contextlib.suppress(Exception):
+            await send(protocol.error("GENERATION_FAILED"))
+            await send(protocol.voice_state("idle", reason="error"))
     finally:
         if level_task is not None and not level_task.done():
             level_task.cancel()
         if capture is not None:
             capture.close()
+        if conn is not None:
+            conn.voice_sentences = None
         _release_wake()
 
 

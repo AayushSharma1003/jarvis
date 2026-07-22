@@ -1,26 +1,34 @@
 """The default tool set.
 
-M4.1 ships exactly one tool, and it is deliberately the most boring one
-imaginable: `get_datetime` reads the clock. No filesystem, no network, no
-subprocess, nothing to sandbox and nothing to confirm.
+M4.2 still ships exactly one real tool, and it is deliberately the most boring
+one imaginable: `get_datetime` reads the clock. No filesystem, no network, no
+subprocess, nothing to sandbox. The real tools (files, shell, web_fetch) arrive
+in M4.3-M4.5, each with its security layer, never before it.
 
-That is the point. This milestone builds the *plumbing* — structured stream
-events, the multi-round loop, tool spans in the message tree, the registry and
-its gate — and a tool with genuinely zero attack surface proves the whole path
-end to end without any of it depending on a permission engine that does not
-exist yet (that is M4.2). The real tools (files, shell, web_fetch) arrive in
-M4.3-M4.5, each with its security layer, never before it.
+What changed in M4.2 is the gate: `default_registry` now takes one, because the
+confirmation engine that makes an `ask` tool honest finally exists. The gate is
+still a required argument with no default — a Registry without a security layer
+must stay impossible to construct.
 
-The registry is constructed with SafeOnlyGate, so even if somebody registers an
-`ask` or `dangerous` tool here today, it cannot run.
+**The dev tool.** Under `JARVIS_DEV_TOOLS=1` an `ask`-risk `echo` is registered.
+It exists because the permission engine ships a milestone before the first tool
+that needs it, and a confirmation dialog that has never been seen in the real
+WKWebView is not a verified dialog. It grants no capability whatsoever — its
+body returns the string it was handed — but it traverses the full gate, so the
+dialog, the timeout, the session grant and the spoken voice prompt can all be
+exercised end to end. The packaged app never sets the variable; see
+docs/security-model.md §1.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
-from ..security.permissions import SAFE, SafeOnlyGate
+from ..security.permissions import ASK, SAFE, Gate
 from .registry import Registry
+
+DEV_TOOLS_ENV = "JARVIS_DEV_TOOLS"
 
 
 def get_datetime() -> str:
@@ -30,14 +38,23 @@ def get_datetime() -> str:
     return datetime.now().astimezone().strftime("%A %d %B %Y, %H:%M %Z")
 
 
-def default_registry() -> Registry:
+def echo(text: str) -> str:
+    """Repeat text back. Dev-only; see the module docstring."""
+    return text
+
+
+def dev_tools_enabled() -> bool:
+    return os.environ.get(DEV_TOOLS_ENV) == "1"
+
+
+def default_registry(gate: Gate) -> Registry:
     """The tool set the agent loop is given.
 
-    SafeOnlyGate is not a placeholder to be swapped for `None` — it is what
-    makes it impossible to ship a side-effectful tool before M4.2's
-    confirmation engine exists.
+    The gate is not optional and not defaulted: "run a tool without consulting
+    the security layer" must remain an inexpressible operation, not a
+    discouraged one.
     """
-    registry = Registry(SafeOnlyGate())
+    registry = Registry(gate)
     registry.register(
         get_datetime,
         risk=SAFE,
@@ -46,4 +63,14 @@ def default_registry() -> Registry:
             "Use this whenever the answer depends on what day or time it is."
         ),
     )
+    if dev_tools_enabled():
+        registry.register(
+            echo,
+            risk=ASK,
+            description=(
+                "Repeat a piece of text back verbatim. Use it when the user "
+                "explicitly asks you to echo something."
+            ),
+            params={"text": "The exact text to repeat back"},
+        )
     return registry

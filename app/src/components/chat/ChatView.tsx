@@ -5,6 +5,7 @@ import { isBusyElsewhere, useConversation } from "../../state/conversation";
 import { Readiness } from "../onboarding/Readiness";
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { ConversationList } from "./ConversationList";
 import { MessageList } from "./MessageList";
 
@@ -110,6 +111,13 @@ export function ChatView() {
     return t(key, { id: m.id, params: m.params_b, ram: s.tier?.ram_gb ?? "?" });
   };
 
+  // Why tools are off for this model. An `optin` model is capable on paper but
+  // nobody has measured whether it can DECLINE a tool, which M4.0 established
+  // is a security property, not a quality one — see llm/capabilities.py.
+  const current = s.models.find((m) => m.id === s.currentModel);
+  const toolNote =
+    current && current.tools !== "on" ? t(`model.tools.${current.tools}`) : undefined;
+
   const afterSelect = () => {
     if (narrow) setSidebarOpen(false);
   };
@@ -187,7 +195,7 @@ export function ChatView() {
               onChange={(e) => s.setModel(e.target.value)}
               disabled={s.models.length === 0}
               aria-label={t("model.label")}
-              title={tierNote}
+              title={[tierNote, toolNote].filter(Boolean).join("\n\n")}
               className="max-w-56 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none"
             >
               {s.models.map((m) => (
@@ -214,7 +222,7 @@ export function ChatView() {
           <MessageList
             messages={s.messages}
             streamingText={s.streamingText}
-            subtitle={tierNote}
+            subtitle={[tierNote, toolNote].filter(Boolean).join(" ")}
           />
         )}
 
@@ -245,6 +253,13 @@ export function ChatView() {
           onVoiceToggle={s.toggleVoice}
         />
       </div>
+
+      {/* Outermost so it covers the sidebar too — a permission dialog you can
+          click around is not a permission dialog. One at a time: the rest of
+          the queue surfaces as each is answered. */}
+      {s.pendingConfirms.length > 0 && (
+        <ConfirmDialog request={s.pendingConfirms[0]} onAnswer={s.respondConfirm} />
+      )}
     </div>
   );
 }

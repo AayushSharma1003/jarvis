@@ -15,9 +15,12 @@
 // path only.
 
 import { create } from "zustand";
-import { getBackendInfo, onBackendExited } from "../lib/ipc";
+import i18n from "../i18n";
+import { getBackendInfo, onBackendExited, showWindow } from "../lib/ipc";
 import { JarvisSocket, type SocketStatus } from "../lib/ws";
 import type {
+  ConfirmAnswer,
+  ConfirmRequest,
   ConversationSummary,
   HistoryTurn,
   ModelEntry,
@@ -73,6 +76,11 @@ export interface ConversationState {
   voiceHint: string | null; // e.g. "no_speech" — transient, not an error
   wakeEnabled: boolean; // the persistent "Hey Jarvis" toggle (backend-owned)
   wakeAvailable: boolean; // wake models fetched & runtime present
+  // Tool calls waiting on the user. An array, not a single value: each open
+  // window has its own generation slot, so two confirmations can genuinely be
+  // outstanding at once. The dialog renders the first and they resolve
+  // independently.
+  pendingConfirms: ConfirmRequest[];
   init: () => Promise<void>;
   send: (text: string) => void;
   stop: () => void;
@@ -84,6 +92,7 @@ export interface ConversationState {
   switchTo: (conversationId: string) => void;
   rename: (conversationId: string, title: string) => void;
   remove: (conversationId: string) => void;
+  respondConfirm: (id: string, answer: ConfirmAnswer) => void;
 }
 
 let socket: JarvisSocket | null = null;
@@ -173,6 +182,7 @@ export const useConversation = create<ConversationState>((set, get) => ({
   voiceHint: null,
   wakeEnabled: false,
   wakeAvailable: false,
+  pendingConfirms: [],
 
   init: async () => {
     if (initStarted) return;
@@ -298,6 +308,14 @@ export const useConversation = create<ConversationState>((set, get) => ({
     // Watching the conversation that just went away → fall back to a new chat.
     if (get().conversationId === conversationId) showThread(set, null);
   },
+
+  respondConfirm: (id: string, answer: ConfirmAnswer) => {
+    socket?.send({ type: "confirm.respond", id, answer });
+    // Drop it locally rather than waiting for confirm.close: the answer is
+    // gone, and leaving the dialog up invites a second click on a decision
+    // already made. A confirm.close for an id we've forgotten is a no-op.
+    set((s) => ({ pendingConfirms: s.pendingConfirms.filter((c) => c.id !== id) }));
+  },
 }));
 
 /** True when a reply is generating in a conversation the user isn't looking at.
@@ -364,6 +382,25 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       break;
     case "wake.detected":
       startVoiceFromWake(set, get);
+      break;
+    case "confirm.request": {
+      const { type: _type, ...request } = msg;
+      set((s) => ({ pendingConfirms: [...s.pendingConfirms, request] }));
+      // The window may be hidden in the tray — a dialog nobody can see would
+      // sit there until it times out into a deny.
+      showWindow();
+      if (msg.voice) {
+        // The backend owns the speaker but must not author English, so the
+        // wording comes from here and goes back for synthesis. Only during a
+        // spoken turn: otherwise there is no player and nothing to interrupt.
+        socket?.send({ type: "voice.say", text: i18n.t("confirm.speakPrompt") });
+      }
+      break;
+    }
+    case "confirm.close":
+      // Answered elsewhere, timed out, or cancelled with its generation. A
+      // dialog that outlives its call is how people learn to click Allow.
+      set((s) => ({ pendingConfirms: s.pendingConfirms.filter((c) => c.id !== msg.id) }));
       break;
     case "models":
       set({

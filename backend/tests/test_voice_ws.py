@@ -19,7 +19,7 @@ from jarvis_backend.storage import db
 from jarvis_backend.storage.conversations import Store
 from jarvis_backend.stt.endpointing import Endpointer
 from jarvis_backend.stt.vad import CHUNK_SAMPLES
-from tests.test_ws import TOKEN, FakeBackend, connect
+from tests.test_ws import TOKEN, FakeBackend, connect, curated  # noqa: F401 (fixture)
 
 SILENCE = np.zeros(CHUNK_SAMPLES, dtype=np.float32)
 SPEECH = np.full(CHUNK_SAMPLES, 0.8, dtype=np.float32)
@@ -120,7 +120,7 @@ def utterance_script() -> list[np.ndarray]:
 
 @pytest.fixture
 def make_voice_client(tmp_path):
-    def _make(voice_io, backend=None):
+    def _make(voice_io, backend=None, registry=None, confirm=None):
         state = AppState(
             token=TOKEN,
             store=Store(db.connect(":memory:")),
@@ -132,7 +132,11 @@ def make_voice_client(tmp_path):
                 data_dir=tmp_path,
             ),
             voice_io=voice_io,
+            registry=registry,
+            confirm=confirm,
         )
+        if confirm is not None:
+            confirm.bind(lambda: state.connections)
         return TestClient(create_app(state)), state
 
     return _make
@@ -289,3 +293,103 @@ def test_voice_unavailable_without_io(make_voice_client):
     with connect(client) as ws:
         ws.send_json({"type": "voice.start"})
         assert ws.receive_json() == {"type": "error", "code": "VOICE_UNAVAILABLE"}
+
+
+# -- confirmation in a spoken turn (M4.2) -----------------------------------
+
+
+def _confirming_voice_client(make_voice_client, io, *, timeout=5.0):
+    """A spoken turn whose one tool needs confirmation."""
+    from jarvis_backend.llm.base import ToolCall
+    from jarvis_backend.security.confirm import ConfirmBroker
+    from jarvis_backend.security.permissions import ASK, PermissionGate
+    from jarvis_backend.tools.registry import Registry
+    from tests.test_ws import ToolOnceBackend
+
+    broker = ConfirmBroker(timeout=timeout)
+    registry = Registry(PermissionGate(broker))
+    registry.register(lambda text: f"echoed {text}", risk=ASK, name="echo", description="d")
+    client, state = make_voice_client(
+        io,
+        backend=ToolOnceBackend(ToolCall("c1", "echo", {"text": "hi"})),
+        registry=registry,
+        confirm=broker,
+    )
+    return client, state, broker
+
+
+def _await_confirm(ws):
+    while (m := ws.receive_json())["type"] != "confirm.request":
+        pass
+    return m
+
+
+def test_a_spoken_tool_turn_asks_for_confirmation(make_voice_client, curated):  # noqa: F811
+    """The voice path shares run_exchange, so the gate applies identically —
+    a spoken request cannot run an `ask` tool without a dialog either."""
+    io = FakeVoiceIO(utterance_script(), transcript="echo hi")
+    client, _, _ = _confirming_voice_client(make_voice_client, io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        req = _await_confirm(ws)
+        # The dialog knows this is a spoken turn, which is what lets the UI
+        # decide to ask the backend to say so out loud.
+        assert req["voice"] is True
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "once"})
+        msgs = drain_voice(ws)
+    span = next(m for m in msgs if m["type"] == "tool.span")
+    assert span["ok"] is True
+    assert span["content"] == "echoed hi"
+
+
+def test_voice_say_speaks_a_line_the_frontend_wrote(make_voice_client, curated):  # noqa: F811
+    """The i18n rule and TTS pull in opposite directions: the backend must not
+    author English, but it owns the speaker. So the frontend sends the sentence
+    and the backend only synthesizes it — this is how "I need your OK — check
+    the window" gets spoken without a word of copy in Python.
+
+    Driven from the parked confirm on purpose: that is the only moment the
+    prompt is useful, and the only moment the synth worker is reliably still
+    waiting rather than already drained.
+    """
+    prompt = "I need your OK — check the window."
+    io = FakeVoiceIO(utterance_script(), transcript="echo hi")
+    client, _, _ = _confirming_voice_client(make_voice_client, io, timeout=30.0)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        req = _await_confirm(ws)
+        ws.send_json({"type": "voice.say", "text": prompt})
+        # Give the dispatcher a turn to route it before the exchange resumes.
+        ws.send_json({"type": "ping"})
+        while ws.receive_json()["type"] != "pong":
+            pass
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "once"})
+        drain_voice(ws)
+    assert prompt in io.synthesized
+
+
+def test_voice_say_outside_a_spoken_turn_is_ignored(make_voice_client):
+    """No live exchange means no player and nothing to interrupt. It must be a
+    no-op, not an error and certainly not a crash."""
+    io = FakeVoiceIO(utterance_script())
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.say", "text": "nobody is listening"})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+    assert io.synthesized == []
+
+
+def test_voice_say_is_released_when_the_turn_ends(make_voice_client):
+    """The queue handle must not outlive the exchange, or a later voice.say
+    would push into a dead turn's queue and be silently swallowed."""
+    io = FakeVoiceIO(utterance_script())
+    client, state = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws)
+        assert state.connections[0].voice_sentences is None
+        ws.send_json({"type": "voice.say", "text": "too late"})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+    assert "too late" not in io.synthesized

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..llm import capabilities
 from ..llm.base import LLMError
 from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
 
@@ -64,7 +65,30 @@ async def _llm_checks(state) -> list[dict[str, Any]]:
             ram_gb=round(gb, 1),
             budget_b=tier_budget_b(gb),
         ),
+        await _tools_check(state, chosen),
     ]
+
+
+async def _tools_check(state, model: str) -> dict[str, Any]:
+    """Can the chosen model be trusted with tools?
+
+    Never a failure: tools being off costs the user actions, not conversation,
+    and the same reasoning that keeps missing voice models a warning applies.
+    The codes distinguish the two off states because they have different
+    answers — `optin` the user can turn on and be warned about, `unsupported`
+    means switching models is the only fix. See llm/capabilities.py.
+    """
+    if state.registry is None:
+        return _check("tools", WARN, "TOOLS_DISABLED", model=model)
+    try:
+        caps = await state.backend.model_capabilities(model)
+    except Exception:  # noqa: BLE001 - readiness reports, never crashes
+        caps = None
+    support = capabilities.classify(model, caps)
+    if support == capabilities.ON:
+        return _check("tools", OK, model=model)
+    code = "TOOLS_OPTIN" if support == capabilities.OPTIN else "TOOLS_UNSUPPORTED"
+    return _check("tools", WARN, code, model=model)
 
 
 def _voice_check() -> dict[str, Any]:

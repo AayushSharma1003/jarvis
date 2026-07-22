@@ -31,6 +31,14 @@ default_model = ""
 # triggers but easier to miss. The on/off toggle itself lives in the app UI
 # (persisted in the data dir), not here.
 threshold = 0.5
+
+[tools]
+# Master switch for "dangerous" tools (running shell commands, deleting).
+# When true they still confirm on EVERY call — this only decides whether they
+# may be offered at all. Set it to false and Jarvis will refuse them outright,
+# without even asking. Tools marked "ask" (writing a file, reading the
+# clipboard) are unaffected and always confirm.
+allow_dangerous = true
 """
 
 
@@ -50,6 +58,9 @@ class Config:
     config_path: Path
     data_dir: Path
     wake_threshold: float = 0.5
+    # §1's "globally disableable". True still means every dangerous call
+    # confirms; false means they are refused without asking.
+    allow_dangerous_tools: bool = True
 
 
 def config_dir() -> Path:
@@ -88,12 +99,18 @@ def load() -> Config:
     if not isinstance(wake_threshold, int | float) or not 0.0 <= wake_threshold <= 1.0:
         raise ConfigError("CONFIG_INVALID_VALUE", "[wake] threshold must be in [0, 1]")
 
+    tools = raw.get("tools", {})
+    allow_dangerous = tools.get("allow_dangerous", True)
+    if not isinstance(allow_dangerous, bool):
+        raise ConfigError("CONFIG_INVALID_VALUE", "[tools] allow_dangerous must be a boolean")
+
     ddir = data_dir()
     ddir.mkdir(parents=True, exist_ok=True)
     return Config(
         ollama_url=ollama_url.rstrip("/"),
         default_model=default_model,
         wake_threshold=float(wake_threshold),
+        allow_dangerous_tools=allow_dangerous,
         config_path=path,
         data_dir=ddir,
     )

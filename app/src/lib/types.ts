@@ -29,7 +29,7 @@ export interface RamTier {
 
 /** One row of the first-run gate. `code` is absent when status is "ok". */
 export interface ReadinessCheck {
-  id: "llm" | "model" | "voice_models" | "wake_models" | "microphone";
+  id: "llm" | "model" | "tools" | "voice_models" | "wake_models" | "microphone";
   status: "ok" | "warn" | "fail";
   code?: string;
   data?: Record<string, unknown>;
@@ -50,6 +50,23 @@ export interface ToolSpanData {
   content: string;
   ok: boolean;
   code: string;
+}
+
+/** How the user may answer a confirmation. "session" is only offered for `ask`
+ *  tools — the backend refuses to remember a `dangerous` one regardless. */
+export type ConfirmAnswer = "deny" | "once" | "session";
+
+/** One pending permission request. `id` is a correlation id the BACKEND minted;
+ *  an answer only counts against an id it is still waiting on, so there is no
+ *  message this client can send that approves something out of nowhere.
+ *  Backend: backend/jarvis_backend/security/confirm.py */
+export interface ConfirmRequest {
+  id: string;
+  name: string;
+  risk: "safe" | "ask" | "dangerous";
+  arguments: Record<string, unknown>;
+  conversation_id: string;
+  voice: boolean;
 }
 
 export interface HistoryMessage {
@@ -99,6 +116,8 @@ export type ServerMessage =
   | { type: "history"; conversation_id: string; turns: HistoryTurn[] }
   | { type: "wake.status"; enabled: boolean; available: boolean }
   | { type: "wake.detected" }
+  | ({ type: "confirm.request" } & ConfirmRequest)
+  | { type: "confirm.close"; id: string; reason: string }
   | { type: "error"; code: string; detail?: string };
 
 export type ClientMessage =
@@ -120,4 +139,6 @@ export type ClientMessage =
   | { type: "conversation.history"; conversation_id: string }
   | { type: "conversation.rename"; conversation_id: string; title: string }
   | { type: "conversation.delete"; conversation_id: string }
-  | { type: "wake.set"; enabled: boolean };
+  | { type: "wake.set"; enabled: boolean }
+  | { type: "confirm.respond"; id: string; answer: ConfirmAnswer }
+  | { type: "voice.say"; text: string };

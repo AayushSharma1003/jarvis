@@ -20,6 +20,7 @@ from ..config import Config
 from ..llm import capabilities
 from ..llm.base import ChatBackend, LLMError
 from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
+from ..security.confirm import ConfirmBroker
 from ..storage.conversations import StorageError, Store
 from ..tools.registry import Registry
 from ..wake.detector import WakeError
@@ -46,6 +47,11 @@ class Connection:
     # stop it before pulling the rows out from under it. None until chat.start
     # for a brand-new conversation (the id doesn't exist yet).
     generating_conversation_id: str | None = None
+    # The live voice exchange's sentence queue, or None when no spoken turn is
+    # running. `voice.say` pushes into it so the frontend can have the backend
+    # speak a line it authored (the confirm prompt) without the backend ever
+    # writing English — see the i18n rule in CLAUDE.md / run_voice_exchange.
+    voice_sentences: asyncio.Queue | None = None
 
     @property
     def busy(self) -> bool:
@@ -70,6 +76,10 @@ class AppState:
     # gate (tools/registry.py), so this is a switch for *whether* tools exist,
     # never for whether they are checked.
     registry: Registry | None = None
+    # The confirmation broker the registry's gate asks. None ⇒ nothing can
+    # answer a confirm, which is why a backend built without one gets
+    # SafeOnlyGate and refuses every `ask` tool outright.
+    confirm: ConfirmBroker | None = None
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -232,8 +242,24 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
                 return
             conn.generating_conversation_id = msg.get("conversation_id")
             conn.generation = asyncio.create_task(
-                run_voice_exchange(state, _generation_send(conn), msg)
+                run_voice_exchange(state, _generation_send(conn), msg, conn=conn)
             )
+
+        elif mtype == "confirm.respond":
+            # Deliberately NOT scoped to `conn`: the confirm was broadcast to
+            # every window, so any window may answer it and the first one to do
+            # so wins. The correlation id is what binds an answer to a call —
+            # see security/confirm.py.
+            if state.confirm is not None:
+                state.confirm.respond(msg.get("id"), msg.get("answer"))
+
+        elif mtype == "voice.say":
+            # The frontend owns all wording (i18n), but TTS lives here, so the
+            # client hands us the sentence to speak. Only meaningful during a
+            # live spoken turn; otherwise there is no player and nothing to say.
+            text = msg.get("text")
+            if isinstance(text, str) and text.strip() and conn.voice_sentences is not None:
+                conn.voice_sentences.put_nowait(text.strip())
 
         elif mtype == "chat.send":
             if conn.busy:
@@ -380,5 +406,13 @@ async def _generate(state: AppState, send, msg: dict[str, Any], content: str) ->
             await send(protocol.error(result.error_code, result.error_detail))
         if result.turn_id is not None:
             await send(protocol.chat_done(conversation_id, result.turn_id, result.interrupted))
+    except asyncio.CancelledError:
+        raise  # chat.stop / delete / disconnect — cancellation must propagate
     except (LLMError, StorageError) as e:
         await send(protocol.error(e.code, e.detail))
+    except Exception:  # noqa: BLE001
+        # This task IS the generation slot. Dying silently leaves the frontend
+        # holding `streamKey` with no chat.done ever coming, which disables the
+        # composer until the app restarts — so an unexpected failure has to come
+        # back as an error the UI can clear itself on.
+        await send(protocol.error("GENERATION_FAILED"))

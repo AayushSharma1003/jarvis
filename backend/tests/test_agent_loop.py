@@ -32,7 +32,7 @@ class ScriptedBackend(ChatBackend):
 
 
 class AllowAll:
-    async def check(self, name, risk, arguments):
+    async def check(self, name, risk, arguments, context):
         return Decision.allow()
 
 

@@ -12,14 +12,14 @@ import pytest
 
 from jarvis_backend.agent.toolfilter import DECISION_WINDOW, MalformedToolCallFilter
 from jarvis_backend.security.permissions import ASK, DANGEROUS, SAFE, Decision, SafeOnlyGate
-from jarvis_backend.tools import default_registry, get_datetime
+from jarvis_backend.tools import DEV_TOOLS_ENV, default_registry, get_datetime
 from jarvis_backend.tools.registry import MAX_RESULT_CHARS, Registry, build_parameters
 
 
 class AllowAll:
     """Stand-in for M4.2's engine, so non-gate behaviour can be tested."""
 
-    async def check(self, name, risk, arguments):
+    async def check(self, name, risk, arguments, context):
         return Decision.allow()
 
 
@@ -59,7 +59,7 @@ async def test_gate_is_consulted_before_the_tool_body():
     order = []
 
     class Recording:
-        async def check(self, name, risk, arguments):
+        async def check(self, name, risk, arguments, context):
             order.append("gate")
             return Decision.allow()
 
@@ -160,11 +160,41 @@ def test_description_falls_back_to_the_docstring():
 
 
 def test_default_registry_ships_only_safe_tools():
-    """M4.1's whole point: the plumbing works and nothing has side effects."""
-    r = default_registry()
+    """The shipped set still has no side effects: the permission engine landing
+    in M4.2 did not smuggle a real tool in with it."""
+    r = default_registry(SafeOnlyGate())
     names = [s["function"]["name"] for s in r.schemas()]
     assert names == ["get_datetime"]
     assert r.get("get_datetime").risk == SAFE
+
+
+def test_default_registry_requires_a_gate():
+    """Structural, like Registry itself: there is no gate-less shortcut."""
+    with pytest.raises(TypeError):
+        default_registry()  # type: ignore[call-arg]
+
+
+def test_dev_echo_tool_is_absent_by_default(monkeypatch):
+    """It exists to exercise the confirmation path during development. A
+    packaged app never sets the variable, so it must not be registered."""
+    monkeypatch.delenv(DEV_TOOLS_ENV, raising=False)
+    assert default_registry(SafeOnlyGate()).get("echo") is None
+
+
+def test_dev_echo_tool_is_ask_risk_when_enabled(monkeypatch):
+    """If it were `safe` it would run without a dialog and verify nothing."""
+    monkeypatch.setenv(DEV_TOOLS_ENV, "1")
+    tool = default_registry(SafeOnlyGate()).get("echo")
+    assert tool is not None
+    assert tool.risk == ASK
+
+
+async def test_dev_echo_tool_still_cannot_run_without_confirmation(monkeypatch):
+    """It is a mirror, not a backdoor: the gate governs it like anything else."""
+    monkeypatch.setenv(DEV_TOOLS_ENV, "1")
+    r = default_registry(SafeOnlyGate())
+    result = await r.invoke("c", "echo", {"text": "hi"})
+    assert (result.ok, result.code) == (False, "TOOL_CONFIRMATION_UNAVAILABLE")
 
 
 def test_get_datetime_returns_something_speakable():

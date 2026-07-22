@@ -29,7 +29,27 @@
       "TOOL_FAILED": "it errored",
       "TOOL_CONFIRMATION_UNAVAILABLE": "needs your permission, which isn't built yet",
       "TOOL_CALL_MALFORMED": "the model garbled the request",
+      "TOOL_DENIED": "you said no",
+      "TOOL_CONFIRM_TIMEOUT": "the permission request timed out",
+      "TOOL_CONFIRM_NO_UI": "there was no window open to ask",
+      "TOOL_CONFIRM_FAILED": "the permission check failed",
+      "TOOL_DANGEROUS_DISABLED": "risky tools are switched off in your config",
       "UNKNOWN": "unknown problem"
+    }
+  },
+  "confirm": {
+    "title": "Let Jarvis use {{name}}?",
+    "body": "Jarvis asked to do this. Nothing runs until you allow it.",
+    "deny": "Don't allow",
+    "once": "Allow once",
+    "session": "Allow this session",
+    "sessionHint": "Runs this exact action without asking again until Jarvis restarts. Anything different still asks.",
+    "fromVoice": "from a spoken request",
+    "speakPrompt": "I need your OK — check the window.",
+    "risk": {
+      "ask": "Permission",
+      "dangerous": "Risky",
+      "safe": "Routine"
     }
   },
   "conversation": {
@@ -52,7 +72,11 @@
     "option": "{{id}} · {{params}}B",
     "optionOverBudget": "{{id}} · {{params}}B — tight on {{ram}}GB",
     "whyAuto": "Auto-selected for this machine: {{ram}}GB RAM, so models up to about {{budget}}B parameters. Larger ones will run, slowly.",
-    "whyConfigured": "Set in your config file. This machine has {{ram}}GB RAM, comfortable up to about {{budget}}B parameters."
+    "whyConfigured": "Set in your config file. This machine has {{ram}}GB RAM, comfortable up to about {{budget}}B parameters.",
+    "tools": {
+      "optin": "Tools are off for this model: nobody has measured whether it can decline one, and a model that runs tools it shouldn't is a security problem, not just a noisy one.",
+      "unsupported": "This model can't use tools at all — its chat template has no support for them."
+    }
   },
   "readiness": {
     "title": "Jarvis isn't ready yet",
@@ -65,7 +89,10 @@
       "VOICE_MODELS_MISSING": "Voice models aren't downloaded, so speech is off. Typing still works.",
       "WAKE_MODELS_MISSING": "Wake-word models aren't downloaded, so “Hey Jarvis” is off.",
       "NO_INPUT_DEVICE": "No microphone found. Typing still works.",
-      "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works."
+      "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works.",
+      "TOOLS_OPTIN": "Tools are off for this model — it hasn't been checked for whether it can decline one. Chat works normally.",
+      "TOOLS_UNSUPPORTED": "This model can't use tools. Chat works normally.",
+      "TOOLS_DISABLED": "Tools are switched off in this build."
     },
     "run": "Run this:",
     "copy": "Copy",
@@ -117,6 +144,7 @@
     "WAKE_RUNTIME_MISSING": "Wake-word detection isn't installed in this build.",
     "SPEAKER_UNAVAILABLE": "Can't open the speaker.",
     "TTS_VOICE_UNKNOWN": "The configured voice doesn't exist.",
+    "GENERATION_FAILED": "Something went wrong while replying.",
     "unknown": "Something went wrong ({{code}})."
   }
 }

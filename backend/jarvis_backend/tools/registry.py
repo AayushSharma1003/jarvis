@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..security.permissions import Decision, Gate, RiskLevel
+from ..security.permissions import Decision, Gate, RiskLevel, ToolContext
 
 # A tool result longer than this is truncated before it reaches the model.
 # Unbounded tool output is a context-window denial of service, and on a 3B
@@ -154,15 +154,30 @@ class Registry:
         """Tool definitions to send to the model."""
         return [t.schema() for t in self._tools.values()]
 
-    async def invoke(self, call_id: str, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Run one tool call. Never raises; failures come back as ToolResult."""
+    async def invoke(
+        self,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> ToolResult:
+        """Run one tool call. Never raises; failures come back as ToolResult.
+
+        `context` is passed straight through to the gate — the registry never
+        reads it. A caller that omits it gets a fresh empty one, which is the
+        safe direction: an empty deny-memo means more confirmations, never
+        fewer. It is built per call rather than defaulted in the signature
+        because ToolContext holds a mutable set.
+        """
         tool = self._tools.get(name)
         if tool is None:
             # Models invent tool names, especially small ones. Say so plainly
             # so the model can correct itself on the next round.
             return ToolResult(name, call_id, "", ok=False, code="TOOL_NOT_FOUND")
 
-        decision: Decision = await self._gate.check(tool.name, tool.risk, arguments)
+        decision: Decision = await self._gate.check(
+            tool.name, tool.risk, arguments, context or ToolContext()
+        )
         if not decision.allowed:
             return ToolResult(name, call_id, "", ok=False, code=decision.code or "TOOL_DENIED")
 

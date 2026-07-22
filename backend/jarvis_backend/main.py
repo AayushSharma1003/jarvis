@@ -25,6 +25,8 @@ import uvicorn
 from . import assets
 from .config import Config, load, load_wake_enabled, save_wake_enabled
 from .llm.ollama import OllamaBackend
+from .security.confirm import ConfirmBroker
+from .security.permissions import PermissionGate
 from .server.app import AppState, create_app, handle_wake
 from .server.auth import make_token
 from .server.voice import RealVoiceIO
@@ -48,14 +50,21 @@ def run() -> None:
 
     store = Store(db.connect(config.data_dir / "jarvis.sqlite3"))
     backend = OllamaBackend(config.ollama_url)
+    # The broker needs the connection list, which belongs to the AppState that
+    # needs the registry that needs the gate that needs the broker. Built first
+    # and bound after, the same way the wake service is wired below.
+    confirm = ConfirmBroker()
+    gate = PermissionGate(confirm, allow_dangerous=lambda: config.allow_dangerous_tools)
     state = AppState(
         token=token,
         store=store,
         backend=backend,
         config=config,
         voice_io=RealVoiceIO(),
-        registry=default_registry(),
+        registry=default_registry(gate),
+        confirm=confirm,
     )
+    confirm.bind(lambda: state.connections)
     state.wake = _make_wake_service(state, config)
     app = create_app(state)
 
