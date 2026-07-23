@@ -262,3 +262,201 @@ def test_filter_without_tools_never_drops():
     """No tools offered means no tool call is possible, so nothing should be
     suppressed — the model is just talking."""
     assert _feed(REAL_LEAK, tools=set())[0] == REAL_LEAK
+
+
+# -- file tools (M4.3) ------------------------------------------------------
+
+from jarvis_backend.security.sandbox import Sandbox  # noqa: E402
+from jarvis_backend.tools import filesystem  # noqa: E402
+from jarvis_backend.tools.filesystem import MAX_ENTRIES, MAX_READ_BYTES  # noqa: E402
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    return ws
+
+
+def _fs_registry(workspace, gate=None) -> Registry:
+    r = Registry(gate or AllowAll())
+    filesystem.register(r, Sandbox([workspace]))
+    return r
+
+
+async def test_read_file_returns_contents_and_taints(workspace):
+    (workspace / "notes.txt").write_text("hello from a file")
+    result = await _fs_registry(workspace).invoke(
+        "c", "read_file", {"path": str(workspace / "notes.txt")}
+    )
+    assert result.ok
+    assert result.content == "hello from a file"
+    # The whole point: the content is untrusted from here on.
+    assert result.taint_source == str(workspace / "notes.txt")
+
+
+async def test_list_dir_lists_and_does_not_taint(workspace):
+    (workspace / "a.txt").write_text("x")
+    (workspace / "sub").mkdir()
+    result = await _fs_registry(workspace).invoke("c", "list_dir", {"path": str(workspace)})
+    assert result.ok
+    assert "a.txt" in result.content
+    assert "sub/" in result.content
+    assert result.taint_source == "", "a listing is structure, not content"
+
+
+async def test_write_file_creates_parents_and_overwrites(workspace):
+    target = workspace / "deep" / "nested" / "out.txt"
+    r = _fs_registry(workspace)
+    assert (await r.invoke("c", "write_file", {"path": str(target), "content": "one"})).ok
+    assert target.read_text() == "one"
+    assert (await r.invoke("c", "write_file", {"path": str(target), "content": "two"})).ok
+    assert target.read_text() == "two"
+
+
+async def test_delete_file_removes_it(workspace):
+    doomed = workspace / "doomed.txt"
+    doomed.write_text("x")
+    result = await _fs_registry(workspace).invoke("c", "delete_file", {"path": str(doomed)})
+    assert result.ok
+    assert not doomed.exists()
+
+
+async def test_delete_refuses_a_directory(workspace):
+    """One confirmation cannot honestly stand for an unbounded set of files."""
+    (workspace / "sub").mkdir()
+    (workspace / "sub" / "keep.txt").write_text("x")
+    result = await _fs_registry(workspace).invoke(
+        "c", "delete_file", {"path": str(workspace / "sub")}
+    )
+    assert (result.ok, result.code) == (False, "IS_A_DIRECTORY")
+    assert (workspace / "sub" / "keep.txt").exists()
+
+
+# -- the sandbox is not optional -------------------------------------------
+
+
+@pytest.mark.parametrize("tool", ["read_file", "list_dir", "delete_file"])
+async def test_a_path_outside_the_sandbox_is_a_failed_result(workspace, tmp_path, tool):
+    """SandboxError.code surfaces through the registry as a failed span the
+    model can react to, rather than an exception that ends the exchange."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    result = await _fs_registry(workspace).invoke("c", tool, {"path": str(outside)})
+    assert (result.ok, result.code) == (False, "PATH_OUTSIDE_SANDBOX")
+
+
+async def test_writing_outside_the_sandbox_writes_nothing(workspace, tmp_path):
+    outside = tmp_path / "outside.txt"
+    result = await _fs_registry(workspace).invoke(
+        "c", "write_file", {"path": str(outside), "content": "planted"}
+    )
+    assert (result.ok, result.code) == (False, "PATH_OUTSIDE_SANDBOX")
+    assert not outside.exists(), "the refusal must happen before anything is written"
+
+
+async def test_a_symlink_out_of_the_sandbox_is_refused(workspace, tmp_path):
+    """The escape that path-string checking would miss, at the tool level."""
+    secret = tmp_path / "secrets"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("PRIVATE KEY")
+    (workspace / "shortcut").symlink_to(secret)
+    result = await _fs_registry(workspace).invoke(
+        "c", "read_file", {"path": str(workspace / "shortcut" / "id_rsa")}
+    )
+    assert (result.ok, result.code) == (False, "PATH_OUTSIDE_SANDBOX")
+    assert "PRIVATE KEY" not in result.content
+
+
+# -- resource guards --------------------------------------------------------
+
+
+async def test_an_oversized_file_is_refused_before_it_is_read(workspace):
+    """MAX_RESULT_CHARS truncates what reaches the model, but only after the
+    whole file is in memory. On an 8GB machine that is the wrong order."""
+    big = workspace / "big.bin"
+    big.write_bytes(b"x" * (MAX_READ_BYTES + 1))
+    result = await _fs_registry(workspace).invoke("c", "read_file", {"path": str(big)})
+    assert (result.ok, result.code) == (False, "FILE_TOO_LARGE")
+
+
+async def test_a_huge_listing_is_capped_and_says_so(workspace):
+    """The cap must bind before the registry's MAX_RESULT_CHARS truncation, or
+    the "and N more" line is itself truncated away and the model is silently
+    shown a partial directory."""
+    for i in range(MAX_ENTRIES + 10):
+        (workspace / f"f{i:04d}.txt").write_text("x")
+    result = await _fs_registry(workspace).invoke("c", "list_dir", {"path": str(workspace)})
+    assert result.ok
+    assert "and 10 more" in result.content
+    assert not result.content.endswith("(truncated)")
+
+
+async def test_missing_files_and_wrong_types_report_distinct_codes(workspace):
+    r = _fs_registry(workspace)
+    (workspace / "sub").mkdir()
+    missing = await r.invoke("c", "read_file", {"path": str(workspace / "nope.txt")})
+    assert missing.code == "FILE_NOT_FOUND"
+    a_dir = await r.invoke("c", "read_file", {"path": str(workspace / "sub")})
+    assert a_dir.code == "IS_A_DIRECTORY"
+    a_file = await r.invoke("c", "list_dir", {"path": str(workspace / "sub")})
+    assert a_file.ok
+    (workspace / "f.txt").write_text("x")
+    not_dir = await r.invoke("c", "list_dir", {"path": str(workspace / "f.txt")})
+    assert not_dir.code == "NOT_A_DIRECTORY"
+
+
+async def test_undecodable_bytes_do_not_crash_a_read(workspace):
+    """A binary file the model asked for by mistake is a result, not a stack
+    trace — errors='replace' is what keeps that true."""
+    (workspace / "blob.bin").write_bytes(b"\xff\xfe\x00hello")
+    result = await _fs_registry(workspace).invoke(
+        "c", "read_file", {"path": str(workspace / "blob.bin")}
+    )
+    assert result.ok
+    assert "hello" in result.content
+
+
+# -- registration -----------------------------------------------------------
+
+
+def test_file_tools_ride_the_normal_risk_levels(workspace):
+    r = _fs_registry(workspace)
+    assert r.get("read_file").risk == SAFE
+    assert r.get("list_dir").risk == SAFE
+    assert r.get("write_file").risk == ASK
+    assert r.get("delete_file").risk == DANGEROUS
+
+
+def test_the_sandbox_is_never_an_argument_the_model_can_fill(workspace):
+    """It is bound at registration. A sandbox in the JSON schema would be a
+    sandbox the model gets to choose."""
+    schema = _fs_registry(workspace).get("read_file").schema()
+    assert list(schema["function"]["parameters"]["properties"]) == ["path"]
+
+
+def test_default_registry_ships_file_tools_only_with_a_sandbox(workspace):
+    without = default_registry(SafeOnlyGate())
+    assert without.get("read_file") is None
+    with_sandbox = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    assert with_sandbox.get("read_file") is not None
+    assert with_sandbox.get("get_datetime") is not None
+
+
+async def test_a_sandbox_with_no_roots_refuses_everything(workspace):
+    """`roots = []` means file access is off — the tools exist and say no,
+    which is more honest than pretending they were never installed."""
+    r = Registry(AllowAll())
+    filesystem.register(r, Sandbox([]))
+    (workspace / "a.txt").write_text("x")
+    result = await r.invoke("c", "read_file", {"path": str(workspace / "a.txt")})
+    assert (result.ok, result.code) == (False, "PATH_OUTSIDE_SANDBOX")
+
+
+async def test_write_and_delete_cannot_run_under_the_safe_only_gate(workspace):
+    """M4.2's fallback still holds: no confirmation machinery, no side effects."""
+    r = _fs_registry(workspace, gate=SafeOnlyGate())
+    target = workspace / "nope.txt"
+    result = await r.invoke("c", "write_file", {"path": str(target), "content": "x"})
+    assert (result.ok, result.code) == (False, "TOOL_CONFIRMATION_UNAVAILABLE")
+    assert not target.exists()

@@ -23,10 +23,12 @@ import psutil
 import uvicorn
 
 from . import assets
-from .config import Config, load, load_wake_enabled, save_wake_enabled
+from .config import Config, config_dir, data_dir, load, load_wake_enabled, save_wake_enabled
 from .llm.ollama import OllamaBackend
 from .security.confirm import ConfirmBroker
 from .security.permissions import PermissionGate
+from .security.sandbox import Sandbox
+from .security.taint import TaintTracker
 from .server.app import AppState, create_app, handle_wake
 from .server.auth import make_token
 from .server.voice import RealVoiceIO
@@ -54,15 +56,28 @@ def run() -> None:
     # needs the registry that needs the gate that needs the broker. Built first
     # and bound after, the same way the wake service is wired below.
     confirm = ConfirmBroker()
-    gate = PermissionGate(confirm, allow_dangerous=lambda: config.allow_dangerous_tools)
+    taint = TaintTracker()
+    gate = PermissionGate(
+        confirm, taint=taint, allow_dangerous=lambda: config.allow_dangerous_tools
+    )
+    # §2: our own config and data directories are permanently outside every
+    # root, so a file tool can never widen its own sandbox by rewriting
+    # config.toml or dropping something in the extensions directory. They are
+    # excluded here rather than filtered out of the roots, because a user is
+    # free to configure a root that contains them (on Linux both sit under the
+    # home directory) and the exclusion has to survive that.
+    sandbox = Sandbox(
+        roots=list(config.filesystem_roots), excluded=[config_dir(), data_dir()]
+    )
     state = AppState(
         token=token,
         store=store,
         backend=backend,
         config=config,
         voice_io=RealVoiceIO(),
-        registry=default_registry(gate),
+        registry=default_registry(gate, sandbox),
         confirm=confirm,
+        taint=taint,
     )
     confirm.bind(lambda: state.connections)
     state.wake = _make_wake_service(state, config)

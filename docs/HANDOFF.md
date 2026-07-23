@@ -186,6 +186,20 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     either way and the FK violation surfaces later, in a task nobody awaits. The
     assertion that actually bites is **ordering**: `confirm.close` and
     `chat.done` must appear before the `conversations` broadcast.
+15. **Two truncation layers, and the inner one's message gets eaten.** The
+    directory-listing cap was 500 entries, which at ~20 chars each overflows the
+    registry's `MAX_RESULT_CHARS` (8000) — so the registry truncated the listing
+    *including* the "… and N more" line the cap had just added, and the model was
+    silently shown a partial directory with no indication of it. Any inner cap
+    has to bind before the outer one for its own message to survive; `MAX_ENTRIES`
+    is now 200 with a comment saying why. The registry's truncation stays as the
+    backstop for pathologically long filenames.
+16. **Mutation-testing your own tests: watch for substring collisions.** A
+    mutation that replaces `"        raise SandboxError(...)"` matches the
+    16-space indented copy inside a loop as a *substring* too, so the "mutation"
+    was a syntax error and the test "caught" nothing. If a mutation reports a
+    collection error rather than a failure, it did not prove anything — assert
+    the pattern occurs exactly once, and use a multi-line anchor.
 
 ## Repo map
 
@@ -333,6 +347,24 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    allow_dangerous` config, and a catch-all in `_generate`/`run_voice_exchange`
    so an unexpected exception no longer strands the UI holding `streamKey`
    forever. 217 backend tests.
+   ✅ **M4.3 sandbox + file tools + taint DONE** (2026-07-23): the first tools
+   with real side effects, shipped with the two layers that make them safe.
+   `security/sandbox.py` resolves before it checks — expanduser → require
+   absolute → `.resolve()` (collapsing `..`, following symlinks) → must be
+   under a root and **not** under an excluded dir (config/data checked FIRST,
+   so "inside a root" can never override them). Defaults are Documents /
+   Downloads / Desktop via platformdirs; an absent `[filesystem] roots` key
+   means those defaults, an explicit `roots = []` means **no file access at
+   all** — the two are deliberately distinguishable. `security/taint.py`
+   marks a conversation the moment `read_file` returns: sticky for the
+   process's life, in memory, never persisted, and it **invalidates session
+   grants in both directions** (a grant given before the taint doesn't cover a
+   call after it; approving a tainted call grants nothing). The dialog shows
+   the source path and drops its "allow for this session" button. Tools:
+   `read_file`/`list_dir` safe, `write_file` ask, `delete_file` dangerous
+   (directories refused — one confirmation can't stand for an unbounded set of
+   files). `ToolOutput` lets a tool declare its own untrusted content; the
+   registry relays it, the loop applies it. 279 backend tests.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -454,25 +486,29 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 complete; Phase 4 in progress.** M4.0, M4.1 and M4.2 are done and
-green (217 backend tests, 2 Rust). **Next is M4.3: the filesystem sandbox +
-file tools + taint.** The permission engine it needs now exists, so M4.3 is the
-first milestone that ships a tool with real side effects — `write_file` is the
-one that finally makes the dialog earn its keep in production rather than under
-`JARVIS_DEV_TOOLS`.
+**Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.3 are done and green
+(279 backend tests, 2 Rust). **Next is M4.4: shell.** It is the sharpest tool
+in the project and the rules are already written — §1: `run_command` **always
+confirms, full command text shown, no exceptions**, no classifier and no
+denylist (both are bypass generators). The machinery it needs all exists now:
+`dangerous` risk, the confirm dialog with Deny-default focus and a scrollable
+monospace argument block, `[tools] allow_dangerous` to switch it off wholesale,
+and taint to escalate a command that follows a file the model read.
 
-Two things M4.2 deliberately left for M4.3 to pick up:
-1. `ToolContext` (security/permissions.py) is where the taint fields go —
-   `tainted` and `taint_source`. It is already threaded from `run_exchange`
-   through `Registry.invoke` to the gate, so taint needs no new plumbing, and
-   §3's "the dialog says why" has a place to render from (ConfirmDialog has the
-   block for it).
-2. A session grant should be **invalidated by taint**: once untrusted content
-   enters, a previously-approved exact call must re-confirm. The broker's grant
-   check is one `if` at the top of `ConfirmBroker.request` — that is the hook.
+What M4.4 has to decide, and should not decide casually:
+1. **Working directory and environment.** A shell with the backend's cwd and
+   full env is a different tool from one pinned to a sandbox root with a
+   scrubbed env. The sandbox exists now, so pinning is available — but a shell
+   the user cannot point at their project is a shell they won't use.
+2. **Timeout and output caps.** `MAX_RESULT_CHARS` truncates, but a command
+   that never exits holds the generation slot. There is prior art in this
+   repo for a bounded wait (the confirm broker's timeout).
+3. **A shell can escape every other layer.** `cat ~/.ssh/id_rsa` ignores the
+   filesystem sandbox entirely, since the sandbox governs *file tools*, not
+   subprocesses. That is worth saying out loud in the docs rather than letting
+   the sandbox imply a protection it does not provide.
 
-Still deferred from M4.0: nothing. The readiness `tools` row and the picker's
-tool copy landed with M4.2.
+Still deferred from earlier milestones: nothing.
 
 **Two open items from M4.0:**
 1. `qwen3:8b` sits in the catalog as the 16GB default with **no**
@@ -536,10 +572,26 @@ hang it off.
    (marked "from a spoken request") → **"I need your OK — check the window"
    spoken aloud** → answered → tool ran → spoken reply → idle. The tool span
    also rendered correctly in that run.
-4. **New:** the dialog has only been seen in a browser-hosted build, not the
-   real WKWebView, and `show_window` (the Rust command that reveals the window
-   when a confirm arrives while the app is hidden in the tray) has never been
-   exercised — there is no way to hide to the tray outside the real app.
+4. The dialog has only been seen in a browser-hosted build, not the real
+   WKWebView, and `show_window` (the Rust command that reveals the window when
+   a confirm arrives while the app is hidden in the tray) has never been
+   exercised — there is no way to hide to the tray outside the real app. Now
+   covers M4.3's dialog too (the taint provenance block and the missing
+   "allow this session" button).
+5. **New:** a spoken *file* turn has not been heard. M4.2 verified voice+tools
+   acoustically with the dev `echo` tool, and M4.3's tools share `run_exchange`
+   and the same gate — but "read my notes and write a summary", spoken, has
+   never actually happened.
+
+**Live-verified in M4.3** (browser-hosted build, scratch sandbox, qwen3:4b,
+2026-07-23): a read with **no dialog**, a write in the same conversation
+confirming with the amber "follows content Jarvis read from …/notes.txt" block
+and **no "allow this session" button**, the file appearing on disk, `/etc/passwd`
+refused as `PATH_OUTSIDE_SANDBOX`, **a symlink inside the sandbox pointing out
+refused** with the key material never leaking, `delete_file` showing the *Risky*
+badge with Deny focused and the file actually disappearing, and — after
+`allow_dangerous = false` + restart — a delete refused with **no dialog at all**
+and the file surviving.
 
 ## First voice turn (fixed 2026-07-22) — what it actually was
 

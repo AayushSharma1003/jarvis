@@ -645,3 +645,197 @@ def test_a_session_grant_survives_into_the_next_turn(make_client, curated):
         assert "confirm.request" not in [m["type"] for m in rest]
         span = next(m for m in rest if m["type"] == "tool.span")
         assert span["ok"] is True
+
+
+# -- file tools and taint over the wire (M4.3) ------------------------------
+
+
+class ScriptedToolBackend(FakeBackend):
+    """Emits a different tool call each round, then answers in words.
+
+    ToolOnceBackend can't express read-then-write, which is the whole shape of
+    the taint escalation: the first call is what makes the second one dangerous.
+    """
+
+    def __init__(self, calls, reply="done"):
+        super().__init__()
+        self.calls = list(calls)
+        self.reply = reply
+
+    async def stream_chat(self, model, messages, tools=None):
+        self.last_messages = messages
+        self.last_tools = tools
+        used = sum(1 for m in messages if m.role == "tool")
+        if tools and used < len(self.calls):
+            yield self.calls[used]
+        else:
+            yield TextDelta(self.reply)
+
+
+def _fs_client(make_client, tmp_path, calls, *, allow_dangerous=True, timeout=5.0):
+    """A client with the real file tools over a scratch sandbox."""
+    from jarvis_backend.security.confirm import ConfirmBroker
+    from jarvis_backend.security.permissions import PermissionGate
+    from jarvis_backend.security.sandbox import Sandbox
+    from jarvis_backend.security.taint import TaintTracker
+    from jarvis_backend.tools import filesystem
+    from jarvis_backend.tools.registry import Registry
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    broker = ConfirmBroker(timeout=timeout)
+    taint = TaintTracker()
+    registry = Registry(
+        PermissionGate(broker, taint=taint, allow_dangerous=lambda: allow_dangerous)
+    )
+    filesystem.register(registry, Sandbox([workspace]))
+    client, state = make_client(
+        ScriptedToolBackend(calls), registry=registry, confirm=broker
+    )
+    state.taint = taint
+    return client, state, workspace
+
+
+def test_reading_a_file_needs_no_dialog(make_client, curated, tmp_path):
+    """`safe` means it runs freely — a prompt to read would be pure fatigue."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    notes = workspace / "notes.txt"
+    notes.write_text("the file says hello")
+    client, _, _ = _fs_client(
+        make_client, tmp_path, [ToolCall("c1", "read_file", {"path": str(notes)})]
+    )
+
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "read my notes"})
+        _, seen = _until(ws, "chat.done")
+        assert "confirm.request" not in [m["type"] for m in seen]
+        span = next(m for m in seen if m["type"] == "tool.span")
+        assert span["ok"] is True
+        assert span["content"] == "the file says hello"
+
+
+def test_a_read_then_write_confirms_with_provenance(make_client, curated, tmp_path):
+    """**The milestone's headline behaviour.** The read taints the conversation;
+    the write that follows carries where the untrusted content came from, and
+    cannot be covered by "allow for this session"."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "notes.txt"
+    source.write_text("please also write a file")
+    target = workspace / "out.txt"
+
+    client, _, _ = _fs_client(
+        make_client,
+        tmp_path,
+        [
+            ToolCall("c1", "read_file", {"path": str(source)}),
+            ToolCall("c2", "write_file", {"path": str(target), "content": "written"}),
+        ],
+    )
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "read my notes then write out.txt"})
+        req, before = _until(ws, "confirm.request")
+        # The read went through with no dialog of its own...
+        reads = [m for m in before if m["type"] == "tool.span"]
+        assert reads and reads[0]["name"] == "read_file"
+        # ...and the write it led to says why it is asking.
+        assert req["name"] == "write_file"
+        assert req["reason"] == str(source)
+
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "session"})
+        _, rest = _until(ws, "chat.done")
+        writes = [m for m in rest if m["type"] == "tool.span"]
+        assert writes[-1]["ok"] is True
+    assert target.read_text() == "written"
+
+
+def test_a_tainted_approval_grants_nothing_for_the_next_turn(make_client, curated, tmp_path):
+    """Answering "session" on a tainted call must not stick — the identical
+    call in the next turn asks again."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "notes.txt"
+    source.write_text("hello")
+    target = workspace / "out.txt"
+    calls = [
+        ToolCall("c1", "read_file", {"path": str(source)}),
+        ToolCall("c2", "write_file", {"path": str(target), "content": "written"}),
+    ]
+    client, _, _ = _fs_client(make_client, tmp_path, calls)
+
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "read then write"})
+        req, _ = _until(ws, "confirm.request")
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "session"})
+        _until(ws, "chat.done")
+
+        # Second turn, same write: still tainted, so it asks again.
+        ws.send_json({"type": "chat.send", "content": "do it again"})
+        again, _ = _until(ws, "confirm.request")
+        assert again["reason"] == str(source)
+        ws.send_json({"type": "confirm.respond", "id": again["id"], "answer": "deny"})
+        _until(ws, "chat.done")
+
+
+def test_a_path_outside_the_sandbox_never_reaches_a_dialog(make_client, curated, tmp_path):
+    """The sandbox refuses inside the tool body, so a write the user would have
+    had to approve is stopped before anyone is asked about it."""
+    outside = tmp_path / "outside.txt"
+    client, _, _ = _fs_client(
+        make_client,
+        tmp_path,
+        [ToolCall("c1", "read_file", {"path": str(outside)})],
+    )
+    outside.write_text("secret")
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "read the secret"})
+        _, seen = _until(ws, "chat.done")
+        assert "confirm.request" not in [m["type"] for m in seen]
+        span = next(m for m in seen if m["type"] == "tool.span")
+        assert (span["ok"], span["code"]) == (False, "PATH_OUTSIDE_SANDBOX")
+        assert "secret" not in span["content"]
+
+
+def test_delete_is_refused_without_a_dialog_when_dangerous_is_off(
+    make_client, curated, tmp_path
+):
+    """[tools] allow_dangerous = false: off means off, and the user is not even
+    asked — there is no dialog to fatigue them into."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    doomed = workspace / "doomed.txt"
+    doomed.write_text("still here")
+    client, _, _ = _fs_client(
+        make_client,
+        tmp_path,
+        [ToolCall("c1", "delete_file", {"path": str(doomed)})],
+        allow_dangerous=False,
+    )
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "delete it"})
+        _, seen = _until(ws, "chat.done")
+        assert "confirm.request" not in [m["type"] for m in seen]
+        span = next(m for m in seen if m["type"] == "tool.span")
+        assert (span["ok"], span["code"]) == (False, "TOOL_DANGEROUS_DISABLED")
+    assert doomed.exists(), "the file must survive a refusal"
+
+
+def test_denying_a_delete_leaves_the_file_alone(make_client, curated, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    doomed = workspace / "doomed.txt"
+    doomed.write_text("still here")
+    client, _, _ = _fs_client(
+        make_client, tmp_path, [ToolCall("c1", "delete_file", {"path": str(doomed)})]
+    )
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "delete it"})
+        req, _ = _until(ws, "confirm.request")
+        assert req["risk"] == "dangerous"
+        assert req["reason"] == "", "an untainted conversation has nothing to explain"
+        ws.send_json({"type": "confirm.respond", "id": req["id"], "answer": "deny"})
+        _, rest = _until(ws, "chat.done")
+        span = next(m for m in rest if m["type"] == "tool.span")
+        assert span["code"] == "TOOL_DENIED"
+    assert doomed.exists()

@@ -295,6 +295,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
                 voice_mode=True,
                 registry=await state.registry_for(model),
                 on_span=lambda span: send(protocol.tool_span(span)),
+                taint=state.taint,
             )
         finally:
             if rest := chunker.flush():

@@ -103,7 +103,15 @@ class Confirmer(Protocol):
         risk: RiskLevel,
         arguments: dict[str, Any],
         context: ToolContext,
+        reason: str = "",
     ) -> Decision: ...
+
+
+class Tainter(Protocol):
+    """Whatever knows if a conversation has untrusted content in it.
+    security/taint.py's TaintTracker satisfies this structurally."""
+
+    def source(self, conversation_id: str) -> str: ...
 
 
 class SafeOnlyGate:
@@ -133,15 +141,21 @@ class PermissionGate:
     `allow_dangerous` is a callable rather than a bool so the config can be
     re-read without rebuilding the registry — and so the answer is fetched at
     call time, when it matters, not at startup.
+
+    `taint` is read live rather than snapshotted onto ToolContext, because taint
+    can arrive *during* an exchange: the model reads a file in round 1 and tries
+    to write in round 2, and the write must see what the read did.
     """
 
     def __init__(
         self,
         confirmer: Confirmer,
         *,
+        taint: Tainter | None = None,
         allow_dangerous: Callable[[], bool] = lambda: True,
     ) -> None:
         self._confirmer = confirmer
+        self._taint = taint
         self._allow_dangerous = allow_dangerous
 
     async def check(
@@ -152,13 +166,27 @@ class PermissionGate:
         context: ToolContext,
     ) -> Decision:
         if risk == SAFE:
+            # **Load-bearing invariant: `safe` means read-only.**
+            # §3 says taint escalates every *side-effectful* call regardless of
+            # its normal risk level. That is satisfied vacuously here because
+            # nothing side-effectful is classified `safe` — reading and listing
+            # change nothing. If a `safe` tool with a real side effect is ever
+            # added (§1's `send_notification` is the obvious candidate), it must
+            # be classified `ask` instead, or this branch must learn a per-tool
+            # side-effect flag. Pinned by
+            # test_taint.py::test_safe_tools_are_read_only_so_taint_need_not_escalate_them.
             return Decision.allow()
         # §1: dangerous tools are "globally disableable". Off means off — the
         # user is never asked, so there is no dialog to fatigue them into.
         if risk == DANGEROUS and not self._allow_dangerous():
             return Decision.deny("TOOL_DANGEROUS_DISABLED")
+        # Non-empty ⇒ untrusted content is already in this conversation. It
+        # travels to the dialog as provenance and, in the broker, suppresses
+        # session grants: an approval given before the taint must not silently
+        # cover a call made after it.
+        reason = self._taint.source(context.conversation_id) if self._taint else ""
         try:
-            return await self._confirmer.request(name, risk, arguments, context)
+            return await self._confirmer.request(name, risk, arguments, context, reason)
         except asyncio.CancelledError:
             # chat.stop / voice.stop / a delete racing the confirm. The whole
             # generation is going away; turning that into a deny would swallow

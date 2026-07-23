@@ -75,6 +75,7 @@ def confirm_request(
     arguments: dict[str, Any],
     conversation_id: str = "",
     voice: bool = False,
+    reason: str = "",
 ) -> dict[str, Any]:
     """Ask every open UI to confirm one tool call.
 
@@ -84,6 +85,12 @@ def confirm_request(
     refuses to honour it there regardless, but the button shouldn't lie.
     `voice` tells the UI a spoken turn is waiting, so it can ask the backend to
     say so out loud; the wording is the frontend's, per the i18n rule.
+
+    `reason` is the taint source (§3) — where the untrusted content came from,
+    e.g. the path of a file that was read. It is **data, not a code**: the
+    sentence around it lives in the frontend's `confirm.taintReason`, the same
+    way readiness sends `model` and lets the UI write the copy. Non-empty also
+    means the call is not grantable, so the UI hides "allow for this session".
     """
     return {
         "type": "confirm.request",
@@ -93,6 +100,7 @@ def confirm_request(
         "arguments": arguments,
         "conversation_id": conversation_id,
         "voice": voice,
+        "reason": reason,
     }
 
 

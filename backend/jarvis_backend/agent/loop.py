@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from ..llm.base import ChatBackend, ChatMessage, LLMError, TextDelta, ToolCall
 from ..security.permissions import ToolContext
+from ..security.taint import TaintTracker
 from ..storage.conversations import Message, Store
 from ..tools.registry import Registry, ToolResult
 from .prompts import system_prompt
@@ -93,6 +94,7 @@ async def run_exchange(
     voice_mode: bool = False,
     registry: Registry | None = None,
     on_span: Callable[[ToolSpan], Awaitable[None]] | None = None,
+    taint: TaintTracker | None = None,
     max_rounds: int = MAX_TOOL_ROUNDS,
 ) -> ExchangeResult:
     """Stream one user→assistant exchange and persist it as ONE atomic turn.
@@ -184,6 +186,12 @@ async def run_exchange(
                 result: ToolResult = await registry.invoke(
                     call.id, call.name, call.arguments, context
                 )
+                # Mark the conversation BEFORE the next call is gated: a file
+                # read in this round is exactly what a write in the next one
+                # must be judged against. The gate reads the tracker live for
+                # the same reason (security/permissions.py).
+                if taint is not None and result.taint_source:
+                    taint.taint(conversation_id, result.taint_source)
                 span = ToolSpan(
                     call_id=call.id,
                     name=call.name,

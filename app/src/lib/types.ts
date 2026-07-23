@@ -67,6 +67,12 @@ export interface ConfirmRequest {
   arguments: Record<string, unknown>;
   conversation_id: string;
   voice: boolean;
+  /** Where untrusted content in this conversation came from — a file path
+   *  today, a URL once web_fetch exists. Empty when the conversation is clean.
+   *  Non-empty also means the call is not grantable, so the dialog hides
+   *  "allow for this session" (the backend refuses to record one regardless).
+   *  Backend: security/taint.py, docs/security-model.md §3. */
+  reason: string;
 }
 
 export interface HistoryMessage {

@@ -21,6 +21,7 @@ from ..llm import capabilities
 from ..llm.base import ChatBackend, LLMError
 from ..llm.tiering import params_b, pick_model, ram_gb, tier_budget_b
 from ..security.confirm import ConfirmBroker
+from ..security.taint import TaintTracker
 from ..storage.conversations import StorageError, Store
 from ..tools.registry import Registry
 from ..wake.detector import WakeError
@@ -80,6 +81,9 @@ class AppState:
     # answer a confirm, which is why a backend built without one gets
     # SafeOnlyGate and refuses every `ask` tool outright.
     confirm: ConfirmBroker | None = None
+    # Which conversations hold untrusted content (§3). The SAME instance is
+    # injected into the gate, which reads it; the agent loop writes it.
+    taint: TaintTracker | None = None
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -401,6 +405,7 @@ async def _generate(state: AppState, send, msg: dict[str, Any], content: str) ->
             parent_turn_id=msg.get("parent_turn_id"),
             registry=await state.registry_for(model),
             on_span=lambda span: send(protocol.tool_span(span)),
+            taint=state.taint,
         )
         if result.error_code:
             await send(protocol.error(result.error_code, result.error_detail))

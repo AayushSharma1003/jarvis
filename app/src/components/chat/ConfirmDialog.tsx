@@ -68,10 +68,12 @@ export function ConfirmDialog({
   });
 
   const args = Object.entries(request.arguments ?? {});
-  // "Allow for this session" is never offered for a dangerous tool: §1 says
-  // per-call confirmation, and per-call means per-call. The backend refuses to
-  // remember one regardless — this only keeps the button from lying.
-  const offerSession = request.risk !== "dangerous";
+  // "Allow for this session" is never offered for a dangerous tool (§1: per-call
+  // means per-call) nor for a tainted one (§3: an approval given before the
+  // untrusted content arrived must not cover a call made after it). The backend
+  // refuses to remember either regardless — this only keeps the button from
+  // lying about what it would do.
+  const offerSession = request.risk !== "dangerous" && !request.reason;
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -99,6 +101,18 @@ export function ConfirmDialog({
           {t("confirm.title", { name: request.name })}
         </h2>
         <p className="mt-1 text-xs text-zinc-400">{t("confirm.body")}</p>
+
+        {/* §3's "the dialog says why". Without provenance, a confirmation
+            manufactured by injected content is indistinguishable from one the
+            user's own request produced. */}
+        {request.reason && (
+          <p className="mt-2 rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs leading-relaxed text-amber-200/90 ring-1 ring-amber-500/20">
+            {t("confirm.taintReason")}{" "}
+            <span data-selectable className="break-all font-mono text-[11px]">
+              {request.reason}
+            </span>
+          </p>
+        )}
 
         {args.length > 0 && (
           <dl className="mt-3 max-h-40 overflow-y-auto rounded-lg bg-zinc-950/70 px-3 py-2">

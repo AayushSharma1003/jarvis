@@ -34,12 +34,23 @@
       "TOOL_CONFIRM_NO_UI": "there was no window open to ask",
       "TOOL_CONFIRM_FAILED": "the permission check failed",
       "TOOL_DANGEROUS_DISABLED": "risky tools are switched off in your config",
+      "PATH_OUTSIDE_SANDBOX": "that path is outside the folders you allow",
+      "PATH_NOT_ABSOLUTE": "it needs the full path",
+      "PATH_REQUIRED": "no path was given",
+      "FILE_NOT_FOUND": "there's no such file",
+      "IS_A_DIRECTORY": "that's a folder, not a file",
+      "NOT_A_DIRECTORY": "that's a file, not a folder",
+      "FILE_TOO_LARGE": "that file is too big to read",
+      "READ_FAILED": "it couldn't be read",
+      "WRITE_FAILED": "it couldn't be written",
+      "DELETE_FAILED": "it couldn't be deleted",
       "UNKNOWN": "unknown problem"
     }
   },
   "confirm": {
     "title": "Let Jarvis use {{name}}?",
     "body": "Jarvis asked to do this. Nothing runs until you allow it.",
+    "taintReason": "Heads up — this follows content Jarvis read from",
     "deny": "Don't allow",
     "once": "Allow once",
     "session": "Allow this session",

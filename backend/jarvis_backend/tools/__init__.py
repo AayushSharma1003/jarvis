@@ -1,14 +1,15 @@
 """The default tool set.
 
-M4.2 still ships exactly one real tool, and it is deliberately the most boring
-one imaginable: `get_datetime` reads the clock. No filesystem, no network, no
-subprocess, nothing to sandbox. The real tools (files, shell, web_fetch) arrive
-in M4.3-M4.5, each with its security layer, never before it.
+`get_datetime` reads the clock and always has. M4.3 adds the first tools with
+real side effects — read/list/write/delete — and they arrive **with** their
+security layer, never before it: the sandbox is a required argument of
+`filesystem.build`, so a file tool that skips path resolution is not something
+this module can express.
 
-What changed in M4.2 is the gate: `default_registry` now takes one, because the
-confirmation engine that makes an `ask` tool honest finally exists. The gate is
-still a required argument with no default — a Registry without a security layer
-must stay impossible to construct.
+The layering, milestone by milestone: M4.1 built the wire, M4.2 built the gate
+(`default_registry` takes one, no default — a Registry without a security layer
+must stay impossible to construct), M4.3 hands that gate something worth
+guarding. Shell is M4.4 and web_fetch M4.5, on the same terms.
 
 **The dev tool.** Under `JARVIS_DEV_TOOLS=1` an `ask`-risk `echo` is registered.
 It exists because the permission engine ships a milestone before the first tool
@@ -26,6 +27,8 @@ import os
 from datetime import datetime
 
 from ..security.permissions import ASK, SAFE, Gate
+from ..security.sandbox import Sandbox
+from . import filesystem
 from .registry import Registry
 
 DEV_TOOLS_ENV = "JARVIS_DEV_TOOLS"
@@ -47,14 +50,21 @@ def dev_tools_enabled() -> bool:
     return os.environ.get(DEV_TOOLS_ENV) == "1"
 
 
-def default_registry(gate: Gate) -> Registry:
+def default_registry(gate: Gate, sandbox: Sandbox | None = None) -> Registry:
     """The tool set the agent loop is given.
 
     The gate is not optional and not defaulted: "run a tool without consulting
     the security layer" must remain an inexpressible operation, not a
     discouraged one.
+
+    `sandbox=None` ships no file tools at all — the honest state for a backend
+    built without one. Note that a Sandbox with **no roots** is a different
+    thing: the tools exist and refuse every path, which is what a user who
+    configured `roots = []` asked for.
     """
     registry = Registry(gate)
+    if sandbox is not None:
+        filesystem.register(registry, sandbox)
     registry.register(
         get_datetime,
         risk=SAFE,

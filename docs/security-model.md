@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: design approved; §1 (permission engine + confirmation) implemented in M4.2, §2-§3 pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
+> Status: §1 (permission engine + confirmation) implemented in M4.2; §2 (filesystem sandbox) and §3 (taint) in M4.3. §4's `web_fetch` guards and §5 (extensions) are still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -44,6 +44,20 @@ With `JARVIS_DEV_TOOLS=1` the registry gains an `ask`-risk `echo` tool whose bod
 
 Filesystem tools operate only under user-configured roots. Enforcement happens on **`Path.resolve()`-ed (symlink-resolved) absolute paths** — checking the path the user typed is not enforcement. Escaping requires explicit per-path user opt-in. The extensions directory and JARVIS's own config/data directories are **permanently outside** all sandbox roots, so no tool can self-escalate by writing an extension or editing permissions.
 
+Implemented in `backend/jarvis_backend/security/sandbox.py`; the escape cases are `backend/tests/test_sandbox.py`.
+
+- **Defaults: Documents, Downloads, Desktop** (`[filesystem] roots` in config.toml, resolved per-OS by platformdirs). Not the whole home directory, so dotfiles, `~/.ssh` and shell history are out of reach on day one. Downloads is included deliberately even though it is where untrusted files land — that is the case §3 exists for, and excluding it would just mean the assistant cannot help with the folder people most want help with.
+- **Absent key ⇒ defaults; an explicit `roots = []` ⇒ no file access at all.** The two look alike in a naive lookup and mean opposite things; an empty allowlist that quietly means "allow everything" is a classic and is not ours.
+- **Exclusions are checked before roots**, so "inside a configured root" can never override "inside Jarvis's own directories" — which matters because on Linux the config and data dirs legitimately live under the home directory.
+- Relative paths are **refused**, never resolved against the process's working directory: the model does not know what that is, so the same argument would name different files on different runs, and one of those would eventually land outside the sandbox.
+- Roots are resolved at construction too, because `~/Documents` is a symlink on plenty of real machines (iCloud Drive); comparing an unresolved root against resolved paths would deny everything it is supposed to allow.
+
+## 2a. File tools (M4.3)
+
+`read_file` and `list_dir` are `safe`, `write_file` is `ask`, `delete_file` is `dangerous`. Deleting a **directory** is refused outright rather than approximated: one confirmation cannot honestly represent an unbounded set of files.
+
+Reading is deliberately free of confirmation — it changes nothing, and a prompt per file is the fatigue this document warns about. What carries the security is that a read **taints** (§3). The residual risk is silent reading into context, which matters mainly with a cloud backend; §6's screen warning is the natural place that extends to.
+
 ## 3. Taint tracking (prompt-injection defense)
 
 Delimiters around untrusted content are labeling, not defense. The mechanism:
@@ -51,6 +65,14 @@ Delimiters around untrusted content are labeling, not defense. The mechanism:
 - Content from `web_fetch`, `web_search` results, or files outside a trusted set marks the conversation **tainted**.
 - From that point, *every* side-effectful tool call — regardless of its normal risk level — escalates to explicit confirmation, and the dialog says why ("this request follows content from example.com").
 - Enforced in the tool-execution layer (`backend/jarvis_backend/security/taint.py`), never in the prompt.
+
+Implemented in M4.3. How it actually works, and the parts worth knowing:
+
+- **A tool declares its own taint.** `read_file` returns a `ToolOutput` carrying the path it read; the agent loop turns that into conversation taint. Nothing downstream can infer "untrusted" from the text itself — which is exactly why prompt-side labeling fails.
+- **Conversation-scoped and sticky for the process's life**, in memory, never persisted (same posture as §1's session grants). Sticky across turns on purpose: the raw tool result is *not* replayed to the model in later turns, but the assistant's own prose about it is, so a laundered instruction outlives the exchange that introduced it.
+- **A tainted call is never grantable, in both directions.** A session grant given before the untrusted content arrived does not cover a call made after it, and approving a tainted call grants nothing for later. The grant key is only tool+arguments, and an injection reuses exactly those — the taint is the only thing that can tell the two calls apart, so it wins.
+- The dialog shows the source path and hides "allow for this session"; the backend refuses to record one regardless, since the button is in a webview and the enforcement is not.
+- **Scope limit, stated so it cannot drift:** the escalation of *safe* side-effectful tools is satisfied vacuously today, because in this codebase `safe` means read-only and everything side-effectful is already `ask` or higher. If a `safe` tool with a real side effect is ever added (`send_notification` is the candidate this document names), it must be classified `ask`, or the gate must learn a per-tool side-effect flag. `PermissionGate.check` carries the comment and `test_taint.py` carries the tripwire.
 
 ## 4. Network guards
 

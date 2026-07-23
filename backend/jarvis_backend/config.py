@@ -39,6 +39,16 @@ threshold = 0.5
 # without even asking. Tools marked "ask" (writing a file, reading the
 # clipboard) are unaffected and always confirm.
 allow_dangerous = true
+
+[filesystem]
+# Folders the file tools may touch. Paths are symlink-resolved before the
+# check, so a shortcut inside one of these that points elsewhere does NOT
+# widen the sandbox. Jarvis's own config and data folders are permanently
+# off-limits even if you list a folder containing them.
+#
+# Leave this key out for the defaults: your Documents, Downloads and Desktop.
+# Set it to an empty list to switch file access off entirely.
+# roots = ["~/Documents", "~/Downloads", "~/Desktop"]
 """
 
 
@@ -61,6 +71,38 @@ class Config:
     # §1's "globally disableable". True still means every dangerous call
     # confirms; false means they are refused without asking.
     allow_dangerous_tools: bool = True
+    # §2's sandbox roots. An EMPTY tuple means no file access at all, and is
+    # reachable only by writing `roots = []` — an absent key gets the defaults
+    # (see `default_filesystem_roots`), never this.
+    filesystem_roots: tuple[Path, ...] = ()
+
+
+def default_filesystem_roots() -> tuple[Path, ...]:
+    """Where file tools may work when the user hasn't said otherwise.
+
+    Documents / Downloads / Desktop: useful on day one without handing over the
+    whole home directory, so dotfiles, ~/.ssh and shell history stay out of
+    reach. platformdirs resolves these per-OS (and honours XDG on Linux), so
+    this is not a macOS-shaped guess.
+
+    Downloads is in the list on purpose even though it is where untrusted files
+    land — that is the case taint tracking exists for, and excluding it would
+    just mean the assistant can't help with the folder people most often want
+    help with. Reading one of those files still marks the conversation.
+    """
+    import platformdirs
+
+    roots = []
+    for getter in (
+        platformdirs.user_documents_path,
+        platformdirs.user_downloads_path,
+        platformdirs.user_desktop_path,
+    ):
+        try:
+            roots.append(getter())
+        except Exception:  # noqa: BLE001 - a missing folder is not a startup failure
+            continue
+    return tuple(roots)
 
 
 def config_dir() -> Path:
@@ -104,6 +146,17 @@ def load() -> Config:
     if not isinstance(allow_dangerous, bool):
         raise ConfigError("CONFIG_INVALID_VALUE", "[tools] allow_dangerous must be a boolean")
 
+    # Absent key ⇒ defaults; present-but-empty ⇒ deny all. The distinction is
+    # the whole point, so `.get` with a sentinel rather than `.get(k, default)`.
+    filesystem = raw.get("filesystem", {})
+    roots_raw = filesystem.get("roots")
+    if roots_raw is None:
+        roots = default_filesystem_roots()
+    elif isinstance(roots_raw, list) and all(isinstance(r, str) for r in roots_raw):
+        roots = tuple(Path(r).expanduser() for r in roots_raw)
+    else:
+        raise ConfigError("CONFIG_INVALID_VALUE", "[filesystem] roots must be a list of strings")
+
     ddir = data_dir()
     ddir.mkdir(parents=True, exist_ok=True)
     return Config(
@@ -111,6 +164,7 @@ def load() -> Config:
         default_model=default_model,
         wake_threshold=float(wake_threshold),
         allow_dangerous_tools=allow_dangerous,
+        filesystem_roots=roots,
         config_path=path,
         data_dir=ddir,
     )

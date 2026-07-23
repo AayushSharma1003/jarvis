@@ -42,12 +42,34 @@ _JSON_TYPES: dict[Any, str] = {
 
 
 @dataclass(frozen=True)
+class ToolOutput:
+    """What a tool returns when its result carries untrusted content.
+
+    Tools normally return a plain `str`. Returning this instead lets a tool
+    declare that what it fetched came from somewhere the user did not write —
+    a file's contents, later a web page — so the agent loop can mark the
+    conversation tainted (security/taint.py, §3).
+
+    The tool declares it because the tool is the only thing that knows: the
+    registry sees an opaque return value, and the loop sees a string. Nobody
+    downstream can infer "this is untrusted" from the text itself, which is
+    precisely why prompt-side labeling doesn't work either.
+    """
+
+    content: str
+    taint_source: str = ""
+
+
+@dataclass(frozen=True)
 class ToolResult:
     name: str
     call_id: str
     content: str
     ok: bool = True
     code: str = ""  # machine-readable failure code, empty when ok
+    # Where untrusted content in `content` came from, "" when trusted. The
+    # agent loop turns this into conversation taint; the registry only relays.
+    taint_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -197,7 +219,12 @@ class Registry:
             code = getattr(e, "code", "TOOL_FAILED")
             return ToolResult(name, call_id, str(e)[:500], ok=False, code=code)
 
-        text = output if isinstance(output, str) else repr(output)
+        if isinstance(output, ToolOutput):
+            text, taint_source = output.content, output.taint_source
+        else:
+            text, taint_source = (output if isinstance(output, str) else repr(output)), ""
         if len(text) > MAX_RESULT_CHARS:
             text = text[:MAX_RESULT_CHARS] + "\n… (truncated)"
-        return ToolResult(name, call_id, text)
+        # Truncation does not clear the taint: a shortened untrusted string is
+        # still untrusted, and the injection is usually in the first paragraph.
+        return ToolResult(name, call_id, text, taint_source=taint_source)

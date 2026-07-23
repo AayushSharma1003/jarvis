@@ -114,10 +114,21 @@ class ConfirmBroker:
         risk: RiskLevel,
         arguments: dict[str, Any],
         context: ToolContext,
+        reason: str = "",
     ) -> Decision:
-        key = grant_key(name, arguments)
+        """Ask the user about one call. `reason` non-empty ⇒ tainted (§3).
 
-        if key in self._grants:
+        A tainted call is never grantable, in both directions: an approval given
+        before untrusted content arrived does not cover a call made after it, and
+        approving a tainted call grants nothing for later. The identical
+        arguments are exactly what an injection would reuse, so the grant key —
+        which is only tool+arguments — cannot tell the two apart. The taint is
+        the only thing that can, so it has to win.
+        """
+        key = grant_key(name, arguments)
+        grantable = risk != DANGEROUS and not reason
+
+        if grantable and key in self._grants:
             # Re-approving something already approved this session is the
             # fatigue this grant exists to prevent. Refresh its recency so a
             # tool the user keeps using isn't evicted by one they used once.
@@ -144,6 +155,7 @@ class ConfirmBroker:
             arguments=arguments,
             conversation_id=context.conversation_id,
             voice=context.voice,
+            reason=reason,
         )
         if not await self._broadcast(request, conns):
             # Every UI we knew about failed to receive it. Nobody can answer.
@@ -164,10 +176,11 @@ class ConfirmBroker:
         if answer == ANSWER_DENY:
             context.denied.add(key)
             return Decision.deny("TOOL_DENIED")
-        if answer == ANSWER_SESSION and risk != DANGEROUS:
+        if answer == ANSWER_SESSION and grantable:
             # §1: dangerous is "per-call confirmation", and per-call means
-            # per-call. Enforced here rather than by hiding the button, because
-            # the button is in a webview and this is not.
+            # per-call — and a tainted call is likewise never remembered.
+            # Enforced here rather than by hiding the buttons, because the
+            # buttons are in a webview and this is not.
             self._remember(key)
         return Decision.allow()
 

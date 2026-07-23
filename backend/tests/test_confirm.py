@@ -127,7 +127,7 @@ async def test_a_broker_that_raises_denies():
     """Fail-safe: a broken confirmation path must never read as approval."""
 
     class Exploding:
-        async def request(self, name, risk, arguments, context):
+        async def request(self, name, risk, arguments, context, reason=""):
             raise RuntimeError("broker is on fire")
 
     gate = PermissionGate(Exploding())
@@ -344,7 +344,7 @@ async def test_safe_tools_never_reach_the_broker():
         def __init__(self):
             self.asked = []
 
-        async def request(self, name, risk, arguments, context):
+        async def request(self, name, risk, arguments, context, reason=""):
             self.asked.append(name)
             return Decision.allow()
 
@@ -359,7 +359,7 @@ async def test_dangerous_tools_can_be_disabled_globally_without_asking():
         def __init__(self):
             self.asked = []
 
-        async def request(self, name, risk, arguments, context):
+        async def request(self, name, risk, arguments, context, reason=""):
             self.asked.append(name)
             return Decision.allow()
 
@@ -372,7 +372,7 @@ async def test_dangerous_tools_can_be_disabled_globally_without_asking():
 
 async def test_disabling_dangerous_does_not_disable_ask():
     class Yes:
-        async def request(self, name, risk, arguments, context):
+        async def request(self, name, risk, arguments, context, reason=""):
             return Decision.allow()
 
     gate = PermissionGate(Yes(), allow_dangerous=lambda: False)
@@ -384,7 +384,7 @@ async def test_the_gate_lets_cancellation_through():
     would be refused and the exchange would carry on regardless."""
 
     class Hanging:
-        async def request(self, name, risk, arguments, context):
+        async def request(self, name, risk, arguments, context, reason=""):
             await asyncio.sleep(3600)
 
     gate = PermissionGate(Hanging())
