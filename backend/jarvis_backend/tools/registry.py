@@ -79,6 +79,13 @@ class Tool:
     risk: RiskLevel
     fn: Callable[..., Any]
     parameters: dict[str, Any] = field(default_factory=dict)
+    # Does this tool change nothing? Only meaningful for `safe` tools, where it
+    # decides whether taint escalates the call (§3, security/permissions.py).
+    # **Defaults to False**: an unvouched-for tool costs one confirmation in a
+    # tainted conversation, while the opposite default would silently skip the
+    # taint check. Extension tools are always False — the core cannot verify a
+    # third party's claim to be read-only.
+    read_only: bool = False
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -153,6 +160,7 @@ class Registry:
         name: str = "",
         description: str = "",
         params: dict[str, str] | None = None,
+        read_only: bool = False,
     ) -> Tool:
         if params:
             fn._param_docs = params  # type: ignore[attr-defined]
@@ -162,6 +170,7 @@ class Registry:
             risk=risk,
             fn=fn,
             parameters=build_parameters(fn),
+            read_only=read_only,
         )
         self._tools[tool.name] = tool
         return tool
@@ -198,7 +207,14 @@ class Registry:
             return ToolResult(name, call_id, "", ok=False, code="TOOL_NOT_FOUND")
 
         decision: Decision = await self._gate.check(
-            tool.name, tool.risk, arguments, context or ToolContext()
+            tool.name,
+            tool.risk,
+            arguments,
+            context or ToolContext(),
+            # Fixed at registration, never taken from the call: the gate cannot
+            # ask the tool, and a tool that could assert this per call could
+            # assert its way out of the taint check.
+            read_only=tool.read_only,
         )
         if not decision.allowed:
             return ToolResult(name, call_id, "", ok=False, code=decision.code or "TOOL_DENIED")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import time
@@ -23,7 +24,18 @@ import psutil
 import uvicorn
 
 from . import assets
-from .config import Config, config_dir, data_dir, load, load_wake_enabled, save_wake_enabled
+from .config import (
+    Config,
+    approvals_path,
+    config_dir,
+    data_dir,
+    extensions_dir,
+    load,
+    load_wake_enabled,
+    save_wake_enabled,
+)
+from .extensions.approvals import ApprovalStore
+from .extensions.loader import discover, load_approved
 from .llm.ollama import OllamaBackend
 from .security.confirm import ConfirmBroker
 from .security.permissions import PermissionGate
@@ -35,9 +47,46 @@ from .server.voice import RealVoiceIO
 from .storage import db
 from .storage.conversations import Store
 from .tools import default_registry
+from .tools.registry import Registry
 from .wake.service import WakeService
 
 PARENT_POLL_S = 2.0
+
+log = logging.getLogger(__name__)
+
+
+def load_extensions(registry: Registry) -> None:
+    """Add the tools of every approved extension. Never raises (§5).
+
+    Called after `default_registry`, so the core tool names are already taken
+    and an extension trying to claim one is refused rather than shadowing it.
+
+    With nothing approved this registers nothing, which is the out-of-the-box
+    state: dropping a folder into the extensions directory makes it *visible*
+    (`jarvis extensions list`), never active. Reporting goes through `logging`,
+    which writes to stderr — stdout carries the one JSON ready line the Tauri
+    supervisor parses and must not gain a second.
+    """
+    try:
+        store = ApprovalStore(approvals_path())
+        found = discover(extensions_dir(), store)
+        for entry in found:
+            if entry.status != "approved":
+                log.warning(
+                    "extension %s not loaded: %s%s",
+                    entry.name,
+                    entry.status,
+                    f" ({entry.code})" if entry.code else "",
+                )
+        for result in load_approved(registry, found):
+            if result.ok:
+                log.info("extension %s loaded: %s", result.name, ", ".join(result.tools) or "-")
+                if result.detail:
+                    log.warning("extension %s: %s", result.name, result.detail)
+            else:
+                log.warning("extension %s failed: %s %s", result.name, result.code, result.detail)
+    except Exception:  # noqa: BLE001 - extensions must never stop the sidecar booting
+        log.exception("extension loading failed")
 
 
 def run() -> None:
@@ -69,13 +118,17 @@ def run() -> None:
     sandbox = Sandbox(
         roots=list(config.filesystem_roots), excluded=[config_dir(), data_dir()]
     )
+    registry = default_registry(gate, sandbox)
+    # After the core tools, never before: a name already in the registry is
+    # refused, so this ordering is what stops an extension shadowing read_file.
+    load_extensions(registry)
     state = AppState(
         token=token,
         store=store,
         backend=backend,
         config=config,
         voice_io=RealVoiceIO(),
-        registry=default_registry(gate, sandbox),
+        registry=registry,
         confirm=confirm,
         taint=taint,
     )

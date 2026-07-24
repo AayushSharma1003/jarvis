@@ -268,6 +268,37 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     defense (a test can't distinguish it, so it's commented as such). The residual
     it does **not** close is DNS rebinding — documented (§4), not solved.
 
+21. **`safe` stopped meaning read-only, and the fail-safe default is the
+    unintuitive one** (`security/permissions.py`, M5.1). §3 escalates every
+    *side-effectful* call once a conversation is tainted, and that was satisfied
+    vacuously because nothing side-effectful was classified `safe`. Extensions
+    broke it: an extension may declare a tool `safe` and the core cannot verify
+    the claim (`set_timer` mutates — and `timers-reminders/manifest.toml`
+    declares exactly that, committed, before any of this existed). `safe` skips
+    the taint check entirely, so that was a silent hole. The gate now takes
+    **`read_only`**, fixed at registration and never assertable per call: core
+    reads pass `True`, **every** extension tool gets `False`, and `safe` +
+    not-read-only runs freely while clean but confirms once tainted. The default
+    is **`False`**, which reads backwards until you see the failure modes:
+    forgetting it costs one extra confirmation, while defaulting `True` would
+    silently skip the taint check for a tool nobody vouched for. The dataclass
+    default and `Registry.register`'s default are **separate tests** — `register`
+    always passes the flag explicitly, so a mutation flipping the `Tool` default
+    was caught by nothing until `test_a_tool_built_directly_is_not_read_only_either`
+    existed.
+22. **Mutation testing has a second false-negative mode: stale bytecode.**
+    Gotcha 16 covers substring collisions. This one is worse because it is
+    *intermittent*. CPython validates a `.pyc` against the source's
+    **(mtime_seconds, size)** — so two mutations that remove the **same number of
+    characters**, applied within the same wall-clock second, produce sources the
+    cache cannot tell apart, and the second run silently executes the **first
+    mutation's** bytecode. Hit for real in M5.1: two unrelated mutations each
+    removed exactly 47 characters, and a genuinely-caught mutation reported as
+    "not caught" on roughly half of runs. A mutation harness must purge
+    `__pycache__` between mutations (`PYTHONDONTWRITEBYTECODE=1` alone is not
+    enough — a stale `.pyc` from an earlier run is still readable). Symptom:
+    re-running the same harness twice gives different answers.
+
 ## Repo map
 
 ```
@@ -350,7 +381,7 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    no longer bumps `updated_at` (`set_title(..., touch=False)`), so the
    sidebar keeps last-*activity* order. **First-turn clipping fixed** — see
    gotcha 11 and "First voice turn" below. 108 backend tests.
-4. **Agency + security** — ⬅ **IN PROGRESS, and the largest phase.** Permission
+4. ✅ **Agency + security** — **DONE 2026-07-24, and the largest phase.** Permission
    engine + taint + sandbox, tools ship WITH their security layer. Shipping a
    half-built permission engine is worse than not shipping: cut the tool list
    before cutting the security layer. **Scope agreed 2026-07-22:** M4.0 model
@@ -467,8 +498,38 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    delegated), same posture as §2's file TOCTOU. **361 backend tests** (47 new,
    each mutation-proven — classifier, any-IP rule, scheme block, IP-literal,
    redirect re-validation, byte cap, taint). See gotcha 20.
-5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
-   default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
+5. ⬅ **Extended scope — IN PROGRESS.** The extension work splits four ways:
+   **M5.1 loader + approvals (DONE)**, M5.2 approval UI, M5.3 `jarvis install`,
+   M5.4 the default extensions. Also: branching UI, model catalog UI, wake-word
+   training + "Hey Friday", opt-in VAD barge-in.
+   ✅ **M5.1 extension manifest + approval + loader DONE** (2026-07-24) — §5, the
+   last security section, and the honest version of it. **The headline is what it
+   does NOT do:** an approved extension is `extension.py` imported into the
+   sidecar, running with everything that process can do, so `network = false`
+   cannot stop `import socket`. The `[permissions]` block is a **declaration of
+   intent, not a capability boundary** — enforcing it needs a subprocess per
+   extension behind RPC, a different architecture. §5 now leads with that rather
+   than burying it, and the approval prompt says it in those words.
+   **What IS enforced, each mutation-proven:** approval is keyed on a SHA-256 of
+   **every file** (manifest included, so a risk level cannot be lowered after the
+   fact) — one edited byte ⇒ `changed` ⇒ not loaded; **approval precedes
+   execution** (discovery reads TOML + hashes bytes and imports NOTHING, since
+   importing *is* executing — tripwire: an extension whose module body writes a
+   sentinel file, asserted absent); the record lives in the sandbox-excluded data
+   dir so **nothing can approve itself**; risk levels are **floors** the core
+   raises and never lowers (`network = true` ⇒ floor `ask`, the one enforceable
+   consequence that declaration can carry); the manifest is an **allowlist** (an
+   undeclared function is never registered); a name already registered is
+   **refused**, so `read_file` cannot be hijacked; a broken extension is a
+   `LoadResult`, never a startup crash.
+   New: `extensions/{manifest,approvals,loader}.py` (the three stubs were 0
+   bytes), `config.extensions_dir()`/`approvals_path()`, `jarvis extensions
+   list|approve|revoke` (the CLI's prompt IS the approval dialog until M5.2 —
+   `--yes` skips the question, not the printing), and 26 `extension.*` i18n keys
+   (unreferenced until M5.2's UI, added so nothing has to be backfilled).
+   **Core change: the `read_only` flag** — see gotcha 21. **481 backend tests**
+   (120 new), 51 mutations proven. Behaviour out of the box is unchanged: nothing
+   is approved, so nothing loads.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
@@ -588,12 +649,34 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-4 complete.** All of Phase 4 (M4.0-M4.5) is done and green
-(**361 backend tests, 2 Rust**). The tool list ships: files, shell, web_fetch,
-each with its security layer. **Phase 5 (extended scope) is next** — branching
-UI, `jarvis install <url>`, model catalog UI, default extensions + the extension
-loader/approval gate (§5, the one deferred security piece), wake-word training +
-"Hey Friday", opt-in VAD barge-in.
+**Phases 1-4 complete; Phase 5 started.** M5.1 (extension manifest, content-keyed
+approval, loader, risk floors, `jarvis extensions` CLI) is done and green —
+**481 backend tests, 2 Rust**. §5 is no longer ahead of the code, so
+security-model.md and the implementation now agree everywhere.
+
+**Next, in the order that makes sense:**
+1. **M5.2 approval UI** — surface `discover()` over the WS (`extensions.list` /
+   `.approve` / `.revoke`) and build the panel. The i18n keys are already in
+   `en.json`; `Settings.tsx` and `PermissionsPanel.tsx` are 0-byte stubs waiting.
+   `AppState` deliberately does NOT hold the discovery result yet — M5.2 adds the
+   field when it has a consumer.
+2. **M5.4 default extensions** — `timers-reminders` first (cross-platform
+   reference). **Revisit its risk levels when writing the code**: the committed
+   manifest declares `set_timer`/`set_reminder`/`cancel_timer` as `safe`, which
+   M5.1 made *safe-but-not-read-only* rather than wrong, but the author should
+   decide deliberately rather than inherit it. `calendar-macos` drags **pyobjc**
+   — a new dependency on a project that has been strict about them, and worth its
+   own conversation before it lands.
+3. **M5.3 `jarvis install <url>`** — the `source`/`commit` fields already exist in
+   the approval record. Needs a decision on shelling out to `git` (owner-approved:
+   yes, with a clear error code when absent).
+4. Branching UI, model catalog UI, "Hey Friday", opt-in VAD barge-in.
+
+**Known M5.1 limits, deliberate:** single-file `extension.py` only (`sys.path` is
+untouched, because an extension shipping `json.py` would shadow the stdlib
+process-wide); symlinks anywhere in an extension tree refuse it outright
+(otherwise a symlinked `extension.py` is a digest bypass); `__pycache__` is
+excluded from the digest, with the planted-`.pyc` residual documented in §5.
 
 ### Pre-public security + bug audit (2026-07-23 → 2026-07-24)
 
@@ -770,10 +853,22 @@ hang it off.
    exercised — there is no way to hide to the tray outside the real app. Now
    covers M4.3's dialog too (the taint provenance block and the missing
    "allow this session" button).
-5. **New:** a spoken *file* turn has not been heard. M4.2 verified voice+tools
+5. A spoken *file* turn has not been heard. M4.2 verified voice+tools
    acoustically with the dev `echo` tool, and M4.3's tools share `run_exchange`
    and the same gate — but "read my notes and write a summary", spoken, has
    never actually happened.
+6. **New (M4.4/M4.5): no full-stack live run of shell or web_fetch through the
+   model.** Both are covered by mutation-proven unit suites, and both reuse the
+   exact gate → broker → dialog → span → taint path that M4.3 *did* verify live
+   with a `dangerous` tool (`delete_file`: Risky badge, Deny focused, no session
+   button, real deletion) — so the confirmation path is proven, just not with
+   these two tools driving it. What *was* proven live for M4.5: the **real**
+   `web_fetch` (default httpx client + real getaddrinfo, not MockTransport)
+   refused `http://localhost:11434/` as `URL_BLOCKED` (resolved `::1`, refused
+   before touching the running Ollama) and `http://169.254.169.254/` likewise,
+   and fetched `http://example.com/` successfully with HTML stripped to text and
+   `taint_source` set. Outstanding: a spoken/typed "run git status" and "fetch
+   <url>" end-to-end through qwen3:4b in the real app, watching the dialog.
 
 **Live-verified in M4.3** (browser-hosted build, scratch sandbox, qwen3:4b,
 2026-07-23): a read with **no dialog**, a write in the same conversation
@@ -813,6 +908,7 @@ Not warming engines at boot was deliberate: it would have cost ~500 MB resident
 on the 8 GB target for users who never speak, and it does not fix push-to-talk
 one second after launch.
 
-Then Phase 4 (agency + security) — the largest phase, and the one where
-shipping a half-built permission engine is worse than not shipping. Cut the
-tool list before cutting the security layer.
+Phase 4 (agency + security) is **complete** — the largest phase, and the one
+where shipping a half-built permission engine would have been worse than not
+shipping. The rule that got it there, kept for Phase 5's extension loader: cut
+the tool list before cutting the security layer.

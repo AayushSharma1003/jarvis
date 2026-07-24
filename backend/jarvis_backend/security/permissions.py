@@ -82,7 +82,17 @@ class ToolContext:
 
 
 class Gate(Protocol):
-    """Consulted before every tool invocation."""
+    """Consulted before every tool invocation.
+
+    `read_only` is the per-tool side-effect flag §3 anticipated (M5.1). It is
+    fixed at registration and travels with the call, because the gate cannot ask
+    the tool and the tool cannot be trusted to answer at call time.
+
+    **It defaults to False — the fail-safe direction**, matching `roots = []` ⇒
+    deny and "missing catalog ⇒ tools off". A caller who forgets it costs the
+    user one extra confirmation in a tainted conversation; defaulting the other
+    way would silently skip the taint check for a tool nobody vouched for.
+    """
 
     async def check(
         self,
@@ -90,6 +100,8 @@ class Gate(Protocol):
         risk: RiskLevel,
         arguments: dict[str, Any],
         context: ToolContext,
+        *,
+        read_only: bool = False,
     ) -> Decision: ...
 
 
@@ -129,7 +141,13 @@ class SafeOnlyGate:
         risk: RiskLevel,
         arguments: dict[str, Any],
         context: ToolContext,
+        *,
+        read_only: bool = False,
     ) -> Decision:
+        # `read_only` is accepted and ignored on purpose. This gate's rule is
+        # about whether anyone is available to *confirm*, not about taint — it
+        # holds no tracker, so it has nothing to escalate against. Refusing a
+        # non-read-only `safe` tool here would break headless runs for no gain.
         if risk == SAFE:
             return Decision.allow()
         return Decision.deny("TOOL_CONFIRMATION_UNAVAILABLE")
@@ -164,20 +182,13 @@ class PermissionGate:
         risk: RiskLevel,
         arguments: dict[str, Any],
         context: ToolContext,
+        *,
+        read_only: bool = False,
     ) -> Decision:
-        if risk == SAFE:
-            # **Load-bearing invariant: `safe` means read-only.**
-            # §3 says taint escalates every *side-effectful* call regardless of
-            # its normal risk level. That is satisfied vacuously here because
-            # nothing side-effectful is classified `safe` — reading and listing
-            # change nothing. If a `safe` tool with a real side effect is ever
-            # added (§1's `send_notification` is the obvious candidate), it must
-            # be classified `ask` instead, or this branch must learn a per-tool
-            # side-effect flag. Pinned by
-            # test_taint.py::test_safe_tools_are_read_only_so_taint_need_not_escalate_them.
-            return Decision.allow()
         # §1: dangerous tools are "globally disableable". Off means off — the
         # user is never asked, so there is no dialog to fatigue them into.
+        # Checked before the safe branch reads taint so the ordering is obvious;
+        # a `safe` tool can never be DANGEROUS, so this cannot swallow one.
         if risk == DANGEROUS and not self._allow_dangerous():
             return Decision.deny("TOOL_DANGEROUS_DISABLED")
         # Non-empty ⇒ untrusted content is already in this conversation. It
@@ -185,6 +196,24 @@ class PermissionGate:
         # session grants: an approval given before the taint must not silently
         # cover a call made after it.
         reason = self._taint.source(context.conversation_id) if self._taint else ""
+        if risk == SAFE:
+            # **§3's side-effect rule, now enforced rather than satisfied
+            # vacuously.** Taint escalates every side-effectful call regardless
+            # of its normal risk level. A core `safe` tool is genuinely
+            # read-only — reading and listing change nothing — so it runs, and
+            # gating it would put a dialog in front of every read in a tainted
+            # chat for no gain.
+            #
+            # What is NOT read-only down here is an extension's tool: an
+            # extension may declare `safe` and the core cannot verify the claim
+            # (`set_timer` mutates). Such a call runs freely while the
+            # conversation is clean — confirming `list_timers` every time is the
+            # fatigue this document warns about — and confirms with provenance
+            # once untrusted content is in play. See extensions/loader.py, which
+            # registers every extension tool with read_only=False.
+            if read_only or not reason:
+                return Decision.allow()
+
         try:
             return await self._confirmer.request(name, risk, arguments, context, reason)
         except asyncio.CancelledError:

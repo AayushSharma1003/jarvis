@@ -117,6 +117,29 @@ def data_dir() -> Path:
     return platformdirs.user_data_path(APP_NAME)
 
 
+def extensions_dir() -> Path:
+    """Where installed extensions live (docs/security-model.md §5).
+
+    Under the DATA dir, and that placement is the security property: main.py
+    already excludes the whole data directory from the filesystem sandbox, so an
+    extension cannot drop a successor next to itself and no file tool can reach
+    one — §2's self-escalation rule, for free and without a second exclusion to
+    keep in step.
+    """
+    return data_dir() / "extensions"
+
+
+def approvals_path() -> Path:
+    """The record of which extensions the user approved, and at which bytes.
+
+    Beside the extensions themselves and excluded from the sandbox for the same
+    reason: a tool that could write this file would approve its own extension.
+    Kept apart from state.toml because that holds UI toggles and this holds a
+    security decision — one gets rewritten whenever a switch is flipped.
+    """
+    return data_dir() / "extensions.toml"
+
+
 def load() -> Config:
     """Load config, creating a commented default file on first run."""
     cdir = config_dir()

@@ -13,13 +13,13 @@ import pytest
 from jarvis_backend.agent.toolfilter import DECISION_WINDOW, MalformedToolCallFilter
 from jarvis_backend.security.permissions import ASK, DANGEROUS, SAFE, Decision, SafeOnlyGate
 from jarvis_backend.tools import DEV_TOOLS_ENV, default_registry, get_datetime
-from jarvis_backend.tools.registry import MAX_RESULT_CHARS, Registry, build_parameters
+from jarvis_backend.tools.registry import MAX_RESULT_CHARS, Registry, Tool, build_parameters
 
 
 class AllowAll:
     """Stand-in for M4.2's engine, so non-gate behaviour can be tested."""
 
-    async def check(self, name, risk, arguments, context):
+    async def check(self, name, risk, arguments, context, *, read_only=False):
         return Decision.allow()
 
 
@@ -59,7 +59,7 @@ async def test_gate_is_consulted_before_the_tool_body():
     order = []
 
     class Recording:
-        async def check(self, name, risk, arguments, context):
+        async def check(self, name, risk, arguments, context, *, read_only=False):
             order.append("gate")
             return Decision.allow()
 
@@ -67,6 +67,52 @@ async def test_gate_is_consulted_before_the_tool_body():
     r.register(lambda: order.append("tool") or "x", risk=SAFE, name="t", description="d")
     await r.invoke("c", "t", {})
     assert order == ["gate", "tool"]
+
+
+# -- the read-only flag (M5.1) ----------------------------------------------
+
+
+class RecordingReadOnly:
+    """Captures what the registry told the gate about side effects."""
+
+    def __init__(self):
+        self.seen = []
+
+    async def check(self, name, risk, arguments, context, *, read_only=False):
+        self.seen.append((name, read_only))
+        return Decision.allow()
+
+
+@pytest.mark.parametrize("declared", [True, False])
+async def test_the_registry_tells_the_gate_whether_a_tool_is_read_only(declared):
+    """The gate cannot ask the tool, and the tool cannot be trusted to say so at
+    call time — the flag is fixed at registration and travels with the call."""
+    gate = RecordingReadOnly()
+    r = _registry(gate)
+    r.register(lambda: "x", risk=SAFE, name="t", description="d", read_only=declared)
+    await r.invoke("c", "t", {})
+    assert gate.seen == [("t", declared)]
+
+
+async def test_a_tool_registered_without_saying_is_not_read_only():
+    """**Fail-safe default**, matching `roots = []` ⇒ deny and a missing catalog
+    ⇒ tools off. Forgetting the flag costs an extra confirmation in a tainted
+    conversation; defaulting the other way would silently skip the taint check
+    for a tool nobody vouched for."""
+    gate = RecordingReadOnly()
+    r = _registry(gate)
+    r.register(lambda: "x", risk=SAFE, name="t", description="d")
+    await r.invoke("c", "t", {})
+    assert gate.seen == [("t", False)]
+
+
+def test_a_tool_built_directly_is_not_read_only_either():
+    """The same fail-safe default on the dataclass, which `Registry.register`
+    always overrides and therefore never exercises. Pinned separately because
+    `Tool` is constructible on its own, and a default that only one of the two
+    paths tests is a default that drifts."""
+    tool = Tool(name="t", description="d", risk=SAFE, fn=lambda: "x")
+    assert tool.read_only is False
 
 
 # -- invocation failure modes ----------------------------------------------
@@ -467,3 +513,31 @@ async def test_write_and_delete_cannot_run_under_the_safe_only_gate(workspace):
     result = await r.invoke("c", "write_file", {"path": str(target), "content": "x"})
     assert (result.ok, result.code) == (False, "TOOL_CONFIRMATION_UNAVAILABLE")
     assert not target.exists()
+
+
+# -- read-only across the real tool set (M5.1) ------------------------------
+
+
+@pytest.mark.parametrize("name", ["read_file", "list_dir", "get_datetime"])
+def test_the_core_safe_tools_declare_themselves_read_only(workspace, name):
+    """§3's invariant, asserted against the real registry rather than trusted.
+    These three are the only tools allowed to skip the taint escalation, and
+    each one genuinely changes nothing."""
+    r = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    tool = r.get(name)
+    assert tool is not None
+    assert tool.risk == SAFE
+    assert tool.read_only is True
+
+
+def test_no_tool_that_can_change_anything_claims_to_be_read_only(workspace):
+    """The sweep that catches a future tool added with the flag copy-pasted on.
+    Anything above `safe` is side-effectful by definition, so the flag would be
+    a contradiction — and a reviewer reading `read_only=True` on a writer would
+    reasonably assume the gate honours it."""
+    r = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    for schema in r.schemas():
+        tool = r.get(schema["function"]["name"])
+        assert tool is not None
+        if tool.risk != SAFE:
+            assert tool.read_only is False, f"{tool.name} is {tool.risk} but claims read-only"

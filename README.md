@@ -10,11 +10,13 @@ and no network traffic you didn't ask for.
 
 <!-- DEMO GIF: record "Hey Jarvis" → question → spoken answer, sphere reacting. -->
 
-> **Status: pre-alpha, 3 of 6 phases complete, phase 4 underway.** The voice loop is real
+> **Status: pre-alpha, 4 of 6 phases complete, phase 5 underway.** The voice loop is real
 > and works end to end on an 8 GB M2: wake word, endpointing, transcription, local LLM,
 > streaming speech, barge-in, and an audio-reactive sphere. The permission engine, the
-> filesystem sandbox and taint tracking are **built and enforcing**, with file tools on
-> top of them; shell and `web_fetch` are still to come.
+> filesystem sandbox, taint tracking and the SSRF guard are **built and enforcing**, and
+> the tool set ships on top of them: files, shell (`run_command`, always confirms) and
+> `web_fetch`. Extensions load only what you approved, keyed on a hash of their exact
+> files — though an approved one runs unsandboxed, which the docs say plainly.
 > [What works today](#what-works-today) is honest about the line.
 
 ---
@@ -32,7 +34,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **296 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. |
+| Backend test suite | **481 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
 
 Four decisions this project is actually about:
 
@@ -67,8 +69,8 @@ Four decisions this project is actually about:
 | **Permission engine** | ✅ working | `safe`/`ask`/`dangerous`, an in-app confirmation the *backend* requests (never a claim a client can make), "allow for this session" keyed on tool + exact arguments and never for `dangerous`, and every way of not getting an answer resolving to deny. |
 | **Filesystem sandbox + taint** | ✅ working | Paths enforced after `resolve()`, Jarvis's own config/data excluded ahead of the root test; reading a file marks the conversation, and from there side-effectful calls confirm with provenance and can't be covered by a session grant. |
 | **File tools** | ✅ working | `read_file` / `list_dir` (safe), `write_file` (ask), `delete_file` (dangerous, refuses directories). Tool use is gated on the model — unvetted models never see a schema. |
-| **Shell + `web_fetch`** | 🚧 phase 4, not built | `run_command` and its always-confirm rule, and `web_fetch` with SSRF guards, are specified in [security-model.md](docs/security-model.md) and are the next two milestones. |
-| **Extensions** | 🚧 phase 5 | Manifest-declared permissions, approved on load, running outside the sandbox. Designed, no loader yet. |
+| **Shell + `web_fetch`** | ✅ working | `run_command` always confirms with the full command shown — no classifier, no denylist — and takes no sandbox, because a subprocess escapes one by design. `web_fetch` is `ask` (a URL can carry data out) and runs behind an SSRF guard: scheme allowlist, every resolved IP checked, IP literals not resolved, every redirect hop re-validated. Both bounded by timeouts and incremental output caps. |
+| **Extensions** | ⚠️ partly | Manifest, content-keyed approval and loader are built (`jarvis extensions list/approve/revoke`); the in-app approval panel and `jarvis install <url>` are not. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
 | **Installers** | 🚧 phase 6 | The release workflow already builds unsigned bundles for all three OSes on a tag. |
 
 **Verified on macOS (Apple Silicon), hands-on.** Windows and Linux are built by CI every
@@ -91,7 +93,7 @@ flowchart LR
         WAKE["Wake service<br/>energy gate → Silero → openWakeWord"]
         VOICE["Voice exchange<br/>VAD endpoint → whisper.cpp → Kokoro"]
         AG["Agent loop"]
-        SEC["Security layer<br/>permissions · taint · sandbox"]
+        SEC["Security layer<br/>permissions · taint · sandbox · SSRF"]
         TOOLS["File tools<br/>read · list · write · delete"]
         DB[("SQLite<br/>immutable message tree")]
     end
@@ -145,16 +147,45 @@ Built and enforcing today:
   conversation, every side-effectful call escalates to confirmation with provenance, and
   cannot be covered by — or create — an "allow for this session" grant. Prompt injection
   is assumed, not defended against by hope.
+- **Shell always confirms**, full command text shown, no classifier and no denylist (both
+  are bypass generators). `run_command` deliberately takes *no* sandbox — a subprocess
+  escapes it by design (`cat ~/.ssh/id_rsa` ignores every root), so its guardrail is the
+  unconditional confirmation, and the docs say so rather than letting the sandbox imply a
+  protection it doesn't provide.
+- **`web_fetch` + SSRF guard:** http/https only, every resolved IP checked against
+  private/loopback/link-local/metadata ranges (a host with one public and one private
+  record is refused outright), IP literals validated without resolving, and **every
+  redirect hop re-validated** — a 302 to the cloud metadata endpoint is the classic
+  escalation. Fetching is `ask`, because a URL can carry data *out*.
+- Both are bounded so one call can't hold the app hostage: incremental output caps read as
+  the bytes arrive (never buffer-then-truncate) and real timeouts, with the whole process
+  group killed on a shell timeout or barge-in.
 - The backend binds 127.0.0.1 with a per-session token and a strict `Origin` check.
 - Tool use is gated on the *model*: one that can't reliably decline a tool manufactures
   permission dialogs, and confirmation fatigue is how permission engines fail.
 
-Specified, not yet built — [security-model.md](docs/security-model.md) is normative and
-these are the parts it is still ahead of the code on:
+- **Extensions are approved by content, not by name** (§5). An extension runs only if a
+  SHA-256 of every file in its folder — `manifest.toml` included, so a declared risk level
+  can't be lowered afterwards — matches a recorded approval. Discovery reads TOML and
+  hashes bytes; it *imports nothing*, because importing is executing and permission asked
+  after the code runs is not permission. Declared risk levels are floors the core raises
+  and never lowers, the manifest is an allowlist of what gets exposed, and a tool name
+  already taken is refused so `read_file` can't be hijacked.
 
-- **Shell always confirms**, full command text shown, no classifier and no denylist (both
-  are bypass generators). `run_command` does not exist yet.
-- `web_fetch` and its SSRF guards; extension manifests and the load-time approval gate.
+  And the part that matters most, said plainly: **an approved extension is not sandboxed.**
+  It runs in the sidecar process with everything that process can do, so `network = false`
+  in a manifest is a *declaration of intent*, not a cage. Approving one is informed consent
+  to run someone's code as yourself, and the prompt says so in those words. Enforcing the
+  permissions block for real needs a subprocess per extension behind an RPC boundary — a
+  different architecture, and not one v1 claims to have.
+
+Specified, not yet built: the in-app approval panel and `jarvis install <url>` (approval
+today is `jarvis extensions approve`).
+
+Known residuals, stated rather than hidden: a DNS-rebinding window between the SSRF check
+and the connect, a TOCTOU window between path resolution and file open, and an approved
+extension's full process privileges. All are documented in
+[security-model.md](docs/security-model.md); none is quietly ignored.
 
 ---
 
@@ -228,7 +259,7 @@ More: [architecture.md](docs/architecture.md) · [latency.md](docs/latency.md) �
 |---|---|
 | [app/](app/) | Tauri 2 shell (`src-tauri/`) + React/TypeScript frontend — sphere, chat, settings |
 | [backend/](backend/) | Python sidecar: `wake` `stt` `tts` `llm` `agent` `tools` `security` `storage` `server` |
-| [extensions/](extensions/) | Manifests for the default extension set — the loader is phase 5, so the bodies are still empty |
+| [extensions/](extensions/) | Manifests for the default extension set — the loader is built, the bodies are M5.4 |
 | [scripts/](scripts/) | Installers, PyInstaller sidecar build, model fetch, offline wake-word training |
 | [catalog/](catalog/) | Curated model catalog — bundled data, manual refresh, not a service |
 | [docs/](docs/) | Architecture, security model, latency budgets, extension authoring |
@@ -244,8 +275,8 @@ problem later instead of a refactor.
 1. ✅ **Walking skeleton** — Tauri shell + sidecar + streaming text chat + SQLite tree.
 2. ✅ **Voice loop** — VAD, whisper.cpp, Kokoro, barge-in, inside the latency budget.
 3. ✅ **Always-on + feel** — wake word, sphere, chat management, readiness gate, RAM tiering.
-4. 🚧 **Agency + security** — tools ship *with* their security layer, never before it. Done: the [model capability gate](docs/tool-calling.md) (tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property), the tool plumbing, the permission engine + confirmation, and the filesystem sandbox + file tools + taint. Next: shell, then `web_fetch` + SSRF.
-5. **Extended scope** — branch navigation UI, `jarvis install <url>`, model catalog UI, custom wake words.
+4. ✅ **Agency + security** — the largest phase; tools ship *with* their security layer, never before it. The [model capability gate](docs/tool-calling.md) (tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property), the tool plumbing, the permission engine + confirmation, the filesystem sandbox + file tools + taint, then shell and `web_fetch` + SSRF.
+5. 🚧 **Extended scope** — the extension loader + content-keyed approval gate is done (`jarvis extensions`); still to come: the in-app approval panel, `jarvis install <url>`, branch navigation UI, model catalog UI, custom wake words.
 6. **Ship** — installers, docs, a tagged unsigned release with checksums.
 
 Post-v1: acoustic echo cancellation (macOS Voice Processing AU, then WebRTC AEC3), voice

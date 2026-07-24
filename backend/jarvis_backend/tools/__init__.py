@@ -85,6 +85,9 @@ def default_registry(gate: Gate, sandbox: Sandbox | None = None) -> Registry:
     registry.register(
         get_datetime,
         risk=SAFE,
+        # Reads the clock and nothing else — the purest read-only tool here, so
+        # taint has nothing to escalate (§3, security/permissions.py).
+        read_only=True,
         description=(
             "Get the current local date and time on the user's computer. "
             "Use this whenever the answer depends on what day or time it is."

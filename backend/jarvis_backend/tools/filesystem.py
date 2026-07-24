@@ -134,6 +134,10 @@ def build(sandbox: Sandbox) -> list[tuple]:
             read_file,
             {
                 "risk": SAFE,
+                # Reading changes nothing, so taint does not escalate it (§3).
+                # It is also what *creates* the taint — the two are consistent:
+                # the read is free, everything it goes on to justify is not.
+                "read_only": True,
                 "description": (
                     "Read the contents of a text file on the user's computer. "
                     "Use the absolute path."
@@ -145,6 +149,7 @@ def build(sandbox: Sandbox) -> list[tuple]:
             list_dir,
             {
                 "risk": SAFE,
+                "read_only": True,
                 "description": (
                     "List the files and folders inside a directory on the user's "
                     "computer. Use the absolute path."

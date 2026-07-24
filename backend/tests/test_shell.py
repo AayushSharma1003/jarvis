@@ -32,7 +32,7 @@ posix_only = pytest.mark.skipif(
 
 
 class AllowAll:
-    async def check(self, name, risk, arguments, context):
+    async def check(self, name, risk, arguments, context, *, read_only=False):
         return Decision.allow()
 
 

@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5. §5 (extensions) is still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
+> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5; §5's manifest, content-keyed approval and loader in M5.1 (the approval UI is M5.2 and `jarvis install` is M5.3 — approval today is `jarvis extensions approve`). This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note and §5's opening).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -119,7 +119,14 @@ Implemented in M4.3. How it actually works, and the parts worth knowing:
 - **Conversation-scoped and sticky for the process's life**, in memory, never persisted (same posture as §1's session grants). Sticky across turns on purpose: the raw tool result is *not* replayed to the model in later turns, but the assistant's own prose about it is, so a laundered instruction outlives the exchange that introduced it.
 - **A tainted call is never grantable, in both directions.** A session grant given before the untrusted content arrived does not cover a call made after it, and approving a tainted call grants nothing for later. The grant key is only tool+arguments, and an injection reuses exactly those — the taint is the only thing that can tell the two calls apart, so it wins.
 - The dialog shows the source path and hides "allow for this session"; the backend refuses to record one regardless, since the button is in a webview and the enforcement is not.
-- **Scope limit, stated so it cannot drift:** the escalation of *safe* side-effectful tools is satisfied vacuously today, because in this codebase `safe` means read-only and everything side-effectful is already `ask` or higher. If a `safe` tool with a real side effect is ever added (`send_notification` is the candidate this document names), it must be classified `ask`, or the gate must learn a per-tool side-effect flag. `PermissionGate.check` carries the comment and `test_taint.py` carries the tripwire.
+- **The `safe` escalation is live, not vacuous (M5.1).** This section used to record that escalating *safe* side-effectful tools was satisfied vacuously — nothing side-effectful was classified `safe` — and that the fix, when one was needed, was to classify the offender `ask` **or teach the gate a per-tool side-effect flag**. Extensions needed it: an extension may declare a tool `safe` and the core cannot verify the claim (`set_timer` mutates), so `safe` would have skipped the taint check entirely and put a silent hole in this section. The gate now takes `read_only`, fixed at registration and never assertable per call:
+
+  | | clean conversation | tainted conversation |
+  |---|---|---|
+  | `safe`, `read_only=True` (core: `read_file`, `list_dir`, `get_datetime`) | runs | runs |
+  | `safe`, `read_only=False` (**every** extension tool) | runs | **confirms, with provenance** |
+
+  The default is `False` — the fail-safe direction, matching `roots = []` ⇒ deny and a missing model catalog ⇒ tools off. Forgetting the flag costs one confirmation; the opposite default would silently skip this check for a tool nobody vouched for. Untainted extension tools still run freely on purpose: confirming `list_timers` on every call is the fatigue named under "Known limitations", with no attacker in it.
 
 ## 4. Network guards
 
@@ -173,9 +180,76 @@ This is the same posture §2 takes for the file-tool TOCTOU.
 
 ## 5. Extensions
 
-- Manifest declares platforms, required OS permissions, and per-tool risk levels. The approval dialog at install/load shows **declared permissions**, not just source code (nobody reads 500 lines of source; everybody reads "wants: calendar access, network").
-- `jarvis install <url>` pins the commit SHA at install. **No extension auto-update.**
-- Extension-declared risk levels are floors, not ceilings — the core permission engine can raise them, never lower.
+Implemented in `backend/jarvis_backend/extensions/` (`manifest.py`, `approvals.py`,
+`loader.py`); tests are `test_extensions.py`. `jarvis install <url>` is M5.3 and not
+built yet; approval today happens through `jarvis extensions approve`.
+
+**Say the true thing first.** An approved extension is `extension.py`, imported into
+the sidecar process, running with everything this process can do. A manifest that
+declares `network = false` cannot stop `import socket`, and one that declares
+`os = []` cannot stop it reading `~/.ssh/id_rsa`. **The `[permissions]` block is a
+declaration of intent, not a capability boundary.** Enforcing it for real needs one
+subprocess per extension behind an RPC boundary — a different architecture, and an
+expensive one on the 8 GB target — so v1 does not claim it. Installing an extension is
+informed consent to run someone's code as yourself, and the approval prompt says so in
+those words.
+
+What the manifest genuinely buys is the thing nobody gets from reading 500 lines of
+source: what this is, who wrote it, which commit, and what it says it needs.
+
+**What IS enforced, and is not negotiable:**
+
+- **Approval is keyed on content, not on a name.** SHA-256 over every file in the
+  folder — including `manifest.toml`, so a risk level cannot be lowered after the fact.
+  One edited byte and the extension is `changed`: back to unapproved, not loaded.
+  Approving `timers` must never mean approving whatever that folder becomes next week.
+- **Approval precedes execution.** Discovery reads TOML and hashes bytes; it imports
+  nothing. Importing *is* executing — a module body runs on import — so anything that
+  had to import an extension to describe it would be asking permission after the fact.
+  Only an extension whose current digest matches a recorded approval is ever imported.
+  Pinned by `test_an_unapproved_extension_is_never_imported`, which fails if an
+  unapproved module body ever runs.
+- **Nothing can approve itself.** The record is `<data dir>/extensions.toml` and
+  extensions live in `<data dir>/extensions`, both permanently outside the §2 sandbox
+  (`main.py` excludes the whole data dir). A tool that could write either would install
+  or bless its own successor.
+- **Risk levels are floors, never ceilings.** The core raises a declared level and
+  never lowers it. `network = true` raises the floor to `ask` — the one enforceable
+  consequence available for that declaration, since an unconfirmed tool in an
+  extension that reaches the network is the exfiltration path. It does nothing about an
+  extension that lies; it makes the honest declaration also the enforced one, instead
+  of leaving `network` as a field with no behaviour behind it.
+- **The manifest is an allowlist.** Only functions named in `[[tools]]` are registered.
+  An importable helper is not a tool, and neither is a function added after the user
+  read the manifest.
+- **No name hijacking.** A tool name already registered — a core tool, or one an
+  earlier extension claimed — is refused (`EXTENSION_TOOL_CONFLICT`). `read_file` means
+  the sandboxed core tool, and an extension cannot inherit the model's calls to it.
+- **Never read-only.** Every extension tool registers with `read_only=False`, so §3's
+  taint escalation applies to all of them. See §3 — this is what makes a `safe` tool
+  from a third party honest.
+- **A broken extension is a result, not a crash.** An import that raises would
+  otherwise take the sidecar down at startup, which the user sees only as "backend
+  didn't start in time".
+
+`jarvis install <url>` will pin the commit SHA at install (the `commit` field exists in
+the record already). **No extension auto-update, ever** — an extension that can update
+itself is an extension whose approved bytes are a suggestion.
+
+**Residuals, stated rather than hidden:**
+
+- **`__pycache__` is excluded from the digest**, because it is written by importing the
+  very files that *are* hashed, and counting it would void every approval on the next
+  start. Someone who can write into an already-approved extension's folder could plant
+  a hash-based unchecked `.pyc` the digest does not see. That attacker can already edit
+  `extension.py` — which the digest *does* see — so this is a detection gap inside a
+  folder that is already lost, not a new capability.
+- **`sys.path` is deliberately untouched**, so v1 supports a single `extension.py` and
+  nothing multi-file. An extension shipping `json.py` would otherwise shadow the
+  stdlib for the entire process.
+- **A symlink anywhere in the tree refuses the extension** (`EXTENSION_UNSAFE_TREE`).
+  Skipping symlinks would be a digest bypass — a symlinked `extension.py` gets imported
+  while its real bytes live outside the folder, free to change after approval.
 
 ## 6. Credentials, screen, telemetry
 
@@ -192,4 +266,5 @@ This is the same posture §2 takes for the file-tool TOCTOU.
 - **The sandbox governs *file tools*, not the process.** It is a policy check inside `read_file`/`write_file`/`delete_file`, so anything that runs code outside them is unaffected. This became load-bearing when `run_command` landed in M4.4: `cat ~/.ssh/id_rsa` ignores every root in this section. Shell's protection is its unconditional confirmation, not the sandbox — see §1's `run_command` subsection, which says so at length.
 - **A `safe` tool still reads.** `read_file` needs no confirmation by design (§2a), so a manipulated model can read any file under a root and put its contents in the conversation before anything is shown to the user. Taint makes the *consequences* confirm; it does not un-read the file. With a cloud backend that content has also left the machine.
 - **Only macOS has been exercised by hand.** Windows and Linux path handling — drive letters, UNC paths, 8.3 short names, `\\?\` prefixes, case rules that differ per volume — is covered by CI's test run and nothing else. The deny-side folding above closes the case-insensitivity class generically, but no one has run a file tool on those platforms.
+- **An approved extension is not sandboxed at all.** It runs in the sidecar process with everything that process can do, so its `[permissions]` declarations are advisory. What is enforced is *which bytes* run and *whether* they run — see §5, which leads with this rather than burying it.
 - **`web_fetch` has a DNS-rebinding TOCTOU window.** The SSRF guard checks the IPs it resolves, but httpx resolves again at connect time; a 0-TTL attacker DNS could differ between the two. The direct vectors (internal IPs/hosts, metadata, redirect-to-internal) are closed — see §4 for the full note and why closing rebinding is deferred.

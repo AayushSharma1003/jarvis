@@ -220,7 +220,7 @@ def _tool_registry():
     from jarvis_backend.tools.registry import Registry
 
     class AllowAll:
-        async def check(self, name, risk, arguments, context):
+        async def check(self, name, risk, arguments, context, *, read_only=False):
             from jarvis_backend.security.permissions import Decision
 
             return Decision.allow()

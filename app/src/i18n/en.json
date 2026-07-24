@@ -72,6 +72,31 @@
       "safe": "Routine"
     }
   },
+  "extension": {
+    "status": {
+      "approved": "Approved",
+      "pending": "Waiting for your approval",
+      "changed": "Changed since you approved it",
+      "unsupported_platform": "Not for this operating system",
+      "invalid": "Can't be read"
+    },
+    "runsAsYou": "Approving runs this extension's code with the same access Jarvis has. The permissions below are what it says it needs — they aren't a sandbox.",
+    "approvalCoversBytes": "Approval covers these exact files. If they change, Jarvis asks again.",
+    "code": {
+      "MANIFEST_MISSING": "there's no manifest.toml in the folder",
+      "MANIFEST_PARSE_ERROR": "the manifest isn't valid TOML",
+      "MANIFEST_INVALID": "the manifest is missing something it needs",
+      "MANIFEST_NAME_INVALID": "the extension's name isn't usable",
+      "MANIFEST_TOOL_NAME_INVALID": "one of its tool names isn't usable",
+      "MANIFEST_RISK_INVALID": "one of its tools has no valid risk level",
+      "EXTENSION_NAME_MISMATCH": "the folder name doesn't match the manifest",
+      "EXTENSION_UNSAFE_TREE": "it contains a shortcut to a file outside itself",
+      "EXTENSION_CODE_MISSING": "there's no extension.py to load",
+      "EXTENSION_IMPORT_FAILED": "its code didn't load",
+      "EXTENSION_TOOL_MISSING": "a tool it promised isn't in its code",
+      "EXTENSION_TOOL_CONFLICT": "a tool name is already taken"
+    }
+  },
   "conversation": {
     "new": "New chat",
     "empty": "No conversations yet.",

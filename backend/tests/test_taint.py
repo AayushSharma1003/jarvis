@@ -140,16 +140,18 @@ async def test_taint_in_another_conversation_does_not_leak_into_this_one():
     assert seen["reason"] == ""
 
 
-async def test_safe_tools_are_read_only_so_taint_need_not_escalate_them():
+async def test_a_read_only_safe_tool_is_not_escalated_by_taint():
     """**Pins the invariant PermissionGate documents.**
 
-    §3 says taint escalates every *side-effectful* call regardless of risk. We
-    satisfy that by keeping `safe` synonymous with read-only, so there is
-    nothing side-effectful left down there to escalate. If someone adds a `safe`
-    tool that actually does something — §1's `send_notification` is the
-    candidate — this test is the tripwire: it will still pass, but the reviewer
-    is sent here by the comment in permissions.py, and the fix is to classify
-    that tool `ask` or teach the gate a per-tool side-effect flag.
+    §3 says taint escalates every *side-effectful* call regardless of risk. A
+    core `safe` tool is read-only — reading and listing change nothing — so
+    there is nothing down there to escalate, and gating it would put a dialog in
+    front of every file read in a tainted chat. That is the fatigue §"Known
+    limitations" warns about, with no attacker in it.
+
+    M5.1 made this a claim the gate can *check* rather than a convention: the
+    read-only-ness is now the explicit `read_only` argument, and its sibling
+    test below covers the tool that does not have it.
     """
     asked = []
 
@@ -162,9 +164,79 @@ async def test_safe_tools_are_read_only_so_taint_need_not_escalate_them():
     tracker.taint(CONV, SOURCE)
     gate = PermissionGate(Recording(), taint=tracker)
 
-    decision = await gate.check("read_file", SAFE, {}, ToolContext(conversation_id=CONV))
+    decision = await gate.check(
+        "read_file", SAFE, {}, ToolContext(conversation_id=CONV), read_only=True
+    )
     assert decision == Decision.allow()
     assert asked == [], "a read is not side-effectful; tainting must not gate it"
+
+
+async def test_a_safe_tool_that_is_not_read_only_escalates_once_tainted():
+    """**The live half of §3, and M5.1's reason for the flag.**
+
+    An extension may declare a tool `safe`, and the core has no way to verify
+    that claim — `set_timer` mutates. Before the flag, `safe` skipped the taint
+    check outright, so an extension tool was a silent hole in taint tracking.
+    Now a call the core cannot vouch for confirms once untrusted content is in
+    the conversation, and the dialog carries the provenance like any other.
+    """
+    asked = []
+
+    class Recording:
+        async def request(self, name, risk, arguments, context, reason=""):
+            asked.append((name, reason))
+            return Decision.allow()
+
+    tracker = TaintTracker()
+    tracker.taint(CONV, SOURCE)
+    gate = PermissionGate(Recording(), taint=tracker)
+
+    decision = await gate.check(
+        "set_timer", SAFE, {}, ToolContext(conversation_id=CONV), read_only=False
+    )
+    assert decision == Decision.allow()
+    assert asked == [("set_timer", SOURCE)], "an unverifiable safe call must ask, and say why"
+
+
+async def test_a_safe_tool_that_is_not_read_only_still_runs_freely_when_clean():
+    """The other side of the trade. Confirming `list_timers` on every call in an
+    ordinary conversation would train people to click Allow without reading,
+    which costs more than it buys. Nothing untrusted is in play, so nothing asks.
+    """
+    asked = []
+
+    class Recording:
+        async def request(self, name, risk, arguments, context, reason=""):
+            asked.append(name)
+            return Decision.allow()
+
+    gate = PermissionGate(Recording(), taint=TaintTracker())
+
+    decision = await gate.check(
+        "list_timers", SAFE, {}, ToolContext(conversation_id=CONV), read_only=False
+    )
+    assert decision == Decision.allow()
+    assert asked == []
+
+
+async def test_a_gate_with_no_tracker_never_escalates_a_safe_call():
+    """`taint=None` is a backend built without tracking (tests, a headless
+    embedding). It must not turn every non-read-only safe call into a dialog
+    nobody is there to answer."""
+    asked = []
+
+    class Recording:
+        async def request(self, name, risk, arguments, context, reason=""):
+            asked.append(name)
+            return Decision.allow()
+
+    gate = PermissionGate(Recording())
+
+    decision = await gate.check(
+        "set_timer", SAFE, {}, ToolContext(conversation_id=CONV), read_only=False
+    )
+    assert decision == Decision.allow()
+    assert asked == []
 
 
 # -- taint versus session grants (the load-bearing pair) --------------------
