@@ -201,6 +201,39 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     collection error rather than a failure, it did not prove anything — assert
     the pattern occurs exactly once, and use a multi-line anchor.
 
+17. **`resolve()` settles symlinks, not *spelling* — and two spellings of one
+    file broke the sandbox exclusion.** macOS and Windows filesystems are
+    case-insensitive by default, and APFS is *also* normalisation-insensitive
+    (a name written NFC opens as NFD). `Path.parts` compares both as different,
+    so `<root>/Jarvis-Config/config.toml` missed the excluded-directory check,
+    matched the root, and wrote to the real config — the self-escalation the
+    exclusion exists to stop. Verified live: with the pre-fix code the model
+    wrote `PWNED` into a canary inside the excluded dir after the user clicked
+    Allow. Fix is an **asymmetry**, and it is the point: comparisons where a
+    match means **deny** are casefolded + NFC-normalised (`Sandbox._fold`),
+    comparisons where a match means **allow** stay exact. Folding the roots test
+    too would *widen* the sandbox on Linux, where `~/documents` and
+    `~/Documents` really are two directories. Tripwire:
+    `test_a_root_is_still_matched_case_sensitively`.
+18. **`run_exchange` swallows `CancelledError`, so callers cannot detect a
+    barge-in by catching one.** It absorbs the cancellation on purpose — that is
+    what lets it persist the partial turn, which the delete-races-the-generation
+    guard depends on — and then *returns normally*. `run_voice_exchange` was
+    therefore carrying straight on after a `voice.stop` raised while the model
+    was still streaming: it awaited the synth worker and `player.drain()`,
+    speaking the whole queued reply to a user who had just interrupted it, and
+    reporting `reason="done"`. Worse, `handle_wake` does `await
+    cancel_generation()` before broadcasting, so the wake word stayed dead for
+    the length of the reply it had failed to interrupt. It hid because the
+    barge-in that was verified acoustically happens *after* streaming ends,
+    where the task is parked in `await synth_task` and asyncio cancels that
+    inner task for free. Ask `asyncio.current_task().cancelling()` — it survives
+    the absorbed cancel — and re-raise, **after** `chat.done` has gone out or
+    the frontend keeps `streamKey` and the composer never re-enables. Related:
+    a `to_thread`-parked worker task is not reached by its parent's
+    cancellation, and `Player.stop()` only *clears* the buffer (the stream stays
+    open), so a late `enqueue()` un-silences the barge-in.
+
 ## Repo map
 
 ```
@@ -487,7 +520,32 @@ explicit goal now, and it raises the bar on README/docs quality.
 ## Immediate next action
 
 **Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.3 are done and green
-(279 backend tests, 2 Rust). **Next is M4.4: shell.** It is the sharpest tool
+(296 backend tests, 2 Rust).
+
+**A pre-public security + bug audit ran 2026-07-23** (stop-and-verify, no new
+features). It found and fixed two real defects, both now with mutation-proven
+regression tests and both written up as gotchas 17 and 18:
+- 🔴 **A sandbox escape**: the excluded-directory check compared path spellings
+  exactly, so a case- or Unicode-variant path (`<root>/Jarvis-Config/...`)
+  slipped past it on macOS/Windows and reached Jarvis's own config. Proven
+  live in the real running app — with the fix reverted the model overwrote a
+  canary inside the excluded dir after the user clicked Allow. Reachable only
+  when a root is configured that *contains* the config/data dir (not the
+  Documents/Downloads/Desktop default), which is exactly the case the exclusion
+  exists for.
+- 🟠 **Barge-in did not work while the model was still streaming.** `voice.stop`
+  and the wake word were absorbed by `run_exchange` and the turn played its
+  whole queued reply out, reporting `done`; `handle_wake` blocked for that whole
+  time, so the wake word looked dead. See gotcha 18.
+
+Also: supply chain clean across all three ecosystems (pip-audit / npm audit /
+cargo audit — 0 vulnerabilities), zero-telemetry claim re-proven by inspection
+(every outbound call is the configured Ollama URL), README corrected where it
+both under- and over-claimed, and `.gitignore` gaps closed (`*.sqlite3`,
+`build/`). **Git history has still never been scanned for secrets** — that scan
+is the one open item and needs the user to run it.
+
+**Next is M4.4: shell.** It is the sharpest tool
 in the project and the rules are already written — §1: `run_command` **always
 confirms, full command text shown, no exceptions**, no classifier and no
 denylist (both are bypass generators). The machinery it needs all exists now:

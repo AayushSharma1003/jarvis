@@ -18,6 +18,12 @@ target/
 app/src-tauri/target/
 app/src-tauri/gen/
 
+# PyInstaller sidecar build. `dist/` above already covers backend/dist/, but
+# scripts/build_sidecar.py also writes a --workpath at backend/build/ holding a
+# multi-MB binary — untracked, and this environment auto-commits the working
+# tree, so one sidecar build would otherwise land it in a public history.
+build/
+
 # ML model weights (huge, downloaded on install)
 *.onnx
 *.gguf
@@ -29,7 +35,11 @@ backend/models/*
 models/*
 
 # Local data
+# *.sqlite3 matters as much as *.sqlite: the store is jarvis.sqlite3 (main.py),
+# so a scratch run with JARVIS_DATA_DIR pointed inside the repo drops a file
+# holding full conversation history right where git can see it.
 *.sqlite
+*.sqlite3
 *.db
 *.log
 

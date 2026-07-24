@@ -27,8 +27,11 @@ def make_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def token_valid(expected: str, provided: str | None) -> bool:
-    if not provided:
+def token_valid(expected: str, provided: object) -> bool:
+    # `provided` is whatever came out of the client's JSON, so it is typed
+    # `object`: a non-string must be a refusal, not an AttributeError out of the
+    # pre-auth path (nothing catches it there — see server/app.py's handshake).
+    if not isinstance(provided, str) or not provided:
         return False
     return hmac.compare_digest(expected.encode(), provided.encode())
 

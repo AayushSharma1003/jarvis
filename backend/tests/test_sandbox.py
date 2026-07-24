@@ -8,6 +8,8 @@ after `..` and symlinks have had their say.
 
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
 from jarvis_backend.security.sandbox import Sandbox, SandboxError
@@ -135,6 +137,70 @@ def test_a_symlink_into_an_excluded_directory_is_refused(root):
     (root / "shortcut").symlink_to(data)
     with pytest.raises(SandboxError) as e:
         Sandbox([root], excluded=[data]).resolve(str(root / "shortcut" / "jarvis.sqlite3"))
+    assert _code(e) == "PATH_OUTSIDE_SANDBOX"
+
+
+def test_the_exclusion_survives_a_mangled_spelling_of_its_own_name(root):
+    """**The escape the exclusion is for, spelled differently.**
+
+    macOS and Windows filesystems are case-insensitive by default, so
+    `jarvis-data/` and `Jarvis-Data/` are one directory — but `Path.parts`
+    compares them as two, and `resolve()` does not normalise case. A model
+    talked into `write_file("<root>/Jarvis-Data/config.toml")` therefore missed
+    the exclusion, matched the root, and overwrote the real config with
+    `roots = ["/"]` — self-escalation, which is precisely what this check
+    exists to stop.
+
+    Deny-side comparisons are casefolded for this reason. Refusing a
+    differently-cased sibling on a case-*sensitive* filesystem is the harmless
+    direction; allowing the real file on a case-insensitive one is not.
+    """
+    data = root / "jarvis-data"
+    data.mkdir()
+    (data / "config.toml").write_text("roots = []")
+    sandbox = Sandbox([root], excluded=[data])
+
+    for spelling in ("Jarvis-Data", "JARVIS-DATA", "jarvis-DATA"):
+        with pytest.raises(SandboxError) as e:
+            sandbox.resolve(str(root / spelling / "config.toml"))
+        assert _code(e) == "PATH_OUTSIDE_SANDBOX", spelling
+
+
+def test_the_exclusion_survives_a_unicode_respelling(root):
+    """Same hole, reached by normalisation instead of case.
+
+    APFS is normalisation-insensitive but preserving: `José` written NFC is
+    readable as NFD, while `Path.parts` — and `resolve()` — still compare the
+    two spellings as different. Reachable whenever the excluded path contains
+    a non-ASCII character, i.e. any user whose account name does
+    (`/Users/José/Library/Application Support/jarvis`).
+    """
+    data = root / "josé-data"
+    data.mkdir()
+    (data / "config.toml").write_text("roots = []")
+    sandbox = Sandbox([root], excluded=[data])
+
+    other = unicodedata.normalize(
+        "NFD" if unicodedata.is_normalized("NFC", "josé-data") else "NFC", "josé-data"
+    )
+    with pytest.raises(SandboxError) as e:
+        sandbox.resolve(str(root / other / "config.toml"))
+    assert _code(e) == "PATH_OUTSIDE_SANDBOX"
+
+
+def test_a_root_is_still_matched_case_sensitively(tmp_path):
+    """The other half of the asymmetry, pinned so nobody "makes it consistent".
+
+    A match against an *exclusion* means deny, so it is casefolded. A match
+    against a *root* means allow, so it must not be: on a case-sensitive
+    filesystem `~/documents` and `~/Documents` are two different directories,
+    and folding this comparison would hand the sandbox a directory the user
+    never configured.
+    """
+    real = tmp_path / "Workspace"
+    real.mkdir()
+    with pytest.raises(SandboxError) as e:
+        Sandbox([real]).resolve(str(tmp_path / "workspace" / "notes.txt"))
     assert _code(e) == "PATH_OUTSIDE_SANDBOX"
 
 

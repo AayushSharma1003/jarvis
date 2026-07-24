@@ -31,6 +31,7 @@ Python; v1 accepts the window and says so.
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 
@@ -52,10 +53,43 @@ class Sandbox:
         # system as the paths being checked, or every lookup misses.
         self._roots = tuple(self._normalize(r) for r in (roots or []))
         self._excluded = tuple(self._normalize(e) for e in (excluded or []))
+        # Precomputed because every resolve() compares against all of them.
+        self._excluded_folded = tuple(self._fold(e) for e in self._excluded)
 
     @staticmethod
     def _normalize(path: Path) -> Path:
         return Path(path).expanduser().resolve()
+
+    @staticmethod
+    def _fold(path: Path) -> tuple[str, ...]:
+        """A path's components, flattened for comparisons where a match DENIES.
+
+        `resolve()` settles symlinks and `..`, but it does not settle *spelling*,
+        and two spellings of one file are the whole game here:
+
+          Jarvis-Data/ vs jarvis-data/   macOS and Windows are case-insensitive
+          José/        vs José/          APFS is normalisation-insensitive (NFC
+                                         written, NFD readable — and vice versa)
+
+        In both cases the OS opens the same file while `Path.parts` reports two
+        different paths, so the exclusion missed and the root test then said yes.
+
+        **The asymmetry is deliberate and load-bearing.** Fold only where a match
+        means *deny*:
+
+          exclusions (match ⇒ deny)   folded — maximally inclusive
+          roots      (match ⇒ allow)  exact  — maximally strict
+
+        Folding the roots test too would *widen* the sandbox on a case-sensitive
+        filesystem, where `~/documents` and `~/Documents` genuinely are two
+        directories and the user configured one of them. Folding the exclusion
+        test can only ever refuse a path that used to be allowed — safe on every
+        filesystem, and the false positive it costs on Linux (a directory whose
+        name differs from Jarvis's own only by case or accent) is not a real
+        scenario. Pinned by test_sandbox.py's mangled-spelling tests and by
+        test_a_root_is_still_matched_case_sensitively.
+        """
+        return tuple(unicodedata.normalize("NFC", p).casefold() for p in path.parts)
 
     @property
     def roots(self) -> tuple[Path, ...]:
@@ -84,8 +118,11 @@ class Sandbox:
         # still get their symlinks followed, which is what the check needs.
         resolved = path.resolve()
 
-        for excluded in self._excluded:
-            if resolved == excluded or resolved.is_relative_to(excluded):
+        # Folded, not `is_relative_to`: see _fold. A prefix match over the
+        # component tuples covers both "is the excluded dir" and "is under it".
+        folded = self._fold(resolved)
+        for excluded in self._excluded_folded:
+            if folded[: len(excluded)] == excluded:
                 # Checked before the root test, so "inside a root" can never
                 # override "inside Jarvis's own directories".
                 raise SandboxError("PATH_OUTSIDE_SANDBOX", str(resolved))

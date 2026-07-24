@@ -8,12 +8,14 @@ and chunker. No microphone, speaker, or model files involved.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from jarvis_backend.config import Config
+from jarvis_backend.llm.base import TextDelta
 from jarvis_backend.server.app import AppState, create_app
 from jarvis_backend.storage import db
 from jarvis_backend.storage.conversations import Store
@@ -59,12 +61,19 @@ class FakePlayer:
     def __init__(self):
         self.enqueued: list[np.ndarray] = []
         self.stopped = False
+        # The real Player.stop() only *clears* the buffer; the stream stays open
+        # and anything enqueued afterwards plays. So "was anything handed to the
+        # player after a barge-in" is the question that matters, not "was stop
+        # called" — see test_barge_in_does_not_speak_a_sentence_synthesized_after_the_stop.
+        self.enqueued_after_stop: list[np.ndarray] = []
 
     def start(self) -> None:
         pass
 
     def enqueue(self, samples: np.ndarray) -> None:
         self.enqueued.append(samples)
+        if self.stopped:
+            self.enqueued_after_stop.append(samples)
 
     @property
     def pending(self) -> int:
@@ -271,6 +280,117 @@ def test_voice_stop_interrupts(make_voice_client):
         ws.send_json({"type": "voice.stop"})
         drain_voice(ws, until_reasons=("stopped",))
     assert io.player_.stopped
+
+
+class SpeakThenHangBackend(FakeBackend):
+    """A complete sentence — so TTS runs and audio is queued — then hangs.
+    That is the state a user barges in on: Jarvis talking, model still going."""
+
+    async def stream_chat(self, model, messages, tools=None):
+        yield TextDelta("This is the reply.")
+        yield TextDelta(" And more to come")
+        await asyncio.sleep(3600)
+
+
+def test_stop_while_the_model_is_still_streaming_silences_playback(make_voice_client):
+    """**Barge-in must work while the model is still generating, not only after.**
+
+    `run_exchange` absorbs CancelledError so it can persist the partial turn
+    (the delete-races-the-generation guard needs that), so a stop raised during
+    generation comes back as an ordinary `ExchangeResult` — and the exchange
+    used to carry straight on to `await synth_task` and `player.drain()`,
+    speaking the entire queued reply to a user who had just interrupted it and
+    reporting `reason="done"`.
+
+    It hid because the barge-in that *was* verified acoustically happens after
+    streaming ends, where the task is parked in `await synth_task` and asyncio
+    cancels that inner task for us. The window is the whole time the model is
+    still talking — the first seconds of every reply, and far longer on a slow
+    model.
+
+    Worse than the audio: `handle_wake` does `await conn.cancel_generation()`
+    before broadcasting, so the wake word stayed dead for the length of the
+    reply it failed to interrupt.
+    """
+    io = FakeVoiceIO(utterance_script())
+    client, _ = make_voice_client(io, backend=SpeakThenHangBackend())
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        while True:
+            m = ws.receive_json()
+            if m["type"] == "voice.state" and m["state"] == "speaking":
+                break
+        ws.send_json({"type": "voice.stop"})
+        msgs = drain_voice(ws, until_reasons=("done", "stopped", "error", "no_speech"))
+
+    assert io.player_.stopped, "barge-in during generation did not silence the player"
+    final = [m for m in msgs if m["type"] == "voice.state" and m["state"] == "idle"][-1]
+    assert final.get("reason") == "stopped", f"reported {final.get('reason')}, not an interrupt"
+    # chat.done must still go out, or the frontend keeps `streamKey` set and the
+    # composer stays disabled with nothing coming to clear it.
+    assert any(m["type"] == "chat.done" for m in msgs), "no chat.done — streamKey would leak"
+
+
+def test_barge_in_does_not_speak_a_sentence_synthesized_after_the_stop(make_voice_client):
+    """**Barge-in must actually silence Jarvis, including the sentence in flight.**
+
+    `_synth_worker` is a separate task, so cancelling the exchange does not
+    cancel it. Parked in `to_thread(io.synthesize, ...)` it finishes that
+    synthesis and calls `player.enqueue()` — *after* the barge-in handler
+    already called `player.stop()`. `Player.stop()` only clears the buffer and
+    deliberately leaves the stream open (audio/playback.py), so the late enqueue
+    refills it and the assistant speaks one more sentence after being told to
+    stop.
+
+    The window is not exotic: the exchange spends the end of every spoken reply
+    parked at `await synth_task` while the last sentence is synthesized, which
+    is exactly when a user interrupts an answer they don't like.
+    """
+    started, release = threading.Event(), threading.Event()
+
+    class ReleasingPlayer(FakePlayer):
+        """Frees the blocked synthesis at the instant of the barge-in.
+
+        `stop()` is called in the handler between `synth_task.cancel()` and the
+        `await send(...)`, so this lands the worker's resumption inside that
+        await — the exact window the handler-level cancel exists to close, and
+        the one the `finally` sweep is too late for. Without a deterministic
+        trigger the race is unhittable from a test."""
+
+        def stop(self) -> None:
+            super().stop()
+            release.set()
+
+    class BlockingSynthIO(FakeVoiceIO):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.player_ = ReleasingPlayer()
+
+        def synthesize(self, text: str):
+            started.set()
+            release.wait(5)  # hold the worker inside to_thread
+            return super().synthesize(text)
+
+    # The model must still be streaming, or the exchange parks in
+    # `await synth_task` and asyncio cancels the worker for us — which is why
+    # this hid behind the barge-in that was verified acoustically.
+    io = BlockingSynthIO(utterance_script())
+    client, _ = make_voice_client(io, backend=SpeakThenHangBackend())
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        assert started.wait(5), "never reached synthesis"
+        ws.send_json({"type": "voice.stop"})
+        drain_voice(ws, until_reasons=("stopped",))
+        assert io.player_.stopped
+        # Round-trip so the loop is guaranteed turns in which the freed worker
+        # could resume and enqueue, if it were still going to.
+        for _ in range(2):
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json()["type"] == "pong"
+
+    assert io.player_.enqueued_after_stop == [], (
+        "audio was handed to the player after barge-in silenced it"
+    )
 
 
 def test_voice_start_while_busy_is_refused(make_voice_client):

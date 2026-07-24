@@ -24,9 +24,16 @@ Cancellation is the subtle part. When `chat.stop`, `voice.stop`, or a
 `conversation.delete` cancels the generation, the task is parked in `await
 future` here. The dismissal must still reach the UIs or the dialog outlives the
 call it was asking about — and a dialog answering for a call that is already
-gone is exactly how a user gets trained to click Allow. It is fired as an
-independent task (`_close_soon`) because awaiting a send inside a cancellation
-handler is not reliable: the very next await can re-raise.
+gone is exactly how a user gets trained to click Allow.
+
+It is sent with an **awaited** `_broadcast`, from inside the `except
+CancelledError` handler. The instinct is the opposite — fire it as an
+independent task, on the theory that awaiting inside a cancellation handler will
+re-raise — and that instinct is wrong here *and* loses the race: the
+cancellation has already been delivered, so the await lands, while an
+independent task lets `chat.done` for the cancelled turn go out first and the
+dialog flickers on screen after the turn it belonged to is gone. See `_finish`,
+HANDOFF gotcha 14, and `test_chat_stop_while_a_confirm_is_pending`.
 """
 
 from __future__ import annotations

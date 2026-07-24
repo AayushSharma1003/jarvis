@@ -167,6 +167,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
     player: Playback | None = None
     capture: Capture | None = None
     level_task: asyncio.Task | None = None
+    synth_task: asyncio.Task | None = None
     # The wake service pauses only while WE own the mic ("hey jarvis" mid-
     # utterance must not re-trigger); it resumes for thinking/speaking so the
     # wake word can barge in on playback.
@@ -307,6 +308,25 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
         if result.turn_id is not None:
             await send(protocol.chat_done(conversation_id, result.turn_id, result.interrupted))
 
+        # **Barge-in during generation lands here, not in `except CancelledError`.**
+        # run_exchange deliberately absorbs CancelledError so it can still persist
+        # the partial turn (agent/loop.py; the delete-races-the-generation guard
+        # depends on that). The side effect is that a `voice.stop`, a `chat.stop`
+        # or a wake-word barge-in raised *while the model is still streaming*
+        # returns here as an ordinary result — and we would go on to await the
+        # synth worker and `player.drain()`, i.e. speak the whole queued reply to
+        # someone who just interrupted it, and hold the generation slot (and
+        # `handle_wake`'s `await cancel_generation()`) for the length of it.
+        #
+        # `cancelling()` is the exact question — "was this task cancelled?" —
+        # and survives the absorbed CancelledError. Re-raising keeps ONE
+        # barge-in path: the handler below silences the player and reports
+        # `stopped`, and the canceller still sees a cancelled task. It goes
+        # AFTER chat.done on purpose: the frontend clears `streamKey` on that
+        # message, and skipping it strands the composer forever.
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError
+
         await synth_task
         await player.drain()
         level_task.cancel()
@@ -314,6 +334,15 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
 
     except asyncio.CancelledError:
         # voice.stop / chat.stop / disconnect: silence NOW (barge-in path).
+        # Kill the synth worker FIRST. It is a separate task, so our cancellation
+        # does not reach it unless we happen to be awaiting it; parked inside
+        # `to_thread(io.synthesize, ...)` it would finish that sentence and
+        # `enqueue()` it — and Player.stop() only *clears* the buffer, leaving the
+        # stream open (audio/playback.py), so the late chunk refills it and
+        # Jarvis speaks one more sentence after being told to stop. Cancelling
+        # before the `await` below means the worker can never reach its enqueue.
+        if synth_task is not None:
+            synth_task.cancel()
         if player is not None:
             player.stop()
         with contextlib.suppress(Exception):
@@ -331,6 +360,11 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
     finally:
         if level_task is not None and not level_task.done():
             level_task.cancel()
+        # Same reasoning as the cancellation handler, for the `except Exception`
+        # route: never leave a synth worker alive to enqueue into a turn that
+        # has ended.
+        if synth_task is not None and not synth_task.done():
+            synth_task.cancel()
         if capture is not None:
             capture.close()
         if conn is not None:
