@@ -9,7 +9,14 @@ this module can express.
 The layering, milestone by milestone: M4.1 built the wire, M4.2 built the gate
 (`default_registry` takes one, no default — a Registry without a security layer
 must stay impossible to construct), M4.3 hands that gate something worth
-guarding. Shell is M4.4 and web_fetch M4.5, on the same terms.
+guarding, and M4.4 adds `run_command` — the sharpest tool in the project.
+web_fetch is M4.5, on the same terms.
+
+Unlike the file tools, `run_command` takes no sandbox: a shell escapes the
+filesystem sandbox by design (`cat ~/.ssh/id_rsa` ignores every root), so it is
+registered unconditionally and its only guardrail is the unconditional
+confirmation plus the `[tools] allow_dangerous` switch (it is `dangerous`, the
+same class as `delete_file`). See docs/security-model.md §1 and tools/shell.py.
 
 **The dev tool.** Under `JARVIS_DEV_TOOLS=1` an `ask`-risk `echo` is registered.
 It exists because the permission engine ships a milestone before the first tool
@@ -28,7 +35,7 @@ from datetime import datetime
 
 from ..security.permissions import ASK, SAFE, Gate
 from ..security.sandbox import Sandbox
-from . import filesystem
+from . import filesystem, shell
 from .registry import Registry
 
 DEV_TOOLS_ENV = "JARVIS_DEV_TOOLS"
@@ -65,6 +72,10 @@ def default_registry(gate: Gate, sandbox: Sandbox | None = None) -> Registry:
     registry = Registry(gate)
     if sandbox is not None:
         filesystem.register(registry, sandbox)
+    # Not gated on the sandbox: the shell is not a file tool and escapes it by
+    # design. Governed by [tools] allow_dangerous (dangerous risk) and the
+    # per-call confirmation, never by the filesystem roots.
+    shell.register(registry)
     registry.register(
         get_datetime,
         risk=SAFE,

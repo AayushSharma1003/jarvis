@@ -44,6 +44,9 @@
       "READ_FAILED": "it couldn't be read",
       "WRITE_FAILED": "it couldn't be written",
       "DELETE_FAILED": "it couldn't be deleted",
+      "COMMAND_REQUIRED": "no command was given",
+      "COMMAND_TIMEOUT": "it ran too long and was stopped",
+      "COMMAND_FAILED": "it couldn't be run",
       "UNKNOWN": "unknown problem"
     }
   },

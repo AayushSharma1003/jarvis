@@ -233,6 +233,24 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     a `to_thread`-parked worker task is not reached by its parent's
     cancellation, and `Player.stop()` only *clears* the buffer (the stream stays
     open), so a late `enqueue()` un-silences the barge-in.
+19. **A shell subprocess needs three things a naïve `run` gets wrong, and each
+    is a real DoS or leak** (`tools/shell.py`, M4.4). (a) **Never `communicate()`
+    for untrusted output.** It buffers the child's *entire* output before
+    returning, so `yes` / `cat /dev/urandom` balloon RAM to gigabytes on the 8GB
+    target long before any timeout fires — the wait_for wraps the reader, not the
+    memory. Read in chunks against a byte budget and kill the producer the moment
+    it's hit. (b) **`start_new_session=True` + `os.killpg`, not `proc.kill()`.**
+    A shell backgrounds children (`(sleep 2; …) & …`); non-interactive `sh -c`
+    has no job control, so they share the shell's process group — but SIGKILL to
+    the shell alone reparents them to init and they live on. Kill the whole group.
+    The tripwire is a backgrounded child that writes a sentinel *after* the kill
+    window; if it appears, only the parent died
+    (`test_timeout_kills_the_whole_process_group`). (c) **Do all termination in
+    one `finally`.** The explicit `except CancelledError` you reach for is
+    redundant with it and invites drift — the finally already kills on the cap
+    break, the timeout, and a barge-in's CancelledError propagating through. The
+    one branch that earns its place is `except TimeoutError`, and only to
+    *translate* the code to `COMMAND_TIMEOUT`; the kill is still the finally's.
 
 ## Repo map
 
@@ -398,6 +416,24 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    (directories refused — one confirmation can't stand for an unbounded set of
    files). `ToolOutput` lets a tool declare its own untrusted content; the
    registry relays it, the loop applies it. 279 backend tests.
+   ✅ **M4.4 shell DONE** (2026-07-24): `run_command`, the sharpest tool in the
+   project (`tools/shell.py`). It runs the command **verbatim** through a shell
+   — no classifier, no denylist, both bypass generators — and its only guardrail
+   is the unconditional confirmation. It takes **no sandbox**: a subprocess
+   escapes §2 by design (`cat ~/.ssh/id_rsa` ignores every root), so it registers
+   unconditionally, is `dangerous` (never session-grantable, off entirely under
+   `allow_dangerous = false`), and rides taint like anything else. Owner decisions
+   (delegated, security-first): **cwd = home** (a shell `cd`s anywhere, so pinning
+   to a root implies a wall that isn't there); **env = inherited minus `JARVIS_*`**
+   (real PATH so tools work, but the WS auth token never reaches a child);
+   **30s timeout + 64KB incremental output cap** (one generation slot, no output
+   streaming — a quick-command tool, not a build runner). The subprocess lifecycle
+   is the meat: bounded incremental read (never `communicate()`), and **whole
+   process-group kill** on timeout / cancellation / cap so a backgrounded child is
+   never orphaned. No frontend changes — the confirm dialog and tool span were
+   already generic; only three i18n codes (`COMMAND_REQUIRED/TIMEOUT/FAILED`).
+   **314 backend tests** (14 new, each mutation-proven — incl. the process-group
+   kill via a surviving-sentinel tripwire). See gotcha 19.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -519,8 +555,8 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.3 are done and green
-(**300 backend tests, 2 Rust**).
+**Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.4 are done and green
+(**314 backend tests, 2 Rust**). Only M4.5 (web_fetch + SSRF) remains in Phase 4.
 
 ### Pre-public security + bug audit (2026-07-23 → 2026-07-24)
 
@@ -610,26 +646,25 @@ trace as a stranger, CI-tests-what-it-claims, `unsigned-install.md` honesty
 re-read, and Windows/Linux file-tool behaviour by hand (only macOS exercised;
 the deny-side folding closes the case-insensitivity class generically).
 
-**Next is M4.4: shell.** It is the sharpest tool
-in the project and the rules are already written — §1: `run_command` **always
-confirms, full command text shown, no exceptions**, no classifier and no
-denylist (both are bypass generators). The machinery it needs all exists now:
-`dangerous` risk, the confirm dialog with Deny-default focus and a scrollable
-monospace argument block, `[tools] allow_dangerous` to switch it off wholesale,
-and taint to escalate a command that follows a file the model read.
+**Next is M4.5: `web_fetch` + SSRF guards** (§4). That closes Phase 4's tool
+list (files, shell, web_fetch). `security/ssrf.py` is still an empty stub; §4
+already specifies the resolved-IP private/link-local block, and the network-write
+class is `dangerous`. Taint (§3) is the reason web_fetch matters most: its result
+is the canonical untrusted content, and reading it must mark the conversation.
 
-What M4.4 has to decide, and should not decide casually:
-1. **Working directory and environment.** A shell with the backend's cwd and
-   full env is a different tool from one pinned to a sandbox root with a
-   scrubbed env. The sandbox exists now, so pinning is available — but a shell
-   the user cannot point at their project is a shell they won't use.
-2. **Timeout and output caps.** `MAX_RESULT_CHARS` truncates, but a command
-   that never exits holds the generation slot. There is prior art in this
-   repo for a bounded wait (the confirm broker's timeout).
-3. **A shell can escape every other layer.** `cat ~/.ssh/id_rsa` ignores the
-   filesystem sandbox entirely, since the sandbox governs *file tools*, not
-   subprocesses. That is worth saying out loud in the docs rather than letting
-   the sandbox imply a protection it does not provide.
+**M4.4 (shell) is done — how its three casually-dangerous decisions actually
+went** (owner delegated all three; standing-authorization = security first):
+1. **Working directory + environment.** cwd = **home**, not a sandbox root: a
+   shell `cd`s anywhere, so pinning would imply containment it can't provide (its
+   real protection is the confirmation). env = **inherited minus `JARVIS_*`** —
+   the user's PATH/tools stay (a shell that can't find `git` won't get used), but
+   the WS auth token never reaches a child.
+2. **Timeout + output caps.** 30s timeout (env-overridable) + a 64KB **incremental**
+   output cap — read as bytes arrive, because `communicate()` would let `yes`
+   balloon RAM before the timeout fired. A quick-command tool, not a build runner.
+3. **A shell escapes every other layer** — now stated at length in §1's
+   `run_command` subsection, and the §"Known limitations" bullet flipped from
+   prediction to landed.
 
 Still deferred from earlier milestones: nothing.
 

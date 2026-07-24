@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: §1 (permission engine + confirmation) implemented in M4.2; §2 (filesystem sandbox) and §3 (taint) in M4.3. §4's `web_fetch` guards and §5 (extensions) are still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
+> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3. §4's `web_fetch` guards and §5 (extensions) are still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -35,6 +35,52 @@ Keyed on **tool + exact arguments** (canonical JSON), held in process memory, ne
 It is **never honoured for `dangerous`**, which is per-call confirmation and means it. The UI hides the button there, and the backend refuses to record the grant regardless — the button is in a webview and the enforcement is not.
 
 A refusal is also remembered for the rest of the exchange, so a model that re-asks after being told no cannot manufacture a second dialog. That is confirmation fatigue with no attacker in it.
+
+### `run_command`: what it is, and what it is not (M4.4)
+
+Implemented in `backend/jarvis_backend/tools/shell.py`; the lifecycle tests are
+`backend/tests/test_shell.py`.
+
+It runs the command **verbatim** through a shell (so pipes, `&&` and redirects
+work) and inspects it not at all — the no-classifier, no-denylist rule above is a
+property of the code, not just a promise. The dialog is the generic one: the full
+command renders in the scrollable monospace argument block, Deny is focused, and
+because the tool is `dangerous` there is no "allow for this session" button.
+
+**The shell is not sandboxed, and the docs must not let it seem otherwise.** §2's
+filesystem sandbox is a policy check *inside* `read_file`/`write_file`/`delete_file`;
+it governs those tools, not the process. `run_command` spawns a subprocess, so
+`cat ~/.ssh/id_rsa` — or `curl … | sh`, or anything at all — ignores every root
+in §2. **Its only protection is the unconditional confirmation**, and that is why
+the confirmation is unconditional. Two consequences are called out so nobody
+mistakes a convenience for a boundary:
+
+- **Working directory is the user's home**, and that is a usability default, not
+  containment: a shell `cd`s anywhere, so pinning it to a sandbox root would only
+  imply a wall that isn't there. Any project is reached by an absolute `cd` inside
+  the command the user already sees and approves.
+- **The environment is inherited minus the `JARVIS_*` namespace.** The user's
+  `PATH`/`HOME`/etc. are kept — a shell that can't find their tools won't get used
+  — but the app's own variables are stripped, above all `JARVIS_WS_TOKEN`: the
+  WebSocket auth secret must never reach a subprocess. This is hygiene, not a
+  sandbox; the user's other secrets stay in the environment, and a command that
+  would exfiltrate them is shown in full and confirmed first.
+
+**A non-exiting command cannot hold the app hostage.** There is one generation
+slot and no protocol for streaming a command's output, so `run_command` is a
+quick-command tool, not a build runner. A 30s timeout (overridable via
+`JARVIS_SHELL_TIMEOUT_S` for headless verification; the packaged app never sets
+it) and a 64 KB incremental output cap bound the slot and the memory — the cap is
+read as the bytes arrive, because `communicate()` would let `yes` or
+`cat /dev/urandom` balloon RAM before any timeout fired. On a timeout, a
+cancellation (barge-in / stop / delete), or the cap, the **whole process group**
+is killed (new session at spawn + `killpg`), so a backgrounded child is never
+orphaned.
+
+**Taint still applies.** A command that follows a `read_file` in the same
+conversation escalates through the same `PermissionGate`/broker path as any other
+side-effectful call, and the dialog names the source — the shell is `dangerous`
+already, so what taint adds here is the provenance line, not the confirmation.
 
 ### `JARVIS_DEV_TOOLS` (development affordance)
 
@@ -98,6 +144,6 @@ Implemented in M4.3. How it actually works, and the parts worth knowing:
 - TOCTOU windows between path resolution and file operation.
 - Confirmation fatigue is a real attack surface; UX must keep confirmations rare enough to be read.
 - **The database is not encrypted.** `jarvis.sqlite3` holds every conversation in plain text, readable by any process running as the user. Deleting a conversation removes the rows; it does not shred them, and SQLite may keep the bytes in freed pages until they are reused. This is the same posture as the shell history and browser profile sitting next to it, and full-disk encryption is the mitigation — but it is not implied anywhere in the UI, so it is stated here.
-- **The sandbox governs *file tools*, not the process.** It is a policy check inside `read_file`/`write_file`/`delete_file`, so anything that runs code outside them is unaffected. That is fine today, and stops being fine the moment `run_command` lands: `cat ~/.ssh/id_rsa` ignores every root in this section. Shell's protection is its unconditional confirmation, not the sandbox, and §1 must keep saying so.
+- **The sandbox governs *file tools*, not the process.** It is a policy check inside `read_file`/`write_file`/`delete_file`, so anything that runs code outside them is unaffected. This became load-bearing when `run_command` landed in M4.4: `cat ~/.ssh/id_rsa` ignores every root in this section. Shell's protection is its unconditional confirmation, not the sandbox — see §1's `run_command` subsection, which says so at length.
 - **A `safe` tool still reads.** `read_file` needs no confirmation by design (§2a), so a manipulated model can read any file under a root and put its contents in the conversation before anything is shown to the user. Taint makes the *consequences* confirm; it does not un-read the file. With a cloud backend that content has also left the machine.
 - **Only macOS has been exercised by hand.** Windows and Linux path handling — drive letters, UNC paths, 8.3 short names, `\\?\` prefixes, case rules that differ per volume — is covered by CI's test run and nothing else. The deny-side folding above closes the case-insensitivity class generically, but no one has run a file tool on those platforms.

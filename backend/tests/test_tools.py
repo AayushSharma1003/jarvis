@@ -159,13 +159,18 @@ def test_description_falls_back_to_the_docstring():
 # -- the shipped tool -------------------------------------------------------
 
 
-def test_default_registry_ships_only_safe_tools():
-    """The shipped set still has no side effects: the permission engine landing
-    in M4.2 did not smuggle a real tool in with it."""
+async def test_default_registry_ships_run_command_but_it_cannot_run_unconfirmed():
+    """M4.4 ships the first tool that needs no sandbox: run_command escapes the
+    filesystem sandbox by design, so it registers unconditionally. It is
+    `dangerous`, and under the no-broker SafeOnlyGate the sharpest tool in the
+    project still cannot run — the fallback holds even for shell."""
     r = default_registry(SafeOnlyGate())
     names = [s["function"]["name"] for s in r.schemas()]
-    assert names == ["get_datetime"]
+    assert "get_datetime" in names
     assert r.get("get_datetime").risk == SAFE
+    assert r.get("run_command").risk == DANGEROUS
+    result = await r.invoke("c", "run_command", {"command": "echo hi"})
+    assert (result.ok, result.code) == (False, "TOOL_CONFIRMATION_UNAVAILABLE")
 
 
 def test_default_registry_requires_a_gate():
@@ -438,6 +443,8 @@ def test_the_sandbox_is_never_an_argument_the_model_can_fill(workspace):
 def test_default_registry_ships_file_tools_only_with_a_sandbox(workspace):
     without = default_registry(SafeOnlyGate())
     assert without.get("read_file") is None
+    # run_command is not a file tool, so it is present with OR without a sandbox.
+    assert without.get("run_command") is not None
     with_sandbox = default_registry(SafeOnlyGate(), Sandbox([workspace]))
     assert with_sandbox.get("read_file") is not None
     assert with_sandbox.get("get_datetime") is not None
