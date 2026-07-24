@@ -71,11 +71,11 @@ Python sidecar
     onnxruntime (MIT), pywhispercpp / whisper.cpp (MIT), kokoro-onnx (MIT),
     sounddevice + PortAudio (MIT), FastAPI (MIT), uvicorn (BSD-3-Clause),
     httpx (BSD-3-Clause), numpy (BSD-3-Clause), platformdirs (MIT),
-    psutil (BSD-3-Clause)
+    psutil (BSD-3-Clause), tomli-w (MIT)
 
 Desktop app
     Tauri (MIT / Apache-2.0), React (MIT), three.js (MIT), zustand (MIT),
-    i18next (MIT), Tailwind CSS (MIT), Vite (MIT)
+    i18next (MIT), Tailwind CSS (MIT), Vite (MIT), TypeScript (Apache-2.0)
 
 Language models
     Served by Ollama (MIT), which is detected or installed separately and is
