@@ -520,30 +520,95 @@ explicit goal now, and it raises the bar on README/docs quality.
 ## Immediate next action
 
 **Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.3 are done and green
-(296 backend tests, 2 Rust).
+(**300 backend tests, 2 Rust**).
 
-**A pre-public security + bug audit ran 2026-07-23** (stop-and-verify, no new
-features). It found and fixed two real defects, both now with mutation-proven
-regression tests and both written up as gotchas 17 and 18:
-- 🔴 **A sandbox escape**: the excluded-directory check compared path spellings
-  exactly, so a case- or Unicode-variant path (`<root>/Jarvis-Config/...`)
-  slipped past it on macOS/Windows and reached Jarvis's own config. Proven
-  live in the real running app — with the fix reverted the model overwrote a
-  canary inside the excluded dir after the user clicked Allow. Reachable only
-  when a root is configured that *contains* the config/data dir (not the
-  Documents/Downloads/Desktop default), which is exactly the case the exclusion
-  exists for.
-- 🟠 **Barge-in did not work while the model was still streaming.** `voice.stop`
-  and the wake word were absorbed by `run_exchange` and the turn played its
-  whole queued reply out, reporting `done`; `handle_wake` blocked for that whole
-  time, so the wake word looked dead. See gotcha 18.
+### Pre-public security + bug audit (2026-07-23 → 2026-07-24)
 
-Also: supply chain clean across all three ecosystems (pip-audit / npm audit /
-cargo audit — 0 vulnerabilities), zero-telemetry claim re-proven by inspection
-(every outbound call is the configured Ollama URL), README corrected where it
-both under- and over-claimed, and `.gitignore` gaps closed (`*.sqlite3`,
-`build/`). **Git history has still never been scanned for secrets** — that scan
-is the one open item and needs the user to run it.
+A stop-and-verify pass, no new features. Every fix below has a regression test,
+and every regression test was mutation-proven (break the code, watch it fail,
+revert). Nothing in the voice or text path regressed.
+
+**🔴 Exploitable — fixed**
+- **Filesystem sandbox escape** (`security/sandbox.py`). The excluded-directory
+  check compared path *spellings* exactly (`Path.is_relative_to`), but
+  `resolve()` settles symlinks, not case or Unicode form. On case-insensitive
+  macOS/Windows and normalisation-insensitive APFS, `<root>/Jarvis-Config/config.toml`
+  missed the exclusion, matched the root, and let a tool overwrite Jarvis's own
+  config — the self-escalation the exclusion exists to stop. **Fix:** deny-side
+  comparisons casefold + NFC-normalise (`Sandbox._fold`); allow-side (roots)
+  stay exact, because folding those would *widen* the sandbox on Linux where
+  `~/documents` ≠ `~/Documents`. **Proven live in the real app**: with the fix
+  reverted, qwen3:4b wrote `PWNED` into a canary inside the excluded dir after
+  the user clicked Allow; with the fix, all spellings return
+  `PATH_OUTSIDE_SANDBOX`. Reachable only when a configured root *contains* the
+  config/data dir — not the Documents/Downloads/Desktop default, but exactly the
+  Linux layout and any `roots = ["~"]`. Gotcha 17; `test_sandbox.py`.
+
+**🟠 Real bug, bounded impact — fixed**
+- **Barge-in was dead while the model was still streaming** (`server/voice.py`).
+  `run_exchange` deliberately absorbs `CancelledError` (to persist the partial
+  turn — the delete-races-generation guard needs that), so a `voice.stop`,
+  `chat.stop`, or wake word raised *during* generation returned as an ordinary
+  result and the turn went on to speak its entire queued reply, reporting
+  `done`. Worse, `handle_wake` `await`s `cancel_generation()` before
+  broadcasting, so the wake word was dead for the length of the reply it failed
+  to interrupt. It hid because the acoustically-verified barge-in happens
+  *after* streaming, where the task is parked in `await synth_task` and asyncio
+  cancels the inner task for free. **Fix:** `asyncio.current_task().cancelling()`
+  (survives the absorbed cancel), re-raise after `chat.done` goes out.
+  Gotcha 18; `test_voice_ws.py`.
+- **Barge-in could speak one sentence after being silenced** (same file). The
+  synth worker is a separate task; parked in `to_thread(synthesize)` it finishes
+  and `enqueue()`s *after* `player.stop()`, and `Player.stop()` only clears the
+  buffer (the stream stays open), so the late chunk un-silences. **Fix:** cancel
+  the synth worker in the barge-in handler and again in `finally`.
+- **Corrupt database crashed sidecar startup** (`storage/db.py`). A junk or
+  foreign `jarvis.sqlite3` raised `sqlite3.DatabaseError` out of `main.py`,
+  which the user saw only as "backend didn't start in time" with no recovery.
+  **Fix:** on `DatabaseError` at open, rename the bad file to
+  `jarvis.sqlite3.corrupt-{unix_ts}` (kept, never deleted, so data can be
+  recovered), log a WARNING with both paths + the error, and open a fresh db.
+  Narrow catch — a non-`DatabaseError` still propagates. **Proven live**: the
+  real backend booted on a junk db, logged the warning, reached `ready`.
+  `test_db.py` (4 tests).
+
+**🟡 Correctness — fixed**
+- **`token_valid` crashed on a non-string token** (`server/auth.py`). `{"token":
+  123}` hit `.encode()` and raised `AttributeError` out of the pre-auth path,
+  where nothing catches it — any local process could crash the handler. Now an
+  `isinstance` refusal. Fail-safe already, now clean. `test_auth.py`.
+- **`confirm.py` module docstring contradicted its own code** — described firing
+  the dialog dismissal as an independent task (`_close_soon`, which doesn't
+  exist), the exact opposite of gotcha 14's awaited-send fix. Rewritten; a
+  maintainer trusting it would have reintroduced the bug.
+
+**🟡 Reported, not fixed** (bounded, deliberately left)
+- `server/app.py` `conversation.rename`/`.history` don't type-check
+  `conversation_id` the way `.delete` does — an unhandled type error can tear
+  down the connection. No security impact (authenticated).
+- `_generate`'s catch-all `await send(...)` can itself raise on a closed socket;
+  noisy in logs, not a leak (`connections.remove` already ran).
+
+**Supply chain & hygiene**
+- **pip-audit / npm audit / cargo audit: 0 vulnerabilities** (17 cargo warnings,
+  all unmaintained GTK3 transitives from Tauri on the Linux path — no fix
+  available, not actionable).
+- **Zero-telemetry claim re-proven** by inspection: every outbound call is the
+  configured Ollama URL; the only socket is the loopback bind; no `fetch` in the
+  frontend, no HTTP in Rust, `fetch_models.py` is user-invoked.
+- **README corrected** where it both under-claimed (permission engine listed as
+  unbuilt) and over-claimed (`web_fetch` SSRF + extension approval as present
+  tense — neither exists). Now split into built-vs-specified.
+- **`.gitignore` gaps closed**: `*.sqlite3` (the store is `jarvis.sqlite3`, only
+  `*.sqlite` was ignored) and `build/` (PyInstaller workpath, multi-MB binary).
+- **NOTICE**: added missing `tomli-w` (MIT) and `TypeScript` (Apache-2.0).
+- ✅ **Git history scanned for secrets — clean** (2026-07-24, user-run). The
+  last open item from the audit; done. History audit is no longer outstanding.
+
+**Scope not covered** (cheap, non-critical, for a later pass): clean-clone build
+trace as a stranger, CI-tests-what-it-claims, `unsigned-install.md` honesty
+re-read, and Windows/Linux file-tool behaviour by hand (only macOS exercised;
+the deny-side folding closes the case-insensitivity class generically).
 
 **Next is M4.4: shell.** It is the sharpest tool
 in the project and the rules are already written — §1: `run_command` **always
