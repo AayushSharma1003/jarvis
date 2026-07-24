@@ -47,6 +47,12 @@
       "COMMAND_REQUIRED": "no command was given",
       "COMMAND_TIMEOUT": "it ran too long and was stopped",
       "COMMAND_FAILED": "it couldn't be run",
+      "URL_REQUIRED": "no address was given",
+      "URL_INVALID": "that isn't a valid web address",
+      "URL_SCHEME_BLOCKED": "only http and https addresses are allowed",
+      "URL_BLOCKED": "that address points inside your own network, so it's blocked",
+      "FETCH_TIMEOUT": "the page took too long to load",
+      "FETCH_FAILED": "the page couldn't be fetched",
       "UNKNOWN": "unknown problem"
     }
   },

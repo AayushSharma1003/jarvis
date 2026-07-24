@@ -12,7 +12,7 @@ flowchart LR
         WS[WebSocket server<br/>token + Origin auth]
         VP[Voice pipeline<br/>openWakeWord → Silero VAD → whisper.cpp → Kokoro]
         AG[Agent loop]
-        SEC[Security layer<br/>permissions · taint · sandbox]
+        SEC[Security layer<br/>permissions · taint · sandbox · SSRF]
         TOOLS[Tools + extensions]
         DB[(SQLite<br/>message tree)]
     end

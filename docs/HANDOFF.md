@@ -251,6 +251,22 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     break, the timeout, and a barge-in's CancelledError propagating through. The
     one branch that earns its place is `except TimeoutError`, and only to
     *translate* the code to `COMMAND_TIMEOUT`; the kill is still the finally's.
+20. **An SSRF guard has three failure modes that each look like it works**
+    (`security/ssrf.py`, `tools/web.py`, M4.5). (a) **Check every resolved IP, not
+    the first.** A host with one public and one private A record is a trivial
+    bypass if you stop at `ips[0]`; the any-IP rule refuses the whole host. (b)
+    **Validate IP-literal hosts directly — never resolve them.** `http://169.254.
+    169.254/` handed to a resolver can be whitewashed by an attacker's DNS (or, in
+    a test, a fake resolver); an IP literal is its own address, so classify it and
+    skip resolution. (c) **Re-validate every redirect hop.** The first hop being
+    clean is worthless if a 302 to the metadata endpoint is followed blindly —
+    follow redirects by hand (cap 5) and run the same check on each `Location`.
+    Also: `ipaddress` classification (`is_private/loopback/link_local/multicast/
+    unspecified/reserved`) is a superset of a hand-rolled CIDR list and covers
+    IPv6, IPv4-mapped (`::ffff:10.0.0.1`), and getaddrinfo-decoded encodings — the
+    IPv4-mapped unwrap is native on current CPython, kept only as cross-version
+    defense (a test can't distinguish it, so it's commented as such). The residual
+    it does **not** close is DNS rebinding — documented (§4), not solved.
 
 ## Repo map
 
@@ -434,6 +450,23 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    already generic; only three i18n codes (`COMMAND_REQUIRED/TIMEOUT/FAILED`).
    **314 backend tests** (14 new, each mutation-proven — incl. the process-group
    kill via a surviving-sentinel tripwire). See gotcha 19.
+   ✅ **M4.5 web_fetch + SSRF DONE** (2026-07-24) — **Phase 4 tool list complete
+   (files, shell, web_fetch).** `tools/web.py` (the fetch) + `security/ssrf.py`
+   (the guard, previously an empty stub). `web_fetch` is **`ask`** — every fetch
+   confirms showing the URL, the exfiltration defense the SSRF guard can't provide
+   (`safe` breaks §3's "safe = read-only" invariant; web egress is a side effect).
+   It's the canonical **taint** source (`taint_source=url`). SSRF guard: scheme
+   allowlist (http/https), resolve-and-check-**every**-IP via `ipaddress`
+   classification (superset of §4's CIDR list — covers IPv6, IPv4-mapped, decimal
+   encodings), **IP-literal hosts validated directly not resolved**, and **every
+   redirect hop re-validated** (302→metadata is the classic escalation). Bounded
+   like shell: 512KB incremental read cap + 15s timeout (`JARVIS_FETCH_TIMEOUT_S`).
+   HTML→text via stdlib; non-200 shown as `[HTTP N]`. httpx (existing dep) +
+   stdlib only — no new dependency. No frontend changes; 6 new i18n codes
+   (`URL_*`/`FETCH_*`). **DNS-rebinding residual documented, not closed** (owner-
+   delegated), same posture as §2's file TOCTOU. **361 backend tests** (47 new,
+   each mutation-proven — classifier, any-IP rule, scheme block, IP-literal,
+   redirect re-validation, byte cap, taint). See gotcha 20.
 5. **Extended scope** — branching UI, `jarvis install <url>`, model catalog UI,
    default extensions, wake-word training + "Hey Friday", opt-in VAD barge-in.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
@@ -555,8 +588,12 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-3 complete; Phase 4 in progress.** M4.0-M4.4 are done and green
-(**314 backend tests, 2 Rust**). Only M4.5 (web_fetch + SSRF) remains in Phase 4.
+**Phases 1-4 complete.** All of Phase 4 (M4.0-M4.5) is done and green
+(**361 backend tests, 2 Rust**). The tool list ships: files, shell, web_fetch,
+each with its security layer. **Phase 5 (extended scope) is next** — branching
+UI, `jarvis install <url>`, model catalog UI, default extensions + the extension
+loader/approval gate (§5, the one deferred security piece), wake-word training +
+"Hey Friday", opt-in VAD barge-in.
 
 ### Pre-public security + bug audit (2026-07-23 → 2026-07-24)
 
@@ -646,25 +683,22 @@ trace as a stranger, CI-tests-what-it-claims, `unsigned-install.md` honesty
 re-read, and Windows/Linux file-tool behaviour by hand (only macOS exercised;
 the deny-side folding closes the case-insensitivity class generically).
 
-**Next is M4.5: `web_fetch` + SSRF guards** (§4). That closes Phase 4's tool
-list (files, shell, web_fetch). `security/ssrf.py` is still an empty stub; §4
-already specifies the resolved-IP private/link-local block, and the network-write
-class is `dangerous`. Taint (§3) is the reason web_fetch matters most: its result
-is the canonical untrusted content, and reading it must mark the conversation.
+**Phase 4 is complete. Next is Phase 5 (extended scope).** The obvious security
+piece carried into it is the **extension loader + approval gate** (§5): manifest-
+declared permissions shown at load, `jarvis install <url>` pinning the commit SHA,
+extension risk levels as floors the core engine can raise. It reuses the M4.x
+machinery wholesale — the registry takes a gate, the confirm broker is generic,
+the risk levels exist. The rest of Phase 5 is UX/features: branching UI (the
+`Store.siblings()` tree is built and tested, just unsurfaced), model catalog UI,
+"Hey Friday" training, opt-in VAD barge-in.
 
-**M4.4 (shell) is done — how its three casually-dangerous decisions actually
-went** (owner delegated all three; standing-authorization = security first):
-1. **Working directory + environment.** cwd = **home**, not a sandbox root: a
-   shell `cd`s anywhere, so pinning would imply containment it can't provide (its
-   real protection is the confirmation). env = **inherited minus `JARVIS_*`** —
-   the user's PATH/tools stay (a shell that can't find `git` won't get used), but
-   the WS auth token never reaches a child.
-2. **Timeout + output caps.** 30s timeout (env-overridable) + a 64KB **incremental**
-   output cap — read as bytes arrive, because `communicate()` would let `yes`
-   balloon RAM before the timeout fired. A quick-command tool, not a build runner.
-3. **A shell escapes every other layer** — now stated at length in §1's
-   `run_command` subsection, and the §"Known limitations" bullet flipped from
-   prediction to landed.
+**M4.5 (web_fetch + SSRF) — the two decisions:** risk = **`ask`** (every fetch
+confirms showing the URL — the exfiltration defense; `safe` breaks §3's "safe =
+read-only" since egress is a side effect). DNS rebinding = **validate + document
+the residual** (owner-delegated) — scheme allowlist + resolve-and-check-every-IP +
+per-redirect re-validation + IP-literal-direct-validation close the direct
+vectors; the resolve-then-connect TOCTOU is documented like §2's file TOCTOU, not
+closed (pinning needs fragile custom-transport plumbing). See §4 and gotcha 20.
 
 Still deferred from earlier milestones: nothing.
 

@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3. §4's `web_fetch` guards and §5 (extensions) are still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
+> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5. §5 (extensions) is still pending. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -123,8 +123,53 @@ Implemented in M4.3. How it actually works, and the parts worth knowing:
 
 ## 4. Network guards
 
-- `web_fetch` blocks private/link-local ranges by default (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1, fc00::/7) — resolved-IP checked, not hostname-checked.
 - Backend binds `127.0.0.1` only. WebSocket requires a per-session token *and* a strict `Origin` check (defeats browser drive-bys against localhost).
+
+### `web_fetch` and the SSRF guard (M4.5)
+
+Implemented in `backend/jarvis_backend/tools/web.py` (the fetch) and
+`backend/jarvis_backend/security/ssrf.py` (the guard); tests are `test_web.py`
+and `test_ssrf.py`. `web_fetch` is the tool taint (§3) exists for — its result is
+the canonical untrusted content — and the only tool that reaches the network.
+
+- **Risk is `ask`.** Every fetch confirms, showing the URL, because a URL can
+  carry data *out* (exfiltration) and that is the defense the SSRF guard cannot
+  provide. `safe` is off the table: web egress is a side effect, and §3's
+  invariant is that `safe` means read-only. Session grants still apply to an exact
+  repeat URL, so re-fetching the same page does not re-ask; a different URL does.
+- **Scheme allowlist:** `http`/`https` only. `file://`, `gopher://`, `ftp://` and
+  friends are refused before anything is resolved — they are pure SSRF vectors.
+- **Resolve, then check every IP.** The host is resolved (an IP-literal host is
+  validated directly, never resolved) and refused if **any** address is not
+  globally routable. The check uses `ipaddress` classification (private, loopback,
+  link-local, multicast, unspecified, reserved), a **superset** of the ranges this
+  section used to list by hand (127.0.0.0/8, 10/8, 172.16/12, 192.168/16,
+  169.254/16, ::1, fc00::/7): it also covers IPv6, IPv4-mapped addresses
+  (`::ffff:127.0.0.1`), and alternate encodings getaddrinfo decodes (decimal
+  `2130706433` → `127.0.0.1`). The **any-IP** rule matters — a host with one
+  public and one private record must be refused, or it is a trivial bypass.
+- **Every redirect hop is re-validated.** A 302 to `http://169.254.169.254/` is
+  how an allowed first hop becomes an internal one; redirects are followed by hand
+  (capped at 5) so each target passes the same check.
+- **Bounded, like the shell:** a 512 KB incremental read cap (a huge body must not
+  balloon RAM on the 8 GB target) and a 15 s timeout (env-overridable
+  `JARVIS_FETCH_TIMEOUT_S`; a slow server must not hold the single generation
+  slot). HTML is reduced to text with the stdlib parser. A non-200 status is shown
+  in the result (`[HTTP 404]`), a result the model must see — not a tool failure,
+  the same call as shell's exit code.
+- **Not a phone-home.** A user-directed, confirmed fetch is a browser action, not
+  telemetry; the zero-telemetry principle (§6) is about JARVIS reaching out on its
+  own, which this is not, and offline operation is unaffected (the fetch just
+  fails).
+
+**Documented residual — DNS rebinding.** There is a TOCTOU window between the
+resolve the guard checks and the resolve httpx does at connect time. An attacker
+controlling DNS for a host the model was steered to, with a 0-TTL record, could
+answer public to the check and private to the socket. The common vectors — direct
+internal IPs/hosts, the metadata endpoint, and a redirect to an internal target —
+are all closed; closing rebinding needs pinning the connection to the validated
+IP while preserving Host/SNI (fragile custom-transport plumbing), deferred for v1.
+This is the same posture §2 takes for the file-tool TOCTOU.
 
 ## 5. Extensions
 
@@ -147,3 +192,4 @@ Implemented in M4.3. How it actually works, and the parts worth knowing:
 - **The sandbox governs *file tools*, not the process.** It is a policy check inside `read_file`/`write_file`/`delete_file`, so anything that runs code outside them is unaffected. This became load-bearing when `run_command` landed in M4.4: `cat ~/.ssh/id_rsa` ignores every root in this section. Shell's protection is its unconditional confirmation, not the sandbox — see §1's `run_command` subsection, which says so at length.
 - **A `safe` tool still reads.** `read_file` needs no confirmation by design (§2a), so a manipulated model can read any file under a root and put its contents in the conversation before anything is shown to the user. Taint makes the *consequences* confirm; it does not un-read the file. With a cloud backend that content has also left the machine.
 - **Only macOS has been exercised by hand.** Windows and Linux path handling — drive letters, UNC paths, 8.3 short names, `\\?\` prefixes, case rules that differ per volume — is covered by CI's test run and nothing else. The deny-side folding above closes the case-insensitivity class generically, but no one has run a file tool on those platforms.
+- **`web_fetch` has a DNS-rebinding TOCTOU window.** The SSRF guard checks the IPs it resolves, but httpx resolves again at connect time; a 0-TTL attacker DNS could differ between the two. The direct vectors (internal IPs/hosts, metadata, redirect-to-internal) are closed — see §4 for the full note and why closing rebinding is deferred.
