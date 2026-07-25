@@ -36,6 +36,7 @@ from .config import (
 )
 from .extensions import host
 from .extensions.approvals import ApprovalStore
+from .extensions.bundled import seed_bundled_extensions
 from .extensions.loader import discover, load_approved
 from .llm.ollama import OllamaBackend
 from .security.confirm import ConfirmBroker
@@ -129,6 +130,17 @@ def run() -> None:
         roots=list(config.filesystem_roots), excluded=[config_dir(), data_dir()]
     )
     registry = default_registry(gate, sandbox)
+    # Put the extensions that ship with the app where the loader looks, before
+    # it looks. They land as `pending` and are never overwritten — see
+    # extensions/bundled.py. This is an install step, not a load step, which is
+    # why it sits here rather than inside load_extensions(): it writes to disk,
+    # and it should happen when a real sidecar boots, not every time something
+    # composes a registry.
+    try:
+        if seeded := seed_bundled_extensions(extensions_dir()):
+            log.info("seeded bundled extensions: %s", ", ".join(seeded))
+    except Exception:  # noqa: BLE001 - a failed copy costs the defaults, never the boot
+        log.exception("seeding bundled extensions failed")
     # After the core tools, never before: a name already in the registry is
     # refused, so this ordering is what stops an extension shadowing read_file.
     # The returned map (name → claimed tool names) is what revoke unregisters.

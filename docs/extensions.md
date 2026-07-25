@@ -27,14 +27,21 @@ tool name already taken by the core or another extension is refused.
 ## Install paths
 
 1. Drop the folder in the extensions directory. It is **detected**, not trusted — it
-   shows up as `pending` and does not load until approved. For the bundled defaults
-   that means copying them out of the repo — nothing does this for you yet, and
-   packaging them with the installer is still open:
+   shows up as `pending` and does not load until approved.
 
-   ```sh
-   cp -R extensions/timers-reminders \
-     ~/Library/Application\ Support/jarvis/extensions/   # macOS
-   ```
+   The **bundled defaults arrive on their own** (M6.0): the sidecar copies them into
+   the extensions directory on startup if they are not already there. Seeding
+   delivers bytes and does not bless them — a seeded extension is `pending` like any
+   other, and shipping a default is not consent to run it. Nothing is ever
+   overwritten, because an extension that updates itself is an extension whose
+   approved bytes are a suggestion (§5): a newer bundled version simply hashes
+   differently and reads as `changed` until a human looks at it again.
+
+   Which extensions ship is an explicit list (`BUNDLED` in
+   `backend/jarvis_backend/extensions/bundled.py`), not "whatever is in the folder"
+   — `calendar-macos` is a manifest with an empty `extension.py`, and seeding it
+   would put an extension in every user's panel that fails the moment it is
+   approved.
 2. `jarvis install <url>` clones a git repository, pins the commit it fetched, shows
    the declaration, and asks — the same prompt `jarvis extensions approve` uses,
    because there is exactly one way an extension becomes runnable.

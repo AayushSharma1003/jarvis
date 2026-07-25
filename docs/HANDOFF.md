@@ -394,6 +394,50 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     stamps the new turn id onto the messages the exchange put on screen and
     appends the turn to the path, rather than paying a history round trip.
 
+30. **A green CI can ship a mute app, because PyInstaller cannot see a path built
+    at runtime** (M6.0, `scripts/sidecar.spec`). Three packages resolve their own
+    data with `Path(__file__).parent / ...` *while running*, which static analysis
+    never follows: `kokoro_onnx/config.json` and `language_tags/data/json/*.json`
+    are read at **module import**, and `espeakng_loader` resolves both its
+    `libespeak-ng.dylib` and its `espeak-ng-data` directory that way. None were
+    collected, so `from kokoro_onnx import Kokoro` raised `FileNotFoundError` and
+    the entire TTS stack was dead in every packaged build ever produced.
+    **The reason nobody noticed is the smoke test's shape**: `build_sidecar.py`
+    started the exe and read the ready line, and Kokoro loads *lazily* (gotcha 11,
+    which is load-bearing and must not be "fixed"), so the sidecar boots
+    perfectly and only dies the first time the user asks it to speak — into a
+    swallowed log line, not a crash. A build gate that proves startup proves
+    nothing about a lazily-loaded subsystem. The check added is **derived, not a
+    hardcoded file list**: for each named package it compares the non-`.py` files
+    in the build venv against the frozen tree, so a dependency that renames or
+    adds a data file is followed automatically. `collect_data_files` — *not*
+    `collect_dynamic_libs` — is right for the espeak dylib too, because it keeps
+    the file package-relative, which is exactly where that runtime lookup goes.
+    onnxruntime and whisper.cpp need nothing: their libraries hang off load
+    commands on an extension module, which PyInstaller *does* follow (verified in
+    the built tree rather than assumed).
+31. **espeak-ng `exit()`s the process when its data path exceeds 151 characters,
+    and a .app is 83 characters deep** (M6.0, `tts/espeak.py`). Measured, not
+    inferred: 151 works, 152 kills the sidecar with rc=1 — the first time Jarvis
+    speaks, which the user sees only as "Backend didn't start in time". It cannot
+    be caught, because there is no exception; by the time anything could handle it
+    the process is gone. The one diagnostic it emits is actively misleading —
+    espeak falls back to a path baked in when **espeak itself** was compiled
+    (`Error processing file '/Users/runner/work/espeakng-loader/…'`), so the error
+    names a GitHub Actions directory that has nothing to do with this machine.
+    In-bundle the path is `Contents/Resources/sidecar/jarvis-backend/_internal/
+    espeakng_loader/espeak-ng-data`, **83 characters after the .app**, so
+    `/Applications` is fine at 107 and
+    `~/Downloads/jarvis-v0.1.0-macos-arm64-unsigned/Jarvis.app` is fatal at 157 —
+    and running straight out of `target/release/bundle/macos/` is 179, which is
+    how it was found. Fixed by copying the data directory to `<data dir>/
+    espeak-ng-data` (69 chars here) **only when the bundled path is over the
+    limit**, so the /Applications majority pays nothing. **A symlink does not
+    work and looks like it does**: phonemizer resolves the link before espeak
+    sees it, so a short symlink to a long target still fails — and, worse, a test
+    written with symlinks passes at *any* length and hides the bug entirely.
+    Test with real directories.
+
 ## Repo map
 
 ```
@@ -773,7 +817,56 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    the exchange put on screen. Fourth milestone running that the browser walk-through
    found something the suite structurally could not.
    **674 backend tests** (26 new), 18 mutations proven, ruff + tsc clean.
-6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
+6. ⬅ **Ship — IN PROGRESS.** Installers, onboarding polish, docs, tagged unsigned
+   release.
+   ✅ **M6.0 the packaged build actually works DONE** (2026-07-25) — the first
+   time anyone ran the artifact CI has been building on every tag. It did not
+   work, and could not have: **every packaged build ever produced shipped mute**
+   (gotcha 30) and **died outright on first speech if installed anywhere but
+   /Applications** (gotcha 31). Both were invisible to a green suite and a green
+   CI, which is the whole argument for this milestone existing.
+   **Fixed:** `scripts/sidecar.spec` collects the three packages whose data is
+   resolved at runtime (`kokoro_onnx`, `language_tags`, `espeakng_loader`);
+   `scripts/build_sidecar.py` gained a **derived** bundled-data gate so the
+   release build breaks instead of the release, plus a scratch `JARVIS_DATA_DIR`
+   so a build script stops writing into the developer's real data dir;
+   `tts/espeak.py` keeps the espeak data path under the 151-char cliff.
+   **Also landed: `extensions/bundled.py`** — nothing had ever copied the bundled
+   extensions into the data dir, so `timers-reminders`, built and live-verified in
+   M5.4, **did not exist for any real user**. Seeding delivers bytes and does not
+   bless them: seeded extensions land `pending`, nothing is ever overwritten (§5
+   forbids extension auto-update, and that applies to us too), and the list is
+   **explicit** so `calendar-macos` — a manifest with a 0-byte `extension.py` —
+   cannot ship a stub that fails the moment it is approved.
+   **Verified live in the real WKWebView, packaged, from /Applications**, against
+   a scratch data dir: the sidecar spawning from `resource_dir()/sidecar/…`
+   (`sidecar.rs:200`'s release branch, never executed before); first-run seeding
+   on an empty data dir with `calendar-macos` correctly skipped; the extensions
+   panel end-to-end (pending badge → detail card showing declarations, *effective*
+   ROUTINE risks, digest and the "runs with the same access … isn't a sandbox"
+   warning → Approve → Approved/Revoke), with the digest in `extensions.toml`
+   matching the one the card displayed; the sphere, the RAM-tiered picker
+   (`qwen2.5:7b · 7.6B — tight on 8GB`), and M5.5's edit/branch controls on a
+   freshly-sent turn.
+   **Two things the live run proved that no test could.** *(a)* **Zero telemetry,
+   re-proven on the packaged artifact**: the sidecar holds exactly two sockets,
+   its own loopback listener and one WebSocket — no outbound connections at all.
+   *(b)* **§1's "absence of an answer is a deny", by accident and therefore
+   honestly**: the machine screen-locked mid-turn, nobody could answer the
+   `write_file` dialog, and the span persisted as `TOOL_CONFIRM_TIMEOUT` /
+   `ok: false` with **the file never written**.
+   **Measurement worth keeping:** a qwen3:4b tool-calling turn took **96 s**
+   end-to-end on the 8GB M2 under memory pressure (three builds and Ollama
+   resident), against gotcha 12's ~20 s on a quiet machine. It looks exactly like
+   a hang — the backend is idle, there is no outbound connection to Ollama between
+   requests, and the UI just sits on "Stop". Do not diagnose a stuck turn before
+   waiting two minutes.
+   **Not fixed, environmental:** `bundle_dmg.sh` fails here — create-dmg runs an
+   AppleScript to style the Finder window and it times out (`-1712`) in a
+   non-interactive session. The `.app` builds cleanly with `--bundles app`; the
+   dmg step is only ever exercised on CI runners, and has never been verified by
+   a human either. **687 backend tests** (13 new), 13 mutations proven, one
+   deliberate "NOT CAUGHT" that deleted a dead branch rather than tuning a test.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
 
@@ -812,6 +905,28 @@ cd app && npm install && npm run tauri dev      # full app (debug runs backend v
 #   then VITE_JARVIS_PORT=8765 VITE_JARVIS_TOKEN=x npm run dev
 # Rust: export PATH="/opt/homebrew/opt/rustup/bin:$PATH" first (rustup via brew)
 ```
+
+**The baseline, run before touching anything and after every batch.** All four
+must be green; if the first one isn't, stop and say so rather than folding a fix
+into new work:
+
+```sh
+cd backend && uv run pytest              # 687 passed
+cd backend && uv run ruff check .        # clean
+cd app && npm run build                  # tsc + vite, clean
+cd app/src-tauri && cargo test --lib     # 2 passed
+```
+
+**Mutation proving is scratch tooling, rebuilt per milestone — deliberately.**
+Every milestone since M4 has driven it from a throwaway script in the session's
+scratchpad: a list of `(file, label, find, replace, test-selector)`, applied one
+at a time, each expected to make its named test *fail*. Two rules are what make
+it honest, and both are gotchas because both have lied here before: the `find`
+string must occur **exactly once** (16), and `__pycache__` must be purged around
+every run (22). A run that reports "NOT CAUGHT" is the useful outcome — in M5.3
+three of them exposed checks that could never be the deciding branch, and the
+right fix was deleting the code, not tuning the test. Nothing is committed: the
+harness is disposable, the *tests* it validates are the artefact.
 
 ## Chat management (M3.5, DONE) — how it works now
 
@@ -894,35 +1009,52 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-4 complete; Phase 5's extension work AND the branching UI are
-COMPLETE.** M5.1 (manifest, content-keyed approval, loader, risk floors, `jarvis
-extensions` CLI), M5.2 (the in-app approval panel), M5.3 (`jarvis install <url>`),
-M5.4 (`timers-reminders` + the host API) and M5.5 (the branching UI) are all done
-and green — **674 backend tests, 2 Rust, ruff + tsc clean**. §5 is fully built and
-live-verified; security-model.md and the code agree everywhere. Nothing in Phase 5
-is security work any more.
+**Phases 1-5 complete. Phase 6 has started: M6.0 (the packaged build actually
+works) is DONE** — **687 backend tests, 2 Rust, ruff + tsc clean**. The macOS
+`.app` builds, installs, boots, seeds its bundled extension and speaks. See the
+Phase 6 entry above and gotchas 30-31 for what was broken and why nothing caught
+it.
 
 **Next, in the order that makes sense:**
-1. **Verification debt, before Phase 6.** Several shipped features have only been
-   seen in a browser-hosted build: the confirm dialog, the extensions panel, and
-   `show_window` (reveal-from-tray) in the real WKWebView; the hour-long background
-   wake soak (the only real test of gotcha 8); a spoken *file* turn; `run_command`
-   and `web_fetch` driven live by the model; Windows/Linux file tools by hand; and
-   the `qwen3:8b` tool-calling probe on the A6000 box. Finding a surprise there
-   after cutting a release is much worse than finding it now, and most of it needs
-   the owner's hands rather than a session's.
-2. **`calendar-macos`** — the other default extension, still a manifest with no
-   code. It drags **pyobjc**, a new dependency on a project that has been strict
-   about them, and it is the reference for platform gating + a TCC declaration.
-   Worth its own conversation before it lands.
-3. **Phase 6 / ship** — installers, and with them: getting the bundled defaults
-   into the data dir (nothing copies them today; it needs a decision about where
-   the folder lives inside a PyInstaller onedir bundle) and the onboarding stubs
-   that were cut in M3.3 "until there's an installer to hang them off".
-4. Model catalog UI, "Hey Friday", opt-in VAD barge-in. **Worth stating plainly:
-   eleven `.tsx` files are still 0 bytes**, five of them a Settings surface that
-   was never built — every setting is a hand-edited `config.toml` today. Fine for
-   a developer-audience v1, but decide it rather than discover it mid-release.
+1. **Finish the live verification M6.0 started.** Most of it is now *cheap*,
+   because the July limitation is gone: a packaged `Jarvis.app` in `/Applications`
+   **can be driven directly by computer-use** (bundle id `app.jarvis-assistant.
+   desktop`), so screenshots and clicks no longer need the owner's hands — only
+   these do:
+   - **`show_window` (tray reveal) is still never-executed.** `lib.rs:13` is three
+     `let _ =` calls with every error discarded; if it silently fails, a confirm
+     raised while the app is hidden times out into a deny and the user sees
+     nothing. Close the window (it hides to the tray), trigger a confirm, watch.
+   - **The hour-long background wake soak** — still the only real test of gotcha 8.
+     `scratchpad/soak.sh` is the shape it should take: sample the WebContent RSS
+     and the sidecar's socket count on an interval so the answer is a diagnosis,
+     not a yes/no. Note `ws=1` proves nothing on its own — WebKit's networking
+     process keeps the TCP established while JS is frozen (gotcha 8).
+   - **A spoken *file* turn**, and `run_command` / `web_fetch` driven live by the
+     model. Budget real time: a qwen3:4b tool turn measured **96 s** here.
+   - **Windows/Linux by hand** and the **`qwen3:8b` probe** on the A6000 box —
+     one AnyDesk session, independent of everything else.
+2. **The dmg has never been produced or opened by a human.** CI builds it on every
+   tag and `bundle_dmg.sh` fails locally for environmental reasons (create-dmg's
+   Finder AppleScript, `-1712`). Before tagging anything, push a throwaway tag and
+   actually install from the artifact — the *whole* point of M6.0 was that an
+   unexercised release path is where the bugs live, and this is the last stretch
+   of it nobody has walked.
+3. **`calendar-macos`** — still a manifest with a 0-byte `extension.py`, and now
+   explicitly excluded from seeding (`BUNDLED` in `extensions/bundled.py`) so the
+   stub cannot ship. It drags **pyobjc**, a new dependency on a project that has
+   been strict about them, and it is the reference for platform gating + a TCC
+   declaration. Its own conversation before it lands; add it to `BUNDLED` when it
+   has code.
+4. Onboarding stubs (cut in M3.3 "until there's an installer to hang them off" —
+   there is one now), model catalog UI, "Hey Friday", opt-in VAD barge-in.
+   **Worth stating plainly: ten `.tsx` files are still 0 bytes** (it was eleven
+   until M5.5 filled `BranchSwitcher.tsx`), five of them a Settings surface that
+   was never built — every setting is a hand-edited `config.toml` today. Also
+   0 bytes while the repo map lists them as if they exist: `scripts/install.sh`,
+   `scripts/install.ps1`, `scripts/train_wake_word.py`, and
+   `app/src-tauri/src/shortcuts.rs`. Fine for a developer-audience v1, but decide
+   it rather than discover it mid-release.
 
 **Small things noticed and deliberately not fixed** (none block anything):
 `extension.loadedNote` ("Active") is defined in en.json but never rendered — the

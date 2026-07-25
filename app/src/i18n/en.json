@@ -235,6 +235,8 @@
     "WAKE_RUNTIME_MISSING": "Wake-word detection isn't installed in this build.",
     "SPEAKER_UNAVAILABLE": "Can't open the speaker.",
     "TTS_VOICE_UNKNOWN": "The configured voice doesn't exist.",
+    "TTS_ESPEAK_DATA_MISSING": "Speech synthesis data is missing from this build.",
+    "TTS_ESPEAK_PATH_TOO_LONG": "Jarvis is installed somewhere with too long a path for speech synthesis. Move it to your Applications folder.",
     "GENERATION_FAILED": "Something went wrong while replying.",
     "EXTENSION_CHANGED": "That extension changed on disk since it was shown — review it again before approving.",
     "EXTENSION_NOT_FOUND": "That extension isn't installed any more.",

@@ -35,7 +35,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **674 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
+| Backend test suite | **687 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
 
 Four decisions this project is actually about:
 

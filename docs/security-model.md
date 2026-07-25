@@ -281,6 +281,21 @@ What it enforces, in the order it happens:
   label. Informational, never authoritative: a folder's `.git` is as editable as the
   rest of it, and nothing consults it when deciding what may run.
 
+### Bundled extensions are seeded, not blessed (M6.0)
+
+`extensions/bundled.py` copies the extensions that ship with the app into the data
+directory on startup, because nothing did until M6.0 and `timers-reminders` therefore
+did not exist for any real user. It changes nothing in this section, deliberately:
+
+- A seeded extension lands **`pending`**, identical to a folder dropped in by hand, and
+  goes through the same declaration prompt. Shipping a default is not consent to run it
+  — that consent is the entire subject of this section.
+- **Nothing is ever overwritten.** The no-auto-update rule below applies to us as much as
+  to a third party: a newer bundled version hashes differently and reads as `changed`
+  until a human approves it again.
+- Which extensions ship is an **explicit list**, not the contents of a directory, so a
+  half-built default cannot reach users by sitting in the repo.
+
 **No extension auto-update, ever** — an extension that can update itself is an extension
 whose approved bytes are a suggestion. `--force` replaces the folder and deliberately
 leaves any existing approval alone: the new bytes hash differently, so they read as

@@ -19,15 +19,37 @@ class KokoroTTS:
         voice: str = "af_heart",
         speed: float = 1.0,
         lang: str = "en-us",
+        espeak_root: Path | None = None,
     ):
         for p in (model_path, voices_path):
             if not p.is_file():
                 raise TTSError("TTS_MODEL_MISSING", str(p))
         try:
+            import espeakng_loader
             from kokoro_onnx import Kokoro
+            from kokoro_onnx.config import EspeakConfig
         except ImportError as e:
             raise TTSError("TTS_RUNTIME_MISSING", str(e)) from e
-        self._kokoro = Kokoro(str(model_path), str(voices_path))
+
+        # espeak-ng exits the process outright when its data path is too long,
+        # which is reachable in a packaged .app installed anywhere but
+        # /Applications. tts/espeak.py explains it at length; `None` here is
+        # the ordinary case and leaves kokoro_onnx to resolve the path itself,
+        # exactly as before this existed.
+        from ..config import data_dir
+        from .espeak import usable_data_path
+
+        try:
+            bundled = espeakng_loader.get_data_path()
+        except RuntimeError as e:  # the loader's own "data path not exists"
+            raise TTSError("TTS_ESPEAK_DATA_MISSING", str(e)) from e
+        short = usable_data_path(bundled, espeak_root or data_dir())
+
+        self._kokoro = Kokoro(
+            str(model_path),
+            str(voices_path),
+            espeak_config=EspeakConfig(data_path=short) if short else None,
+        )
         if voice not in self._kokoro.get_voices():
             raise TTSError("TTS_VOICE_UNKNOWN", voice)
         self._voice = voice
