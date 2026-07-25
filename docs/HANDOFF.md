@@ -867,6 +867,10 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    dmg step is only ever exercised on CI runners, and has never been verified by
    a human either. **687 backend tests** (13 new), 13 mutations proven, one
    deliberate "NOT CAUGHT" that deleted a dead branch rather than tuning a test.
+   **The wake soak was attempted and is inconclusive** — 18 of 60 minutes, ended
+   by the app being quit, with a suggestive but unproven RSS decline. See
+   "Immediate next action" A2; it has to be redone before gotcha 8 can be called
+   closed.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
 
@@ -1015,46 +1019,103 @@ works) is DONE** — **687 backend tests, 2 Rust, ruff + tsc clean**. The macOS
 Phase 6 entry above and gotchas 30-31 for what was broken and why nothing caught
 it.
 
-**Next, in the order that makes sense:**
-1. **Finish the live verification M6.0 started.** Most of it is now *cheap*,
-   because the July limitation is gone: a packaged `Jarvis.app` in `/Applications`
-   **can be driven directly by computer-use** (bundle id `app.jarvis-assistant.
-   desktop`), so screenshots and clicks no longer need the owner's hands — only
-   these do:
-   - **`show_window` (tray reveal) is still never-executed.** `lib.rs:13` is three
-     `let _ =` calls with every error discarded; if it silently fails, a confirm
-     raised while the app is hidden times out into a deny and the user sees
-     nothing. Close the window (it hides to the tray), trigger a confirm, watch.
-   - **The hour-long background wake soak** — still the only real test of gotcha 8.
-     `scratchpad/soak.sh` is the shape it should take: sample the WebContent RSS
-     and the sidecar's socket count on an interval so the answer is a diagnosis,
-     not a yes/no. Note `ws=1` proves nothing on its own — WebKit's networking
-     process keeps the TCP established while JS is frozen (gotcha 8).
-   - **A spoken *file* turn**, and `run_command` / `web_fetch` driven live by the
-     model. Budget real time: a qwen3:4b tool turn measured **96 s** here.
-   - **Windows/Linux by hand** and the **`qwen3:8b` probe** on the A6000 box —
-     one AnyDesk session, independent of everything else.
-2. **The dmg has never been produced or opened by a human.** CI builds it on every
-   tag and `bundle_dmg.sh` fails locally for environmental reasons (create-dmg's
-   Finder AppleScript, `-1712`). Before tagging anything, push a throwaway tag and
-   actually install from the artifact — the *whole* point of M6.0 was that an
-   unexercised release path is where the bugs live, and this is the last stretch
-   of it nobody has walked.
-3. **`calendar-macos`** — still a manifest with a 0-byte `extension.py`, and now
-   explicitly excluded from seeding (`BUNDLED` in `extensions/bundled.py`) so the
-   stub cannot ship. It drags **pyobjc**, a new dependency on a project that has
-   been strict about them, and it is the reference for platform gating + a TCC
-   declaration. Its own conversation before it lands; add it to `BUNDLED` when it
-   has code.
-4. Onboarding stubs (cut in M3.3 "until there's an installer to hang them off" —
-   there is one now), model catalog UI, "Hey Friday", opt-in VAD barge-in.
-   **Worth stating plainly: ten `.tsx` files are still 0 bytes** (it was eleven
-   until M5.5 filled `BranchSwitcher.tsx`), five of them a Settings surface that
-   was never built — every setting is a hand-edited `config.toml` today. Also
-   0 bytes while the repo map lists them as if they exist: `scripts/install.sh`,
-   `scripts/install.ps1`, `scripts/train_wake_word.py`, and
-   `app/src-tauri/src/shortcuts.rs`. Fine for a developer-audience v1, but decide
-   it rather than discover it mid-release.
+**Everything left before a v1 tag, in priority order.** Nothing here is secret
+knowledge — it is all either a verification nobody has run or a decision nobody
+has made.
+
+### A. Verification debt (the cheap half is no longer owner-only)
+
+The July limitation is **gone**: a packaged `Jarvis.app` in `/Applications` has a
+bundle id (`app.jarvis-assistant.desktop`) and **can be driven directly with
+computer-use** — screenshots and clicks included. `target/debug/jarvis` still
+cannot, so build and install first, then verify. That flips most of this list from
+"owner reads a checklist aloud" to "session drives it and reports".
+
+- **A1. `show_window` (tray reveal) has never executed.** The single highest-value
+  item left. `lib.rs:13` is three `let _ =` calls with every error discarded, so a
+  silent failure means a confirm raised while the app is hidden renders where
+  nobody can see it and times out into a deny. Close the window (it hides to the
+  tray, `lib.rs:41`), trigger a confirm, watch it reveal. **Also verify the tray
+  menu itself** (`tray.rs`): "Open Jarvis" and "Quit Jarvis" have never been
+  clicked either.
+- **A2. The background wake soak — attempted, INCONCLUSIVE, must be redone.**
+  Ran 2026-07-25 21:48 for **18 of the 60 minutes** and ended because the app was
+  quit (`[sidecar] backend killed on app exit` = Tauri's normal `RunEvent::Exit`
+  path; no crash report). What it did show, and what makes redoing it urgent:
+  the WebContent RSS **fell steadily — 38 MB → 42 → 30 → 13 → 15 → 5.2 MB at
+  15 min** while the sidecar stayed healthy (CPU climbing ~1.3%, wake worker
+  listening). That is the shape of gotcha 8, but it is *not* proof: 5.2 MB is not
+  the ~600 KB the gotcha cites, and the machine was at 17% free memory, so
+  ordinary compaction explains it just as well. **The decisive test was never
+  run** — nobody said "Hey Jarvis" at the end. Redo it on a quiet machine, full
+  hour, and finish with the wake word. `scratchpad/soak.sh` from that session is
+  the right shape (sample WebContent RSS + sidecar CPU + socket count on an
+  interval, so the answer is a diagnosis rather than a yes/no). **`ws=1` proves
+  nothing on its own** — WebKit's networking process keeps the TCP established
+  while the JS is frozen, which is the whole trap in gotcha 8.
+- **A3. A spoken *file* turn** — "read my notes and write a summary", out loud.
+  Still never heard. M4.2 proved voice+tools acoustically with the dev `echo`
+  tool; M4.3's file tools share `run_exchange` and the same gate, but this exact
+  turn has not happened.
+- **A4. `run_command` and `web_fetch` driven live by the model**, watching the
+  dialog and the taint provenance block. **Budget real time**: a qwen3:4b tool
+  turn measured **96 s** on the 8GB M2 under memory pressure. It looks exactly
+  like a hang — backend idle, no outbound connection to Ollama between requests,
+  UI sitting on "Stop". Do not diagnose a stuck turn before two minutes.
+- **A5. Windows/Linux file tools by hand** and the **`qwen3:8b` tool-calling
+  probe** (`backend/tests/manual/probe_tool_calling.py`, ~20 min) on the A6000
+  box. One AnyDesk session, independent of everything else. Expect qwen3:8b to
+  hit the same hybrid-reasoning latency trap as qwen3:4b (gotcha 12).
+
+### B. Release mechanics — the largest remaining risk
+
+- **B1. The dmg has never been produced or opened by a human.** CI builds one on
+  every `v*` tag and nobody has installed from it. `bundle_dmg.sh` fails locally
+  for environmental reasons only — create-dmg runs an AppleScript to style the
+  Finder window and it times out (`-1712`) in a non-interactive session; the
+  `.app` itself builds cleanly with `--bundles app`. **Push a throwaway tag,
+  download the artifact, install from it, and run it.** M6.0's entire lesson is
+  that an unexercised release path is where the bugs live, and this is the last
+  stretch of it nobody has walked.
+- **B2. The full release workflow end-to-end** — three OS bundles, draft release,
+  SHA256SUMS. Never run to completion.
+- **B3. `docs/unsigned-install.md` honesty re-read** — it tells users how to get
+  past Gatekeeper on an unsigned build; nobody has followed it on a real artifact
+  since it was written.
+
+### C. Decisions nobody has made (not oversights — call them)
+
+- **C1. `calendar-macos`.** Still a manifest with a 0-byte `extension.py`, now
+  explicitly excluded from seeding (`BUNDLED` in `extensions/bundled.py`) so the
+  stub cannot ship. It drags **pyobjc**, a new dependency on a dependency-strict
+  project, and it is the reference for platform gating + a TCC usage declaration.
+  Its own conversation before it lands; add it to `BUNDLED` when it has code.
+- **C2. How much Settings UI a v1 needs.** **Fourteen files are still 0 bytes**
+  and the repo map lists several as if they exist:
+  - *Settings surface (5)*: `settings/{Settings,BackendPicker,ModelCatalog,PermissionsPanel,VoicePicker}.tsx`
+    — every setting is a hand-edited `config.toml` today.
+  - *Onboarding (5)*: `onboarding/{Onboarding,MicCheck,ModelDownload,ToolPermissions,WakeWordTest}.tsx`
+    — cut in M3.3 "until there's an installer to hang them off". **There is one
+    now**, so the reason for the cut has expired.
+  - *Scripts (3)*: `scripts/install.sh`, `scripts/install.ps1`,
+    `scripts/train_wake_word.py` — the last of these means **"Hey Friday" has no
+    path at all**, despite being an approved feature.
+  - *Rust (1)*: `app/src-tauri/src/shortcuts.rs` — ⌘M works without it, so this
+    is a dead file rather than a missing feature; delete it or fill it.
+  Fine for a developer-audience v1 — but decide it rather than discover it
+  mid-release.
+
+### D. Nice-to-haves, explicitly optional for v1
+
+Model catalog UI; opt-in VAD barge-in (approved as a v1 opt-in tier, with a
+headphones/beamforming-mic warning); "Hey Friday" (blocked on C2's training
+script).
+
+### E. Post-v1, already agreed
+
+AEC milestone (macOS Voice Processing AU, then WebRTC AEC3); voice-cloning TTS
+eval (Chatterbox-Turbo tier); auto-update (blocked on code signing, which is
+blocked on budget).
 
 **Small things noticed and deliberately not fixed** (none block anything):
 `extension.loadedNote` ("Active") is defined in en.json but never rendered — the
@@ -1137,6 +1198,15 @@ revert). Nothing in the voice or text path regressed.
   down the connection. No security impact (authenticated).
 - `_generate`'s catch-all `await send(...)` can itself raise on a closed socket;
   noisy in logs, not a leak (`connections.remove` already ran).
+  **Observed live for the first time in M6.0**, quitting the packaged app while a
+  turn was in flight: `RuntimeError: Cannot call "send" once a close message has
+  been sent`, through `ws → cancel_generation → _generate → send`
+  (`server/app.py` 232 → 103 → 636 → 249 → 194). Still benign — it happens during
+  teardown, after the connection is already gone — but it is now a real traceback
+  in a user-visible log on ordinary quit, which is worth one `except
+  RuntimeError`/connection-state check if anyone touches that path. Do not fix it
+  blind: the regression test has to prove the *ordering* (that nothing else was
+  skipped), the same trap gotcha 14 records.
 
 **Supply chain & hygiene**
 - **pip-audit / npm audit / cargo audit: 0 vulnerabilities** (17 cargo warnings,
