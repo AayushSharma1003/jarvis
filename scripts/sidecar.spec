@@ -10,12 +10,35 @@
 # libonnxruntime, libwhisper and libggml-metal are all collected.) What it
 # CANNOT follow is a path built from `__file__` at runtime; see below.
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 # SPECPATH is injected by PyInstaller and points at this file's directory.
 ROOT = Path(SPECPATH).parent  # noqa: F821
+
+# These live in build_sidecar.py so they can be unit tested -- a .spec file is
+# not importable (backend/tests/test_sidecar_build.py).
+sys.path.insert(0, SPECPATH)  # noqa: F821
+from build_sidecar import collect_package_libraries, drop_libraries  # noqa: E402
+
+# espeakng_loader ships its shared library AND its espeak-ng-data directory,
+# and resolves each with `Path(__file__).parent / ...` at RUNTIME
+# (get_library_path/get_data_path), which static analysis never follows. Both
+# must therefore land package-relative — but they cannot be collected the same
+# way, because collect_data_files is inconsistent across platforms:
+# it excludes everything ending in PyInstaller.compat.ALL_SUFFIXES, which is
+# Python's *extension module* suffix list. `.dylib` and `.dll` are not in it
+# and get collected; a Linux `.so` IS, and is silently dropped. That is why
+# macOS and Windows built fine on the first release tag and Linux did not.
+# So: libraries explicitly, data through collect_data_files with the
+# macOS/Windows library copies stripped back out to avoid declaring them twice.
+import espeakng_loader  # noqa: E402
+
+_ESPEAK_DIR = Path(espeakng_loader.__file__).parent
+espeak_binaries = collect_package_libraries(_ESPEAK_DIR, "espeakng_loader")
+espeak_datas = drop_libraries(collect_data_files("espeakng_loader"))
 
 a = Analysis(
     ["../backend/sidecar_entry.py"],
@@ -41,14 +64,9 @@ a = Analysis(
         #   down the phonemizer chain (phonemizer -> segments -> csvw ->
         #   language_tags). Nothing in our code names this package.
         *collect_data_files("language_tags"),
-        #   espeakng_loader ships BOTH the libespeak-ng dylib and the
-        #   espeak-ng-data directory, and resolves each with
-        #   `Path(__file__).parent / ...` (get_library_path/get_data_path).
-        #   collect_data_files — not collect_dynamic_libs — is what is wanted
-        #   for the dylib too: it keeps the file package-relative, which is
-        #   exactly where that runtime lookup goes. get_data_path() raises
-        #   outright when the data directory is absent.
-        *collect_data_files("espeakng_loader"),
+        #   espeakng_loader's data half — see espeak_datas above.
+        #   get_data_path() raises outright when this directory is absent.
+        *espeak_datas,
         # The extensions that ship with the app. Nothing copied these into the
         # data dir before M6.0, so timers-reminders did not exist for any real
         # user. Resolved at runtime through sys._MEIPASS exactly like the
@@ -60,6 +78,11 @@ a = Analysis(
             if p.is_file() and "__pycache__" not in p.parts
         ],
     ],
+    # `collect_dynamic_libs` is deliberately NOT used here: it flattens to the
+    # bundle root, and the runtime lookup is package-relative. An explicit
+    # (source, "espeakng_loader") destination is the only form that says
+    # "a library" and "beside its package" at the same time.
+    binaries=[*espeak_binaries],
     hiddenimports=[],
     noarchive=False,
 )

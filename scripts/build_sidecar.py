@@ -28,6 +28,64 @@ OUT = BACKEND / "dist" / "jarvis-backend"
 # followed automatically instead of silently slipping through.
 DATA_PACKAGES = ("kokoro_onnx", "espeakng_loader", "language_tags")
 
+# Extensions that make a collected file a shared library rather than data.
+_LIBRARY_PARTS = {"so", "dylib", "dll"}
+
+
+def is_shared_library(name: str) -> bool:
+    """True for a shared-library filename, version suffixes included.
+
+    Not a `Path.suffix` test: version suffixes are normal for these
+    (`libespeak-ng.so.1.52.0`, `libespeak-ng.1.52.0.dylib`), so the marker can
+    sit anywhere after the first dot. Not a plain substring test either --
+    that would call `notes.sox` a library.
+
+    A false positive is benign: the file still lands at the same destination,
+    it is merely handed to PyInstaller's binary dependency analysis, which
+    finds nothing in a non-binary. A false NEGATIVE is the expensive one, and
+    is what broke the Linux release build.
+    """
+    return any(part in _LIBRARY_PARTS for part in name.split(".")[1:])
+
+
+def drop_libraries(collected: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """A `collect_data_files()` result with shared libraries removed.
+
+    Needed only because `collect_data_files` is INCONSISTENT about them across
+    platforms -- it excludes anything ending in one of `PyInstaller.compat.
+    ALL_SUFFIXES`, which is Python's *extension module* suffix list:
+
+        macOS   ['.py', '.pyc', '.cpython-313-darwin.so', '.abi3.so', '.so']
+        Linux   the same shape -- and a Linux shared library IS '.so'
+
+    So `.dylib` and `.dll` sail through and get collected as data, while a
+    Linux `.so` is silently dropped. Libraries are collected explicitly by
+    `collect_package_libraries` instead; this strips the macOS/Windows copies
+    back out so they are not declared twice.
+    """
+    return [(s, d) for s, d in collected if not is_shared_library(Path(s).name)]
+
+
+def collect_package_libraries(package_dir: Path, package: str) -> list[tuple[str, str]]:
+    """(source, destination) for every shared library inside an installed package.
+
+    Derived from what is actually on disk rather than a hardcoded filename, so
+    a dependency that adds or renames a library is followed automatically --
+    the same principle as `check_bundled_package_data` below.
+
+    Destinations stay package-relative because that is where the runtime looks:
+    `espeakng_loader.get_library_path()` returns
+    `Path(__file__).parent / "libespeak-ng.<ext>"`. `collect_dynamic_libs` is
+    NOT the answer -- it flattens to the bundle root, which is precisely the
+    wrong place.
+    """
+    libraries = []
+    for path in sorted(package_dir.rglob("*")):
+        if path.is_file() and is_shared_library(path.name):
+            destination = Path(package) / path.relative_to(package_dir).parent
+            libraries.append((str(path), str(destination)))
+    return libraries
+
 
 def check_bundled_package_data() -> list[str]:
     """Report any package data file present in the venv but missing from the bundle.

@@ -47,9 +47,10 @@ flowchart LR
 2. **Voice loop** — PTT → VAD → whisper.cpp → LLM → chunked Kokoro playback, latency instrumentation wired into doctor
 3. **Always-on + feel** — wake word, wake-word barge-in, sphere states, RAM tiering, onboarding v1
 4. **Agency + security** — permission engine, taint, sandboxed tools, extension loader + approval (tools ship *with* their security layer, never before it)
-5. **Extended scope** — extensions (manifest, approval gate, panel, `jarvis install`, host API, `timers-reminders`) and the branching UI are done; still open: model catalog UI, wake-word training tool + "Hey Friday", opt-in VAD barge-in
-6. **Ship** — installers, onboarding polish, docs, tagged unsigned release
-- **Post-v1**: AEC milestone, voice cloning TTS backend evaluation (Chatterbox-Turbo tier), auto-update (blocked on signing budget)
+5. **Extended scope** — extensions (manifest, approval gate, panel, `jarvis install`, host API, `timers-reminders`) and the branching UI are **done**
+6. **Ship** — installers, docs, tagged unsigned release
+- **Cut from v1** (decided 2026-07-25, recorded rather than left implied): `calendar-macos` (needs pyobjc, macOS-only, wants a TCC declaration); **"Hey Friday" / the wake-word training tool** (needs PyTorch and a data pipeline — against the no-torch ML story); the Settings and onboarding UI surface (the M3.3 readiness gate covers the load-bearing part, and every setting is a hand-edited `config.toml`). The empty placeholder files for all of these were deleted, because a 0-byte file that the docs describe as if it exists is worse than its absence.
+- **Post-v1**: a read-only "what can Jarvis reach" view (today `[filesystem] roots` and `[tools] allow_dangerous` have no UI, so a user cannot see their own sandbox), model catalog UI, opt-in VAD barge-in, AEC milestone, voice cloning TTS backend evaluation (Chatterbox-Turbo tier), auto-update (blocked on signing budget)
 
 ## Handshake reliability rules (phase-1 postmortem)
 

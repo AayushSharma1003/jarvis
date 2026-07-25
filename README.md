@@ -301,5 +301,8 @@ of this would run on a laptop.
 No model weights live in this repository; `scripts/fetch_models.py` downloads them from
 upstream on request. One caveat worth stating up front: openWakeWord's **pre-trained wake
 models are CC BY-NC-SA 4.0** (non-commercial), a constraint that belongs to those
-downloaded weights rather than to JARVIS. `scripts/train_wake_word.py` trains a
-replacement offline for anyone who needs to be clear of it.
+downloaded weights rather than to JARVIS. Training a replacement offline — which is also
+what a custom wake phrase such as "Hey Friday" would need — is **not built**: it wants
+PyTorch and a data pipeline, and this project's whole ML story is deliberately
+onnxruntime + whisper.cpp with no torch anywhere. Deferred past v1 rather than shipped
+half-done.

@@ -437,6 +437,33 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     sees it, so a short symlink to a long target still fails — and, worse, a test
     written with symlinks passes at *any* length and hides the bug entirely.
     Test with real directories.
+32. **`collect_data_files` silently drops `.so` but keeps `.dylib` and `.dll`,
+    so a packaging fix can be correct on two platforms and broken on the third**
+    (M6.1, `scripts/sidecar.spec`). Gotcha 30's fix — `collect_data_files(
+    'espeakng_loader')` for the espeak library — worked on macOS, worked on
+    Windows, and **has never once built on Linux**. The reason is a one-line
+    asymmetry inside PyInstaller: `collect_data_files` excludes everything
+    ending in `PyInstaller.compat.ALL_SUFFIXES`, and that is Python's
+    **extension-module** suffix list, not a library list —
+    `['.py', '.pyc', '.cpython-313-darwin.so', '.abi3.so', '.so']`. `.dylib`
+    and `.dll` are not in it and sail through as data; a Linux shared library
+    *is* `.so`, matches `**/*.so`, and is dropped **without a warning**. The
+    docstring says so in seven words ("based on extension check") and nothing
+    else does. Fix: collect libraries **explicitly** from the installed package
+    directory (`collect_package_libraries`, derived by walking it, so a renamed
+    or added library is followed automatically) and strip them back out of the
+    `collect_data_files` result (`drop_libraries`) so macOS and Windows do not
+    declare them twice. `collect_dynamic_libs` is still NOT the answer: it
+    flattens to the bundle root, and `espeakng_loader.get_library_path()` looks
+    package-relative. **The generalisable lesson: gotcha 30's derived gate is
+    the only reason this was ever seen.** It fired on the first release tag
+    anyone pushed, naming the exact missing file — a hardcoded expected-files
+    list written on a Mac would have listed `libespeak-ng.dylib` and passed
+    Linux happily. Also: **the first diagnosis was wrong.** "PyInstaller
+    reclassified the .so out of datas" is plausible, fits the log's own
+    "binary vs. data reclassification" line, and would have produced a fix that
+    changed nothing, because the file never reached the reclassifier. Reading
+    PyInstaller's source cost five minutes and a CI cycle costs eleven.
 
 ## Repo map
 
@@ -445,12 +472,12 @@ app/            Tauri 2 shell (src-tauri/) + React frontend (src/)
                 capabilities/default.json ← the handshake fix, don't delete
 backend/        Python sidecar (jarvis_backend/: server audio wake stt tts llm
                 agent tools security extensions storage doctor)
-extensions/     default set: timers-reminders (x-platform ref), calendar-macos
+extensions/     timers-reminders (x-platform ref). calendar-macos is a manifest
+                with no code — CUT from v1, excluded from BUNDLED
 docs/           architecture.md, security-model.md, extensions.md, latency.md,
                 unsigned-install.md, HANDOFF.md (this), design/sphere.md
 docs/design/sphere-refs/  the sphere UI reference images (gif + avif)
-scripts/        install.sh/.ps1, build_sidecar.py + sidecar.spec, fetch_models.py,
-                train_wake_word.py
+scripts/        build_sidecar.py + sidecar.spec, fetch_models.py
 catalog/models.toml   curated model catalog (bundled data, manual refresh)
 ```
 

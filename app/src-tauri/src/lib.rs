@@ -9,12 +9,27 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 /// a permission dialog raised by a wake-word turn would render somewhere the
 /// user cannot see it and go unanswered until the confirmation times out into a
 /// deny. Called from the frontend on confirm.request.
+///
+/// Failures are logged rather than discarded. A hidden window has exactly one
+/// other way back — the tray icon — because the app has no Dock icon,
+/// activating it does not re-show the window, and the Window menu carries no
+/// entry for it (all three verified on the packaged build). So if this fails
+/// the user is left with an invisible dialog and no hint that one exists; a
+/// log line is the only thread back to the cause.
 #[tauri::command]
 fn show_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("[window] show_window: no webview window named \"main\"");
+        return;
+    };
+    if let Err(e) = window.show() {
+        eprintln!("[window] show failed: {e}");
+    }
+    if let Err(e) = window.unminimize() {
+        eprintln!("[window] unminimize failed: {e}");
+    }
+    if let Err(e) = window.set_focus() {
+        eprintln!("[window] set_focus failed: {e}");
     }
 }
 
