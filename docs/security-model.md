@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5; §5's manifest, content-keyed approval and loader in M5.1, its in-app approval panel in M5.2 (`jarvis install` remains M5.3 — approval today is the panel or `jarvis extensions approve`). This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note and §5's opening).
+> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5; §5's manifest, content-keyed approval and loader in M5.1, its in-app approval panel in M5.2, `jarvis install` in M5.3 and the extension host API in M5.4. This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note and §5's opening).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -183,8 +183,9 @@ This is the same posture §2 takes for the file-tool TOCTOU.
 Implemented in `backend/jarvis_backend/extensions/` (`manifest.py`, `approvals.py`,
 `loader.py`) and surfaced by the in-app panel (`server/app.py`'s `extensions.*`
 handlers, `app/src/components/settings/ExtensionsPanel.tsx`); tests are
-`test_extensions.py`. `jarvis install <url>` is M5.3 and not built yet; approval today
-happens through the panel or `jarvis extensions approve`.
+`test_extensions.py` and `test_install.py`. Approval happens through the panel,
+`jarvis extensions approve`, or the prompt at the end of `jarvis install <url>` — three
+entry points, one decision.
 
 The panel enforces the same two properties the CLI does, and they are load-bearing:
 **approval is two steps, never one** — a list row shows what an extension *is*, and
@@ -245,9 +246,46 @@ source: what this is, who wrote it, which commit, and what it says it needs.
   otherwise take the sidecar down at startup, which the user sees only as "backend
   didn't start in time".
 
-`jarvis install <url>` will pin the commit SHA at install (the `commit` field exists in
-the record already). **No extension auto-update, ever** — an extension that can update
-itself is an extension whose approved bytes are a suggestion.
+### `jarvis install <url>` (M5.3)
+
+`extensions/install.py` **delivers bytes; it does not bless them.** What it clones lands
+as `pending` and goes through the same declaration prompt as anything dropped in by hand
+— `cli.py`'s `_print_declaration` has one copy and two callers precisely so a second
+entry point cannot quietly start showing less.
+
+**It is not a tool and must never become one.** Nothing in it is registered with the
+registry. An extension installer the model can reach is arbitrary remote code execution
+with a single confirmation in front of it — a different posture from every tool in §1,
+and not one this project takes.
+
+What it enforces, in the order it happens:
+
+- **The URL is validated before `git` is invoked.** Only `http`/`https`. This is the
+  load-bearing check, not tidiness: `git clone 'ext::sh -c "…"'` **executes that
+  command**, because `ext::` is a remote-helper transport. `file://`, `ssh://` and
+  scp-style `user@host:path` are refused for the same reason — an extension URL has no
+  business being any of them. An allowlist rather than a denylist, because the set of
+  transports git supports is not ours to keep up with.
+- **Staging is outside the extensions directory**, so a clone in progress can never be
+  discovered as a half-written extension, and a failed one leaves nothing behind.
+- **The installed name comes from the manifest, never the URL.** A repository that could
+  choose its own installed name could install itself over one the user already approved;
+  `NAME_RE` already forbids separators and `..`, so traversal is closed by a check that
+  predates this.
+- **The digest is computed in staging**, so a repo containing a symlink — a digest
+  bypass (see above) — is refused before anything is moved into place.
+- **The commit is pinned** into the approval record, along with the source URL.
+  `provenance()` re-reads both from the installed checkout when approval happens in a
+  later command, so a separate `extensions approve` cannot silently blank them, and a
+  forced reinstall onto a new commit records the new one rather than keeping a stale
+  label. Informational, never authoritative: a folder's `.git` is as editable as the
+  rest of it, and nothing consults it when deciding what may run.
+
+**No extension auto-update, ever** — an extension that can update itself is an extension
+whose approved bytes are a suggestion. `--force` replaces the folder and deliberately
+leaves any existing approval alone: the new bytes hash differently, so they read as
+`changed` and do not load until a human approves them again. Updates need no special
+case, because the content-keyed approval already *is* the mechanism.
 
 ### The host API (M5.4), and why it changes nothing here
 

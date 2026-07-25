@@ -337,6 +337,35 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     also what makes persistence correct, since an absolute timestamp survives a
     restart and a countdown does not. The poll body is a pure `tick(now)`, so
     tests inject a clock instead of sleeping.
+26. **State that cannot be remembered across two processes has to be
+    *derived*** (M5.3, `extensions/install.py`'s `provenance()`). `jarvis
+    install` records `source` and `commit` when it approves in one breath, and
+    that path worked first time. The flows this milestone *added* did not:
+    install-then-decline-then-`extensions approve`, and `--force`-then-
+    re-approve, are two separate CLI invocations with nothing persisted in
+    between, and `extensions approve` called `store.approve(manifest, digest)`
+    with no provenance at all — so approving an extension that plainly came
+    from a URL **blanked** its source and commit. Carrying the previous
+    record's values forward would have been worse than blanking after a
+    `--force`: it would claim these bytes are a commit they are not. The fix is
+    to read both back off the `.git` the install left behind — which is only
+    possible because `.git` is excluded from the digest, so keeping it costs
+    the identity nothing. Informational, never authoritative: that checkout is
+    as editable as the rest of the folder, and nothing consults it when
+    deciding what may run. **Only visible live**, because every unit test
+    installed and approved in one call.
+27. **A `git clone` cannot be verified against a static file server.** Dumb HTTP
+    refuses shallow clones outright — *"dumb http transport does not support
+    shallow capabilities"* — and `jarvis install` uses `--depth 1`, so
+    `python3 -m http.server` over a `git update-server-info` repo proves
+    nothing. Python 3.13 also removed `CGIHTTPRequestHandler`, so
+    `git-http-backend` is not a one-liner either. The smart protocol is two
+    endpoints (`GET /info/refs?service=git-upload-pack` and
+    `POST /git-upload-pack`, both proxying `git upload-pack --stateless-rpc`),
+    which is ~50 lines of scratch tooling and exercises the exact path GitHub
+    speaks. Worth rebuilding rather than reaching for a real network repo: it
+    keeps the check hermetic and lets the test move HEAD to a new commit on
+    demand.
 
 ## Repo map
 
@@ -635,6 +664,50 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    was rejected as making revoke *look* complete while the extension still runs).
    Not done: `calendar-macos` (pyobjc — its own conversation), and nothing yet copies
    the bundled defaults into the data dir (documented `cp`, belongs with packaging).
+   ✅ **M5.3 `jarvis install <url>` DONE** (2026-07-25) — the last promised piece of the
+   extension machinery, and deliberately the least interesting one: install **delivers
+   bytes; it does not bless them**. What it clones lands as `pending` and goes through
+   the same declaration prompt as a hand-dropped folder — `_print_declaration` has one
+   copy and two callers so a second entry point cannot quietly start showing less
+   (mutation-proven from both directions). `extensions/install.py`, `jarvis install
+   <url> [--ref|--yes|--force]`.
+   **The load-bearing check is the URL, before `git` is ever invoked**: only
+   `http`/`https`, because `git clone 'ext::sh -c "…"'` **executes that command** —
+   `ext::` is a remote-helper transport, so an unvalidated pasted URL is RCE, not a bad
+   fetch. An allowlist, since the set of transports git supports is not ours to track.
+   The rest reuses checks that already existed: the installed name comes from the
+   **manifest** (already `NAME_RE`-validated, so traversal is closed by an old check),
+   and the digest is computed **in staging**, so a symlinked repo is refused before
+   anything moves. Staging lives outside `extensions/` because `discover()` lists every
+   subdirectory there. `--force` replaces the folder and **leaves the old approval
+   record alone**, so new bytes read as `changed` — updates need no special case,
+   because the content-keyed approval already is the mechanism.
+   Small shared refactor: `tools/shell.py`'s `_child_env` → `child_env`, so there is one
+   definition of what a Jarvis subprocess may see (the `JARVIS_WS_TOKEN` must not reach
+   `git` either). Plus `GIT_TERMINAL_PROMPT=0`, so a private repo fails cleanly instead
+   of hanging on a credential prompt nobody can see.
+   **Verified against a real git server, not a mock.** Dumb HTTP cannot do shallow
+   clones, so the live check runs a ~50-line smart-HTTP server (scratch tooling) and
+   exercises the actual `--depth 1` path GitHub speaks: install → declaration → approve
+   → `source` + `commit` in `extensions.toml` → the backend loads all four tools; then
+   refuse-without-`--force`, `--force` → `changed` with the *old* record intact,
+   `GIT_NOT_FOUND` with git off PATH, and every refused URL form through the real CLI
+   with `ext::` executing nothing.
+   **Two things the live run caught** — see gotcha 26 for the first: `jarvis extensions
+   approve` **blanked the provenance** of an extension that was demonstrably installed
+   from a URL, which is exactly the flow this milestone introduces (install → decline →
+   approve later; `--force` → re-approve). Fixed with `provenance()`, which reads source
+   and commit back off the checkout rather than trying to remember them across two
+   processes. Second: the panel's "Approved, but it didn't load" reads as a *failure*,
+   but a CLI install while the app is running produces exactly that state benignly —
+   reworded to name both cases and say what to do.
+   **648 backend tests** (55 new), 30 mutations proven, ruff + tsc clean.
+   **Known limit, stated not implied:** the CLI is a different process from the sidecar,
+   so an extension installed while the app is open is approved-but-not-running until a
+   restart (or until Approve is pressed in the panel, which loads live). The CLI says so
+   on the way out. A panel "install from URL" field would close it and was deliberately
+   left out — it puts a network fetch and a `git` subprocess behind a webview message,
+   and it is a second approval UI to keep in step.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
@@ -754,32 +827,33 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-4 complete; Phase 5 in progress.** M5.1 (manifest, content-keyed
-approval, loader, risk floors, `jarvis extensions` CLI), M5.2 (the in-app approval
-panel) and M5.4 (`timers-reminders` + the host API) are done and green — **593
-backend tests, 2 Rust, ruff + tsc clean**. §5 is fully built and live-verified;
-security-model.md and the code agree everywhere.
+**Phases 1-4 complete; Phase 5's extension work is COMPLETE.** M5.1 (manifest,
+content-keyed approval, loader, risk floors, `jarvis extensions` CLI), M5.2 (the
+in-app approval panel), M5.3 (`jarvis install <url>`) and M5.4 (`timers-reminders`
++ the host API) are all done and green — **648 backend tests, 2 Rust, ruff + tsc
+clean**. §5 is fully built and live-verified; security-model.md and the code agree
+everywhere. What remains in Phase 5 is UX/features, not security.
 
 **Next, in the order that makes sense:**
-1. **M5.3 `jarvis install <url>`** — the `source`/`commit` fields already exist in
-   the approval record. Needs a decision on shelling out to `git` (owner-approved:
-   yes, with a clear error code when absent). Worth folding in: **nothing copies
-   the bundled defaults into the data dir**, so `extensions/timers-reminders/` is
-   source-only and installs by hand today (documented `cp` in extensions.md). That
-   gap belongs either here or with packaging, and it needs a decision about where
-   the folder lives inside a PyInstaller onedir bundle.
-2. **`calendar-macos`** — the other default extension, still a manifest with no
+1. **`calendar-macos`** — the other default extension, still a manifest with no
    code. It drags **pyobjc**, a new dependency on a project that has been strict
    about them, and it is the reference for platform gating + a TCC declaration.
    Worth its own conversation before it lands.
+2. **Getting the bundled defaults installed.** Nothing copies
+   `extensions/timers-reminders/` into the data dir, so the two "default"
+   extensions are source-only and install by hand (documented `cp`, and now also
+   `jarvis install` from a git URL). This belongs with packaging — it needs a
+   decision about where the folder lives inside a PyInstaller onedir bundle.
 3. Branching UI, model catalog UI, "Hey Friday", opt-in VAD barge-in.
 
-**Two small things M5.4 noticed and did not fix** (neither blocks anything):
+**Small things noticed and deliberately not fixed** (none block anything):
 `extension.loadedNote` ("Active") is defined in en.json but never rendered — the
 panel only shows the *not*-loaded note, so an approved-and-working extension reads
-as plain "Approved"; and `security/permissions.py`'s module docstring still cites
+as plain "Approved"; `security/permissions.py`'s module docstring still cites
 `send_notification` as its example of a `safe` core tool, which has never existed
-(the M5.4 notification path is an extension-facing host call, not a tool).
+(M5.4's notification path is an extension-facing host call, not a tool); and a
+panel "install from URL" field would close M5.3's restart caveat but adds a second
+approval UI plus a `git` subprocess behind a webview message.
 
 **Known M5.1 limits, deliberate:** single-file `extension.py` only (`sys.path` is
 untouched, because an extension shipping `json.py` would shadow the stdlib

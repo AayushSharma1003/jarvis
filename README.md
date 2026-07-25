@@ -35,7 +35,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **507 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
+| Backend test suite | **648 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
 
 Four decisions this project is actually about:
 
@@ -71,7 +71,8 @@ Four decisions this project is actually about:
 | **Filesystem sandbox + taint** | ✅ working | Paths enforced after `resolve()`, Jarvis's own config/data excluded ahead of the root test; reading a file marks the conversation, and from there side-effectful calls confirm with provenance and can't be covered by a session grant. |
 | **File tools** | ✅ working | `read_file` / `list_dir` (safe), `write_file` (ask), `delete_file` (dangerous, refuses directories). Tool use is gated on the model — unvetted models never see a schema. |
 | **Shell + `web_fetch`** | ✅ working | `run_command` always confirms with the full command shown — no classifier, no denylist — and takes no sandbox, because a subprocess escapes one by design. `web_fetch` is `ask` (a URL can carry data out) and runs behind an SSRF guard: scheme allowlist, every resolved IP checked, IP literals not resolved, every redirect hop re-validated. Both bounded by timeouts and incremental output caps. |
-| **Extensions** | ⚠️ partly | Manifest, content-keyed approval, the loader and an in-app approval panel are built; `jarvis install <url>` is not. Approving is two steps (a detail card of declared permissions and effective risks, then Approve) and keyed to the extension's exact bytes; it loads live, no restart. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
+| **Extensions** | ✅ working | Manifest, content-keyed approval, the loader, an in-app approval panel, `jarvis install <url>` and a host API for extensions that need to speak up on their own. Approving is two steps (a detail card of declared permissions and effective risks, then Approve) and keyed to the extension's exact bytes; it loads live, no restart. Install only accepts `http(s)` — `git clone 'ext::sh -c …'` executes the command — and names the folder from the manifest, never the URL. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
+| **Timers & reminders** | ✅ working | The reference extension, and the one that proved the extension API needed an escape hatch: a tool returns a string, but a timer fires *later*. Deadlines are absolute wall-clock (macOS's monotonic clock stops while the lid is shut) and survive a restart; when one fires, Jarvis shows a toast and says it out loud. |
 | **Installers** | 🚧 phase 6 | The release workflow already builds unsigned bundles for all three OSes on a tag. |
 
 **Verified on macOS (Apple Silicon), hands-on.** Windows and Linux are built by CI every
@@ -180,8 +181,8 @@ Built and enforcing today:
   permissions block for real needs a subprocess per extension behind an RPC boundary — a
   different architecture, and not one v1 claims to have.
 
-Specified, not yet built: the in-app approval panel and `jarvis install <url>` (approval
-today is `jarvis extensions approve`).
+Every section of that document is now built: the approval panel landed in M5.2,
+`jarvis install <url>` in M5.3, and the extension host API in M5.4.
 
 Known residuals, stated rather than hidden: a DNS-rebinding window between the SSRF check
 and the connect, a TOCTOU window between path resolution and file open, and an approved
@@ -277,7 +278,7 @@ problem later instead of a refactor.
 2. ✅ **Voice loop** — VAD, whisper.cpp, Kokoro, barge-in, inside the latency budget.
 3. ✅ **Always-on + feel** — wake word, sphere, chat management, readiness gate, RAM tiering.
 4. ✅ **Agency + security** — the largest phase; tools ship *with* their security layer, never before it. The [model capability gate](docs/tool-calling.md) (tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property), the tool plumbing, the permission engine + confirmation, the filesystem sandbox + file tools + taint, then shell and `web_fetch` + SSRF.
-5. 🚧 **Extended scope** — the extension loader, content-keyed approval gate and in-app approval panel are done; still to come: `jarvis install <url>`, branch navigation UI, model catalog UI, custom wake words.
+5. 🚧 **Extended scope** — the extension work is complete: loader, content-keyed approval gate, in-app approval panel, `jarvis install <url>`, a host API, and `timers-reminders` as the working reference. Still to come: branch navigation UI, model catalog UI, custom wake words.
 6. **Ship** — installers, docs, a tagged unsigned release with checksums.
 
 Post-v1: acoustic echo cancellation (macOS Voice Processing AU, then WebRTC AEC3), voice

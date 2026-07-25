@@ -84,7 +84,7 @@ def shell_timeout_s() -> float:
     return value if value > 0 else SHELL_TIMEOUT_S
 
 
-def _child_env() -> dict[str, str]:
+def child_env() -> dict[str, str]:
     """The parent environment minus Jarvis's own namespace.
 
     The user's PATH/HOME/etc. are exactly what make the shell useful on their
@@ -92,6 +92,9 @@ def _child_env() -> dict[str, str]:
     all JARVIS_WS_TOKEN: the WebSocket auth secret must never reach a subprocess.
     Stripping the whole prefix rather than one name future-proofs the token class
     and keeps the app's private control vars out of the child.
+
+    Public because `jarvis install` runs `git` and needs the same rule; one
+    definition of what a Jarvis subprocess may see beats two that drift.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("JARVIS_")}
 
@@ -121,7 +124,7 @@ async def run_command(command: str) -> str:
         "stderr": asyncio.subprocess.STDOUT,  # merged, so errors read in order
         "stdin": asyncio.subprocess.DEVNULL,  # a stdin-reading command gets EOF
         "cwd": str(Path.home()),
-        "env": _child_env(),
+        "env": child_env(),
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

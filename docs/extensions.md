@@ -1,10 +1,9 @@
 # Extension Authoring Guide
 
 > Status: the manifest, the content-keyed approval, the loader (M5.1), the in-app
-> approval panel (M5.2) and the host API (M5.4) are built, and
-> [`timers-reminders`](../extensions/timers-reminders/) is a working reference you can
-> read. `jarvis install` is M5.3; until then, install by hand (below).
-> `calendar-macos` is still a manifest with no code.
+> approval panel (M5.2), `jarvis install` (M5.3) and the host API (M5.4) are all built,
+> and [`timers-reminders`](../extensions/timers-reminders/) is a working reference you
+> can read. `calendar-macos` is still a manifest with no code.
 
 An extension is a folder containing `manifest.toml` + `extension.py`, living in the user's extensions directory (`<data dir>/extensions`, which is **permanently outside** the filesystem sandbox — see [security-model.md](security-model.md) §2 and §5).
 
@@ -36,8 +35,32 @@ tool name already taken by the core or another extension is refused.
    cp -R extensions/timers-reminders \
      ~/Library/Application\ Support/jarvis/extensions/   # macOS
    ```
-2. `jarvis install <github-url>` (M5.3) → clones, pins the commit SHA, shows declared
-   permissions for approval, installs. No auto-update.
+2. `jarvis install <url>` clones a git repository, pins the commit it fetched, shows
+   the declaration, and asks — the same prompt `jarvis extensions approve` uses,
+   because there is exactly one way an extension becomes runnable.
+
+   ```sh
+   jarvis install https://github.com/someone/an-extension
+   jarvis install https://github.com/someone/an-extension --ref v1.2.0
+   jarvis install <url> --force        # replace one that's already installed
+   ```
+
+   Only `http://` and `https://` are accepted. That is a real check, not
+   tidiness: `git clone 'ext::sh -c "…"'` **executes the command**, so a pasted
+   URL with any other transport is refused before git is invoked.
+
+   The folder is named after your **manifest**, not the repository, and the
+   destination is created only after the clone has been validated in a staging
+   directory — a repo cannot choose the name it installs as. Answering "no" to
+   the prompt leaves it installed and `pending`, so you can approve it later
+   without downloading it again. **No auto-update, ever**: a `--force`
+   reinstall changes the bytes, which changes the digest, so it lands as
+   `changed` and does not run until you approve it again.
+
+   One wrinkle worth knowing: the CLI is a **different process** from the
+   running sidecar, so an extension installed while the app is open shows as
+   approved-but-not-running until you restart Jarvis — or press Approve in the
+   panel, which loads it live. The CLI says so when it finishes.
 
 Either way, approve it explicitly — from the app's **Extensions panel** (the puzzle icon
 in the header; a badge flags anything awaiting review) or the CLI. Revoking is not the

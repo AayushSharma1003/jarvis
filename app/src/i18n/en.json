@@ -85,7 +85,7 @@
     "emptyHint": "Drop an extension folder into Jarvis's extensions directory, then approve it here.",
     "pendingBadge": "{{count}} need review",
     "loadedNote": "Active",
-    "notLoadedNote": "Approved, but it didn't load",
+    "notLoadedNote": "Approved, but not running in this session. Restart Jarvis, or approve it again here to load it now.",
     "review": "Review",
     "approve": "Approve",
     "cancel": "Cancel",
