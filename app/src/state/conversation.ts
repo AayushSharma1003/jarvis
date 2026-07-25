@@ -22,6 +22,7 @@ import type {
   ConfirmAnswer,
   ConfirmRequest,
   ConversationSummary,
+  ExtensionInfo,
   HistoryTurn,
   ModelEntry,
   RamTier,
@@ -81,6 +82,12 @@ export interface ConversationState {
   // outstanding at once. The dialog renders the first and they resolve
   // independently.
   pendingConfirms: ConfirmRequest[];
+  // Installed extensions and their approval status (M5.2). Empty until the
+  // panel is opened, which is the only place this is read.
+  extensions: ExtensionInfo[];
+  // An approve/revoke failure, kept apart from `errorCode` so a rejected
+  // approval surfaces in the panel that caused it, not the chat's error banner.
+  extensionError: string | null;
   init: () => Promise<void>;
   send: (text: string) => void;
   stop: () => void;
@@ -93,6 +100,10 @@ export interface ConversationState {
   rename: (conversationId: string, title: string) => void;
   remove: (conversationId: string) => void;
   respondConfirm: (id: string, answer: ConfirmAnswer) => void;
+  listExtensions: () => void;
+  approveExtension: (name: string, digest: string) => void;
+  revokeExtension: (name: string) => void;
+  clearExtensionError: () => void;
 }
 
 let socket: JarvisSocket | null = null;
@@ -183,6 +194,8 @@ export const useConversation = create<ConversationState>((set, get) => ({
   wakeEnabled: false,
   wakeAvailable: false,
   pendingConfirms: [],
+  extensions: [],
+  extensionError: null,
 
   init: async () => {
     if (initStarted) return;
@@ -203,6 +216,9 @@ export const useConversation = create<ConversationState>((set, get) => ({
             socket?.send({ type: "models.list" });
             socket?.send({ type: "conversations.list" });
             socket?.send({ type: "system.readiness" });
+            // Fetched on connect, not on panel-open, so the header badge can
+            // flag a pending extension the user hasn't gone looking for.
+            socket?.send({ type: "extensions.list" });
           }
         },
       );
@@ -316,7 +332,34 @@ export const useConversation = create<ConversationState>((set, get) => ({
     // already made. A confirm.close for an id we've forgotten is a no-op.
     set((s) => ({ pendingConfirms: s.pendingConfirms.filter((c) => c.id !== id) }));
   },
+
+  // The backend answers all three by broadcasting the fresh `extensions` list,
+  // so approve/revoke don't update optimistically — the UI only moves when the
+  // backend really recorded it, the same discipline as the wake toggle.
+  listExtensions: () => {
+    socket?.send({ type: "extensions.list" });
+  },
+
+  approveExtension: (name: string, digest: string) => {
+    // Clear any prior failure so a stale error doesn't linger over a fresh try.
+    // The digest is echoed back so the backend can refuse if the folder changed
+    // since the panel showed it — see EXTENSION_CHANGED in the store handler.
+    set({ extensionError: null });
+    socket?.send({ type: "extensions.approve", name, digest });
+  },
+
+  revokeExtension: (name: string) => {
+    set({ extensionError: null });
+    socket?.send({ type: "extensions.revoke", name });
+  },
+
+  clearExtensionError: () => set({ extensionError: null }),
 }));
+
+/** Extension approve/revoke failures, routed to the panel instead of the chat
+ *  banner. BAD_MESSAGE is shared with other paths, so it isn't in here — a
+ *  well-behaved panel never sends one. */
+const EXTENSION_ERROR = /^(EXTENSION_|MANIFEST_)/;
 
 /** True when a reply is generating in a conversation the user isn't looking at.
  *  The backend has one generation slot per connection, so the composer has to
@@ -401,6 +444,11 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       // Answered elsewhere, timed out, or cancelled with its generation. A
       // dialog that outlives its call is how people learn to click Allow.
       set((s) => ({ pendingConfirms: s.pendingConfirms.filter((c) => c.id !== msg.id) }));
+      break;
+    case "extensions":
+      // Broadcast on every list/approve/revoke, so a second window's panel
+      // stays in step with the first. The panel reads this directly.
+      set({ extensions: msg.extensions });
       break;
     case "models":
       set({
@@ -509,6 +557,14 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       }
       break;
     case "error": {
+      // Extension failures belong to the panel, not the chat banner, and don't
+      // touch any generation. Re-list so a rejected approve shows the new truth
+      // (an EXTENSION_CHANGED means the folder is now "changed" on disk).
+      if (EXTENSION_ERROR.test(msg.code)) {
+        set({ extensionError: msg.code });
+        socket?.send({ type: "extensions.list" });
+        break;
+      }
       const key = get().streamKey;
       set({ errorCode: msg.code });
       // A terminal error ends any in-flight stream; keep the partial text.

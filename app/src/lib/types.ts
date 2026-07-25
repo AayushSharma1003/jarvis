@@ -75,6 +75,37 @@ export interface ConfirmRequest {
   reason: string;
 }
 
+/** One tool an extension declares, at the risk the CORE will register it —
+ *  which may be higher than the manifest asked for (network = true floors every
+ *  tool to `ask`). Never show the declared level; this is the enforced one. */
+export interface ExtensionTool {
+  name: string;
+  risk: "safe" | "ask" | "dangerous";
+}
+
+/** One installed extension, as the approval panel sees it. `status` and `code`
+ *  are machine-readable (wording in i18n `extension.status.*` / `extension.code.*`).
+ *  Everything else is what §5 says the user must see BEFORE approving.
+ *  Backend: server/protocol.py `extensions`, extensions/loader.py. */
+export interface ExtensionInfo {
+  name: string;
+  status: "approved" | "pending" | "changed" | "unsupported_platform" | "invalid";
+  code: string; // why it is invalid; "" otherwise
+  /** SHA-256 of its exact bytes on disk. Echoed back on approve so the backend
+   *  can refuse (`EXTENSION_CHANGED`) if the folder changed since it was shown —
+   *  approving what you never read is the failure §5 exists to prevent. */
+  digest: string;
+  /** approved is consent; loaded is whether the code actually ran. They diverge
+   *  when an approved extension fails to import. */
+  loaded: boolean;
+  version: string;
+  description: string;
+  platforms: string[];
+  os_permissions: string[];
+  network: boolean;
+  tools: ExtensionTool[];
+}
+
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -124,6 +155,7 @@ export type ServerMessage =
   | { type: "wake.detected" }
   | ({ type: "confirm.request" } & ConfirmRequest)
   | { type: "confirm.close"; id: string; reason: string }
+  | { type: "extensions"; extensions: ExtensionInfo[] }
   | { type: "error"; code: string; detail?: string };
 
 export type ClientMessage =
@@ -147,4 +179,7 @@ export type ClientMessage =
   | { type: "conversation.delete"; conversation_id: string }
   | { type: "wake.set"; enabled: boolean }
   | { type: "confirm.respond"; id: string; answer: ConfirmAnswer }
-  | { type: "voice.say"; text: string };
+  | { type: "voice.say"; text: string }
+  | { type: "extensions.list" }
+  | { type: "extensions.approve"; name: string; digest: string }
+  | { type: "extensions.revoke"; name: string };

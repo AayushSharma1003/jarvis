@@ -1,6 +1,6 @@
 # Security Model
 
-> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5; §5's manifest, content-keyed approval and loader in M5.1 (the approval UI is M5.2 and `jarvis install` is M5.3 — approval today is `jarvis extensions approve`). This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note and §5's opening).
+> Status: §1 (permission engine + confirmation) implemented in M4.2, with `run_command` added in M4.4; §2 (filesystem sandbox) and §3 (taint) in M4.3; §4's `web_fetch` + SSRF guard in M4.5; §5's manifest, content-keyed approval and loader in M5.1, its in-app approval panel in M5.2 (`jarvis install` remains M5.3 — approval today is the panel or `jarvis extensions approve`). This document is normative — code that disagrees with it is wrong, and where implementation forced a change the document was amended rather than quietly diverged from (see §1's dialog note and §5's opening).
 
 JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM that can be manipulated by anything it reads. We treat that as the threat model, not an edge case. We also say plainly what this is: **policy enforcement in a trusted process**, not OS-level sandboxing (no seccomp / sandbox-exec in v1).
 
@@ -181,8 +181,21 @@ This is the same posture §2 takes for the file-tool TOCTOU.
 ## 5. Extensions
 
 Implemented in `backend/jarvis_backend/extensions/` (`manifest.py`, `approvals.py`,
-`loader.py`); tests are `test_extensions.py`. `jarvis install <url>` is M5.3 and not
-built yet; approval today happens through `jarvis extensions approve`.
+`loader.py`) and surfaced by the in-app panel (`server/app.py`'s `extensions.*`
+handlers, `app/src/components/settings/ExtensionsPanel.tsx`); tests are
+`test_extensions.py`. `jarvis install <url>` is M5.3 and not built yet; approval today
+happens through the panel or `jarvis extensions approve`.
+
+The panel enforces the same two properties the CLI does, and they are load-bearing:
+**approval is two steps, never one** — a list row shows what an extension *is*, and
+only a detail card showing its declarations, effective risk levels, digest and the
+"runs with the same access" warning offers an Approve button; and **the digest is a
+correlation id, not an input** — the client echoes back the digest it was shown, and the
+backend re-hashes and refuses (`EXTENSION_CHANGED`) if the bytes changed in between, so
+a folder edited while the panel was open cannot be approved unread. Approving loads the
+extension immediately (off the event loop) and revoking unregisters exactly the tools it
+claimed; neither can un-run code an extension already executed at import, which the panel
+states plainly rather than implying a revoke is a full removal.
 
 **Say the true thing first.** An approved extension is `extension.py`, imported into
 the sidecar process, running with everything this process can do. A manifest that

@@ -55,7 +55,7 @@ PARENT_POLL_S = 2.0
 log = logging.getLogger(__name__)
 
 
-def load_extensions(registry: Registry) -> None:
+def load_extensions(registry: Registry) -> dict[str, tuple[str, ...]]:
     """Add the tools of every approved extension. Never raises (§5).
 
     Called after `default_registry`, so the core tool names are already taken
@@ -66,7 +66,14 @@ def load_extensions(registry: Registry) -> None:
     (`jarvis extensions list`), never active. Reporting goes through `logging`,
     which writes to stderr — stdout carries the one JSON ready line the Tauri
     supervisor parses and must not gain a second.
+
+    Returns **extension name → the tool names it actually claimed**, which is
+    what M5.2's revoke unregisters. That set comes from the registration, never
+    from the manifest: an extension that declared `read_file` and lost the
+    conflict never claimed it, and removing it on revoke would take the
+    sandboxed core tool with it.
     """
+    loaded: dict[str, tuple[str, ...]] = {}
     try:
         store = ApprovalStore(approvals_path())
         found = discover(extensions_dir(), store)
@@ -80,6 +87,7 @@ def load_extensions(registry: Registry) -> None:
                 )
         for result in load_approved(registry, found):
             if result.ok:
+                loaded[result.name] = result.tools
                 log.info("extension %s loaded: %s", result.name, ", ".join(result.tools) or "-")
                 if result.detail:
                     log.warning("extension %s: %s", result.name, result.detail)
@@ -87,6 +95,7 @@ def load_extensions(registry: Registry) -> None:
                 log.warning("extension %s failed: %s %s", result.name, result.code, result.detail)
     except Exception:  # noqa: BLE001 - extensions must never stop the sidecar booting
         log.exception("extension loading failed")
+    return loaded
 
 
 def run() -> None:
@@ -121,7 +130,8 @@ def run() -> None:
     registry = default_registry(gate, sandbox)
     # After the core tools, never before: a name already in the registry is
     # refused, so this ordering is what stops an extension shadowing read_file.
-    load_extensions(registry)
+    # The returned map (name → claimed tool names) is what revoke unregisters.
+    extensions_loaded = load_extensions(registry)
     state = AppState(
         token=token,
         store=store,
@@ -131,6 +141,7 @@ def run() -> None:
         registry=registry,
         confirm=confirm,
         taint=taint,
+        extensions_loaded=extensions_loaded,
     )
     confirm.bind(lambda: state.connections)
     state.wake = _make_wake_service(state, config)

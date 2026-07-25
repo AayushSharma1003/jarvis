@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -84,6 +84,11 @@ class AppState:
     # Which conversations hold untrusted content (§3). The SAME instance is
     # injected into the gate, which reads it; the agent loop writes it.
     taint: TaintTracker | None = None
+    # Extension name → the tool names it actually CLAIMED at load (M5.2), which
+    # is what revoke unregisters. Not derivable from the manifest: an extension
+    # that declared `read_file` and lost the name conflict never claimed it, and
+    # unregistering it would tear out the sandboxed core tool that won.
+    extensions_loaded: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -227,6 +232,149 @@ async def _broadcast_conversations(state: AppState) -> None:
             await c.send(payload)
 
 
+# -- extensions (M5.2) ------------------------------------------------------
+
+
+def _survey_extensions() -> tuple[Any, list[Any]]:
+    """The approval record and what is on disk right now.
+
+    Re-read on every request rather than cached: it is a handful of file hashes
+    on a user-initiated action, and reading fresh means a folder edited while
+    the app is open shows as `changed` without waiting for a restart.
+    """
+    from ..config import approvals_path, extensions_dir
+    from ..extensions.approvals import ApprovalStore
+    from ..extensions.loader import discover
+
+    store = ApprovalStore(approvals_path())
+    return store, discover(extensions_dir(), store)
+
+
+def _extensions_payload(state: AppState, found: list[Any]) -> dict[str, Any]:
+    from ..extensions.loader import _effective_risk, _floor
+
+    rows = []
+    for entry in found:
+        manifest = entry.manifest
+        floor = _floor(manifest) if manifest else None
+        rows.append(
+            {
+                "name": entry.name,
+                "status": entry.status,
+                "code": entry.code,
+                "digest": entry.digest,
+                # Approved is consent; loaded is whether the code actually ran.
+                # They come apart when an approved extension fails to import,
+                # and a panel showing only "approved" would imply a tool set the
+                # user does not have.
+                "loaded": entry.name in state.extensions_loaded,
+                "version": manifest.version if manifest else "",
+                "description": manifest.description if manifest else "",
+                "platforms": list(manifest.platforms) if manifest else [],
+                "os_permissions": list(manifest.os_permissions) if manifest else [],
+                "network": bool(manifest.network) if manifest else False,
+                # The EFFECTIVE risk, never the declared one — see protocol.py.
+                "tools": (
+                    [
+                        {"name": d.name, "risk": _effective_risk(d.risk, floor)}
+                        for d in manifest.tools
+                    ]
+                    if manifest
+                    else []
+                ),
+            }
+        )
+    return protocol.extensions(rows)
+
+
+async def _broadcast_extensions(state: AppState) -> None:
+    """Re-survey and push to every open UI, like _broadcast_conversations.
+
+    Two panels must not disagree about what is approved, and approving in one
+    window changes what the other is showing.
+    """
+    _, found = _survey_extensions()
+    payload = _extensions_payload(state, found)
+    for c in list(state.connections):
+        with contextlib.suppress(Exception):
+            await c.send(payload)
+
+
+async def _approve_extension(state: AppState, send, name: Any, digest: Any) -> None:
+    """Approve the bytes the client was shown, then load them (§5).
+
+    The digest is a **correlation id, not an input**: the backend minted it in a
+    prior `extensions` message and re-computes it here, so the client can only
+    fail the comparison, never supply bytes to bless. That is what closes the
+    race where the panel displays one manifest, the folder changes, and Approve
+    would otherwise record something the user never read.
+    """
+    from ..extensions.loader import load_approved
+
+    if not isinstance(name, str) or not isinstance(digest, str):
+        await send(protocol.error("BAD_MESSAGE", "name and digest required"))
+        return
+
+    store, found = _survey_extensions()
+    entry = next((d for d in found if d.name == name), None)
+    if entry is None:
+        await send(protocol.error("EXTENSION_NOT_FOUND", name))
+        return
+    if entry.manifest is None:
+        # invalid: nothing coherent was shown, so there is nothing to consent
+        # to. Surface its real code (a parse error, a name mismatch) rather than
+        # letting the digest check below report the empty digest as CHANGED.
+        await send(protocol.error(entry.code or "MANIFEST_INVALID", name))
+        return
+    if entry.digest != digest:
+        # The bytes are not the ones the client was shown — a folder that
+        # changed in between, or a fabricated digest. An empty digest lands here
+        # too, which is correct: it matches nothing.
+        await send(protocol.error("EXTENSION_CHANGED", name))
+        return
+
+    store.approve(entry.manifest, entry.digest)
+    if state.registry is not None:
+        # Re-approving an extension whose files changed on disk: the version
+        # loaded when it was first approved is still registered, and its tool
+        # names would collide with the new load (an extension conflicting with
+        # itself). Drop the old one first so the new bytes take those names.
+        for tool_name in state.extensions_loaded.pop(entry.name, ()):
+            state.registry.unregister(tool_name)
+        # Importing runs the extension's module body, which may be slow (pyobjc
+        # in M5.4) — keep it off the event loop so the socket stays responsive,
+        # the same reason Registry.invoke threads tool bodies.
+        approved = entry.__class__(**{**entry.__dict__, "status": "approved"})
+        results = await asyncio.to_thread(load_approved, state.registry, [approved])
+        for result in results:
+            if result.ok:
+                state.extensions_loaded[result.name] = result.tools
+            else:
+                await send(protocol.error(result.code, result.detail))
+    await _broadcast_extensions(state)
+
+
+async def _revoke_extension(state: AppState, send, name: Any) -> None:
+    """Withdraw an approval and take its tools back out of the registry.
+
+    Only the names this extension actually **claimed** are unregistered — see
+    AppState.extensions_loaded. It cannot un-run code that already executed at
+    import; the panel says so rather than implying a revoke is a full removal.
+    """
+    if not isinstance(name, str) or not name:
+        await send(protocol.error("BAD_MESSAGE", "name required"))
+        return
+    store, _ = _survey_extensions()
+    if not store.revoke(name):
+        await send(protocol.error("EXTENSION_NOT_APPROVED", name))
+        return
+    if state.registry is not None:
+        for tool_name in state.extensions_loaded.get(name, ()):
+            state.registry.unregister(tool_name)
+    state.extensions_loaded.pop(name, None)
+    await _broadcast_extensions(state)
+
+
 async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> None:
     """Handle one client message, mutating conn.generation as needed."""
     mtype = msg["type"]
@@ -330,6 +478,16 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
 
         elif mtype == "conversations.list":
             await send(_conversations_payload(state))
+
+        elif mtype == "extensions.list":
+            _, found = _survey_extensions()
+            await send(_extensions_payload(state, found))
+
+        elif mtype == "extensions.approve":
+            await _approve_extension(state, send, msg.get("name"), msg.get("digest"))
+
+        elif mtype == "extensions.revoke":
+            await _revoke_extension(state, send, msg.get("name"))
 
         elif mtype == "conversation.rename":
             cid = msg.get("conversation_id", "")

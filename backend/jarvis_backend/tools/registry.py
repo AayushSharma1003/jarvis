@@ -178,6 +178,20 @@ class Registry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def unregister(self, name: str) -> bool:
+        """Withdraw a tool. False if it wasn't registered.
+
+        Exists for revoking an extension without a restart (M5.2). Safe while an
+        exchange is in flight: `run_exchange` snapshots `schemas()` once at the
+        top and looks tools up by name at call time, so a model still holding the
+        old schema gets an ordinary `TOOL_NOT_FOUND` result it can react to.
+
+        The caller must pass only names that tool's owner actually *claimed* —
+        an extension that lost a name conflict never registered the name it
+        declared, and removing it would tear out the core tool that won.
+        """
+        return self._tools.pop(name, None) is not None
+
     def __len__(self) -> int:
         return len(self._tools)
 

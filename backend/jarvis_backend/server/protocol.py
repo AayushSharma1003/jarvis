@@ -2,11 +2,12 @@
 
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
                  conversation.history, ping, voice.start, voice.stop, wake.set,
-                 confirm.respond, voice.say
+                 confirm.respond, voice.say, extensions.list, extensions.approve,
+                 extensions.revoke
 Server → client: ready, chat.start, chat.delta, chat.done, models,
                  conversations, history, error, pong, tool.span,
                  voice.state, stt.text, voice.level, wake.status, wake.detected,
-                 confirm.request, confirm.close
+                 confirm.request, confirm.close, extensions
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
 
@@ -112,6 +113,27 @@ def confirm_close(confirm_id: str, reason: str) -> dict[str, Any]:
     outlives its call is how users learn to click Allow without reading.
     """
     return {"type": "confirm.close", "id": confirm_id, "reason": reason}
+
+
+def extensions(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Everything the approval panel needs, as data and codes only (M5.2).
+
+    §5 says the dialog shows **declared permissions**, so the declarations have
+    to travel: description, platforms, `os`, `network`, and every tool. What
+    does NOT travel is prose — `status` and `code` are machine-readable and the
+    frontend owns their wording (`extension.status.*`, `extension.code.*`).
+
+    Each tool's `risk` is the **effective** level the core will register it at,
+    not the level the manifest asked for. Under `network = true` a declared
+    `safe` becomes `ask`, and a panel showing `safe` there would tell the user
+    the opposite of what happens.
+
+    `digest` is the identity of the bytes currently on disk. It goes out so the
+    client can echo it back on approve, which is how "approve what you were
+    shown" is enforced against a folder that changed in between — the same
+    backend-mints/client-echoes shape as a confirm correlation id.
+    """
+    return {"type": "extensions", "extensions": rows}
 
 
 def voice_state(state: str, reason: str = "") -> dict[str, Any]:

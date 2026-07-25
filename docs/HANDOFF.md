@@ -298,6 +298,18 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     `__pycache__` between mutations (`PYTHONDONTWRITEBYTECODE=1` alone is not
     enough — a stale `.pyc` from an earlier run is still readable). Symptom:
     re-running the same harness twice gives different answers.
+23. **Live testing catches self-conflicts unit tests structurally can't** (M5.2).
+    Every M5.2 unit test approved an extension from a *clean* registry, so none
+    exercised re-approving one that was already loaded. Doing it by hand in the
+    browser did: an approved extension edited on disk, then re-approved through
+    the panel, failed with `EXTENSION_TOOL_CONFLICT` — its own already-registered
+    tool names collided with the new load (an extension conflicting with itself).
+    The fix is one loop: `_approve_extension` unregisters whatever that extension
+    previously claimed before re-loading. The lesson is that a test suite that
+    always starts from a clean slate will never see a "second time" bug; the live
+    walk-through is not ceremony. Regression:
+    `test_re_approving_a_changed_extension_loads_the_new_bytes`, which fails
+    without the pre-unregister loop.
 
 ## Repo map
 
@@ -499,9 +511,9 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    each mutation-proven — classifier, any-IP rule, scheme block, IP-literal,
    redirect re-validation, byte cap, taint). See gotcha 20.
 5. ⬅ **Extended scope — IN PROGRESS.** The extension work splits four ways:
-   **M5.1 loader + approvals (DONE)**, M5.2 approval UI, M5.3 `jarvis install`,
-   M5.4 the default extensions. Also: branching UI, model catalog UI, wake-word
-   training + "Hey Friday", opt-in VAD barge-in.
+   **M5.1 loader + approvals (DONE)**, **M5.2 approval UI (DONE)**, M5.3 `jarvis
+   install`, M5.4 the default extensions. Also: branching UI, model catalog UI,
+   wake-word training + "Hey Friday", opt-in VAD barge-in.
    ✅ **M5.1 extension manifest + approval + loader DONE** (2026-07-24) — §5, the
    last security section, and the honest version of it. **The headline is what it
    does NOT do:** an approved extension is `extension.py` imported into the
@@ -530,6 +542,29 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    **Core change: the `read_only` flag** — see gotcha 21. **481 backend tests**
    (120 new), 51 mutations proven. Behaviour out of the box is unchanged: nothing
    is approved, so nothing loads.
+   ✅ **M5.2 extension approval UI DONE** (2026-07-25) — the panel, so approving no
+   longer means a terminal. `extensions.list|approve|revoke` WS messages (payload
+   is codes + data only, tool risks are the **effective** level not the declared
+   one), a standalone `ExtensionsPanel.tsx` modal opened from a header puzzle icon
+   with a pending badge, and `Registry.unregister`. **Two properties carry the
+   security:** (1) **approval is two steps** — a list row, then a detail card
+   showing declarations + effective risks + digest + the "runs as you" warning,
+   and only there an Approve button; (2) **the digest is a correlation id** —
+   echoed back on approve and re-hashed server-side, refusing `EXTENSION_CHANGED`
+   if the folder moved under the panel (the same backend-mints/client-echoes shape
+   as a confirm id). **Owner decision: approval applies live** (approve → imports
+   off the event loop → tools usable with no restart; revoke → unregisters exactly
+   the names that extension *claimed*, never the core tool it lost a conflict to).
+   Revoke is a two-step inline confirm carrying the honest caveat: *tools gone now,
+   code it already ran stays until restart.* **Live-verified in the browser-hosted
+   build** against a scratch backend, all six steps (pending → detail card →
+   approve-loads-live → edit-a-byte-shows-changed → revoke → back to pending), zero
+   console errors. **The live run caught a real bug the unit tests missed:**
+   re-approving a *changed* extension self-conflicted (its old version still held
+   the tool names) — fixed by unregistering the prior version first, with a test
+   that fails without the fix (gotcha 23). **507 backend tests** (26 new), 16 new
+   mutations proven, tsc clean. Still out of the box: no approvals ⇒ one new header
+   button and nothing else changes.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
@@ -649,18 +684,13 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-4 complete; Phase 5 started.** M5.1 (extension manifest, content-keyed
-approval, loader, risk floors, `jarvis extensions` CLI) is done and green —
-**481 backend tests, 2 Rust**. §5 is no longer ahead of the code, so
-security-model.md and the implementation now agree everywhere.
+**Phases 1-4 complete; Phase 5 in progress.** M5.1 (manifest, content-keyed
+approval, loader, risk floors, `jarvis extensions` CLI) and M5.2 (the in-app
+approval panel) are done and green — **507 backend tests, 2 Rust, tsc clean**. §5
+is fully built and live-verified; security-model.md and the code agree everywhere.
 
 **Next, in the order that makes sense:**
-1. **M5.2 approval UI** — surface `discover()` over the WS (`extensions.list` /
-   `.approve` / `.revoke`) and build the panel. The i18n keys are already in
-   `en.json`; `Settings.tsx` and `PermissionsPanel.tsx` are 0-byte stubs waiting.
-   `AppState` deliberately does NOT hold the discovery result yet — M5.2 adds the
-   field when it has a consumer.
-2. **M5.4 default extensions** — `timers-reminders` first (cross-platform
+1. **M5.4 default extensions** — `timers-reminders` first (cross-platform
    reference). **Revisit its risk levels when writing the code**: the committed
    manifest declares `set_timer`/`set_reminder`/`cancel_timer` as `safe`, which
    M5.1 made *safe-but-not-read-only* rather than wrong, but the author should

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { isBusyElsewhere, useConversation } from "../../state/conversation";
 import { Readiness } from "../onboarding/Readiness";
+import { ExtensionsPanel, pendingReviewCount } from "../settings/ExtensionsPanel";
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -41,6 +42,18 @@ function MenuIcon() {
   );
 }
 
+function PuzzleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden>
+      <path
+        d="M10 3v2a2 2 0 0 0 4 0V3h4a1 1 0 0 1 1 1v4h2a2 2 0 0 1 0 4h-2v4a1 1 0 0 1-1 1h-4a2 2 0 0 0-4 0H6a1 1 0 0 1-1-1v-4H3a2 2 0 0 1 0-4h2V4a1 1 0 0 1 1-1h4Z"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Below this width the sidebar overlays the chat instead of pushing it —
  *  a 640px window has no room to give 256px away permanently. */
 function useNarrow(): boolean {
@@ -61,6 +74,8 @@ export function ChatView() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) !== "0",
   );
+  const [extensionsOpen, setExtensionsOpen] = useState(false);
+  const pendingExtensions = pendingReviewCount(s.extensions);
 
   const toggleSidebar = () => {
     setSidebarOpen((open) => {
@@ -171,6 +186,21 @@ export function ChatView() {
             {s.voiceState !== "idle" ? t(`voice.${s.voiceState}`) : t(`status.${s.status}`)}
           </span>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setExtensionsOpen(true)}
+              aria-label={t("extension.open")}
+              title={t("extension.open")}
+              className="relative rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              <PuzzleIcon />
+              {pendingExtensions > 0 && (
+                <span
+                  aria-label={t("extension.pendingBadge", { count: pendingExtensions })}
+                  title={t("extension.pendingBadge", { count: pendingExtensions })}
+                  className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-zinc-900"
+                />
+              )}
+            </button>
             {s.wakeAvailable && (
               <button
                 onClick={() => s.setWakeEnabled(!s.wakeEnabled)}
@@ -254,9 +284,11 @@ export function ChatView() {
         />
       </div>
 
-      {/* Outermost so it covers the sidebar too — a permission dialog you can
-          click around is not a permission dialog. One at a time: the rest of
-          the queue surfaces as each is answered. */}
+      {extensionsOpen && <ExtensionsPanel onClose={() => setExtensionsOpen(false)} />}
+
+      {/* Outermost so it covers the sidebar AND the extensions panel — a
+          permission dialog you can click around is not a permission dialog. One
+          at a time: the rest of the queue surfaces as each is answered. */}
       {s.pendingConfirms.length > 0 && (
         <ConfirmDialog request={s.pendingConfirms[0]} onAnswer={s.respondConfirm} />
       )}

@@ -1,8 +1,8 @@
 # Extension Authoring Guide
 
-> Status: the manifest, the content-keyed approval and the loader are built (M5.1).
-> The in-app approval UI is M5.2 and `jarvis install` is M5.3; until then, approve from
-> the command line. The default extensions in [`extensions/`](../extensions/) are M5.4 —
+> Status: the manifest, the content-keyed approval, the loader (M5.1) and the in-app
+> approval panel (M5.2) are built. `jarvis install` is M5.3; until then, install by
+> hand (below). The default extensions in [`extensions/`](../extensions/) are M5.4 —
 > their manifests are written, their code is not.
 
 An extension is a folder containing `manifest.toml` + `extension.py`, living in the user's extensions directory (`<data dir>/extensions`, which is **permanently outside** the filesystem sandbox — see [security-model.md](security-model.md) §2 and §5).
@@ -31,7 +31,8 @@ tool name already taken by the core or another extension is refused.
 2. `jarvis install <github-url>` (M5.3) → clones, pins the commit SHA, shows declared
    permissions for approval, installs. No auto-update.
 
-Either way, approve it explicitly:
+Either way, approve it explicitly — from the app's **Extensions panel** (the puzzle icon
+in the header; a badge flags anything awaiting review) or the CLI:
 
 ```sh
 jarvis extensions list                 # what's installed, and its status
@@ -39,8 +40,14 @@ jarvis extensions approve <name>       # prints what it declares, then asks
 jarvis extensions revoke <name>
 ```
 
+Both show you the declared permissions and the effective risk of each tool before asking,
+and both key the approval to the extension's exact bytes. Approving in the panel loads the
+extension immediately — no restart. Revoking removes its tools immediately too, but code
+it already ran at import stays in memory until you restart; the panel says so.
+
 Statuses you may see: `pending` (never approved), `approved`, `changed` (approved once,
-edited since), `unsupported_platform`, `invalid` (with a code saying why).
+edited since — the version you approved keeps running until you re-approve or revoke),
+`unsupported_platform`, `invalid` (with a code saying why).
 
 ## Manifest
 
