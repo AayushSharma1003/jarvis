@@ -17,6 +17,7 @@
 import { create } from "zustand";
 import i18n from "../i18n";
 import { getBackendInfo, onBackendExited, showWindow } from "../lib/ipc";
+import { MAX_TOASTS, notificationText } from "../lib/notifications";
 import { JarvisSocket, type SocketStatus } from "../lib/ws";
 import type {
   ConfirmAnswer,
@@ -24,6 +25,7 @@ import type {
   ConversationSummary,
   ExtensionInfo,
   HistoryTurn,
+  JarvisNotification,
   ModelEntry,
   RamTier,
   ReadinessCheck,
@@ -88,6 +90,10 @@ export interface ConversationState {
   // An approve/revoke failure, kept apart from `errorCode` so a rejected
   // approval surfaces in the panel that caused it, not the chat's error banner.
   extensionError: string | null;
+  // Unsolicited messages from extensions, newest last (M5.4). Transient: the
+  // toast that shows one dismisses itself, and nothing here is persisted — a
+  // timer you already heard is not history.
+  notifications: JarvisNotification[];
   init: () => Promise<void>;
   send: (text: string) => void;
   stop: () => void;
@@ -104,6 +110,7 @@ export interface ConversationState {
   approveExtension: (name: string, digest: string) => void;
   revokeExtension: (name: string) => void;
   clearExtensionError: () => void;
+  dismissNotification: (id: string) => void;
 }
 
 let socket: JarvisSocket | null = null;
@@ -196,6 +203,7 @@ export const useConversation = create<ConversationState>((set, get) => ({
   pendingConfirms: [],
   extensions: [],
   extensionError: null,
+  notifications: [],
 
   init: async () => {
     if (initStarted) return;
@@ -354,6 +362,9 @@ export const useConversation = create<ConversationState>((set, get) => ({
   },
 
   clearExtensionError: () => set({ extensionError: null }),
+
+  dismissNotification: (id: string) =>
+    set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) })),
 }));
 
 /** Extension approve/revoke failures, routed to the panel instead of the chat
@@ -450,6 +461,24 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       // stays in step with the first. The panel reads this directly.
       set({ extensions: msg.extensions });
       break;
+    case "notification": {
+      const { type: _n, ...notification } = msg;
+      set((s) => ({
+        notifications: [...s.notifications, notification].slice(-MAX_TOASTS),
+      }));
+      if (msg.speak) {
+        // Same arrangement as the confirm prompt above: the backend owns the
+        // speaker, this side owns the words. `notification_id` goes back with
+        // it so a second window answering the same broadcast is dropped rather
+        // than saying the line twice.
+        socket?.send({
+          type: "voice.say",
+          text: notificationText(notification),
+          notification_id: msg.id,
+        });
+      }
+      break;
+    }
     case "models":
       set({
         models: msg.models,

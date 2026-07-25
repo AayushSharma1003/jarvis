@@ -1,9 +1,10 @@
 # Extension Authoring Guide
 
-> Status: the manifest, the content-keyed approval, the loader (M5.1) and the in-app
-> approval panel (M5.2) are built. `jarvis install` is M5.3; until then, install by
-> hand (below). The default extensions in [`extensions/`](../extensions/) are M5.4 —
-> their manifests are written, their code is not.
+> Status: the manifest, the content-keyed approval, the loader (M5.1), the in-app
+> approval panel (M5.2) and the host API (M5.4) are built, and
+> [`timers-reminders`](../extensions/timers-reminders/) is a working reference you can
+> read. `jarvis install` is M5.3; until then, install by hand (below).
+> `calendar-macos` is still a manifest with no code.
 
 An extension is a folder containing `manifest.toml` + `extension.py`, living in the user's extensions directory (`<data dir>/extensions`, which is **permanently outside** the filesystem sandbox — see [security-model.md](security-model.md) §2 and §5).
 
@@ -27,12 +28,23 @@ tool name already taken by the core or another extension is refused.
 ## Install paths
 
 1. Drop the folder in the extensions directory. It is **detected**, not trusted — it
-   shows up as `pending` and does not load until approved.
+   shows up as `pending` and does not load until approved. For the bundled defaults
+   that means copying them out of the repo — nothing does this for you yet, and
+   packaging them with the installer is still open:
+
+   ```sh
+   cp -R extensions/timers-reminders \
+     ~/Library/Application\ Support/jarvis/extensions/   # macOS
+   ```
 2. `jarvis install <github-url>` (M5.3) → clones, pins the commit SHA, shows declared
    permissions for approval, installs. No auto-update.
 
 Either way, approve it explicitly — from the app's **Extensions panel** (the puzzle icon
-in the header; a badge flags anything awaiting review) or the CLI:
+in the header; a badge flags anything awaiting review) or the CLI. Revoking is not the
+same as unloading: it removes your tools, but a thread you started keeps running until
+Jarvis restarts, so a revoked `timers-reminders` still fires the timers it had pending.
+The panel says as much; closing that gap properly needs the per-extension subprocess
+that §5 says would also be needed to enforce `[permissions]`.
 
 ```sh
 jarvis extensions list                 # what's installed, and its status
@@ -93,6 +105,86 @@ no third-party imports beyond what the sidecar already ships.
 **No symlinks anywhere in the folder.** A symlinked file would be imported while its
 real bytes live outside the folder, free to change after approval, so the whole
 extension is refused (`EXTENSION_UNSAFE_TREE`).
+
+**Your description is the docstring's first paragraph, and there are no per-argument
+descriptions.** `Registry.register` takes `inspect.getdoc(fn).split("\n\n")[0]`, and
+the loader has no `params` to pass, so anything the model needs to know about an
+argument's *format* has to be in that first paragraph — a blank line before it and
+the model is guessing. This is why `set_reminder`'s docstring reads the way it does.
+
+## The host API (M5.4)
+
+Everything above describes a tool: the model calls it, it returns a string. That is
+the whole contract, and it cannot express anything that happens **later** — a timer
+firing has no request in flight and nothing waiting on a return value. One module
+exists for that, and it is the only thing an extension is invited to import from the
+core:
+
+```python
+from jarvis_backend.extensions.host import notify, state_dir
+```
+
+### `notify(source, code, data=None, *, speak=False)`
+
+Tells the user something happened. Safe to call from **any thread** (a scheduler
+thread is the normal caller) and safe to call when nothing is listening.
+
+`code` is machine-readable and the **frontend owns the wording** — the same i18n rule
+the rest of the backend follows. `data` carries values to interpolate, and it is
+content the user supplied (a timer's label), never English you wrote. Add your codes
+to `app/src/i18n/en.json` under `notification.code.*`; one the UI has never heard of
+renders a neutral "<your extension> sent a notification" rather than a raw code.
+
+Pick the *message* in your extension rather than passing a maybe-empty field and
+letting the UI branch — `timers-reminders` emits `TIMER_FINISHED` or
+`TIMER_FINISHED_LABELED`, not one code with an optional label.
+
+`speak=True` asks Jarvis to say it out loud. That matters more than the toast: the
+backend owns the speaker, so a spoken notification reaches someone who minimised the
+window, and the toast does not.
+
+Bounds you should know about, none of them negotiable from your side:
+
+- **Rate limited globally** (10/minute). Rotating `source` does not help — the limit
+  is deliberately not per-source, because `source` is a string you chose and nothing
+  verifies it.
+- **`data` is sanitized**: non-JSON values become `repr`, long values are truncated,
+  and only the first dozen keys survive. A value `send_json` cannot encode would take
+  the WebSocket down, and that is not a failure your extension should be able to cause.
+- **It returns `""` when the notification was dropped.** There is nothing useful to do
+  about that; it is returned so tests can see it.
+
+### `state_dir(name)`
+
+A private, writable directory for your extension, created on demand.
+
+**Never write inside your own extension folder.** Your approval is keyed on a SHA-256
+of every file in it, so saving a file there changes the digest, flips you to `changed`,
+and stops you loading on the next start — an extension that un-approves itself the
+first time it saves anything. This directory is a sibling of `extensions/`, outside
+every hashed tree.
+
+### Resuming after a restart
+
+If you keep state that has to *act* later, remember that nothing will call you to wake
+it up. Your module body is the only code that runs on load, so a scheduler must be
+started from there when there is work pending — otherwise a reminder set yesterday
+sits in your state file forever and the only way to trigger it is for the user to
+happen to set a new one. See the bottom of `timers-reminders/extension.py`; that
+exact bug shipped for about an hour during M5.4 and was caught by restarting the app,
+not by any test.
+
+Prefer absolute deadlines (`time.time()`) and a poll over `threading.Timer`:
+`time.monotonic()` does not advance while macOS is asleep, so a countdown armed
+before a closed lid fires late by however long the machine slept.
+
+### What the host API is not
+
+It is a **convenience, not a boundary**. Your extension already runs in the sidecar
+process with everything it can do — it could reach the connection list by importing
+the server module, or open its own socket. A stable front door means you are not
+coupled to internals that move; it does not narrow what you are able to do, and
+nothing here should be read as a sandbox.
 
 Worked examples: [`extensions/timers-reminders/`](../extensions/timers-reminders/) (cross-platform reference) and [`extensions/calendar-macos/`](../extensions/calendar-macos/) (platform-gated + OS-permission reference).
 

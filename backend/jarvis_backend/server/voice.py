@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -27,6 +28,8 @@ from ..stt.transcriber import STTError
 from ..tts.base import TTSError
 from ..tts.chunker import SentenceChunker
 from . import protocol
+
+log = logging.getLogger(__name__)
 
 LEVEL_INTERVAL_S = 0.1  # 10 Hz UI level updates (sphere food)
 _LISTEN_LEVEL_GAIN = 6.0
@@ -147,6 +150,54 @@ class RealVoiceIO:
 
     def make_endpointer(self) -> Endpointer:
         return Endpointer()
+
+
+# `speak_line` shares RealVoiceIO's single cached Player with everything else
+# that speaks, so two announcements arriving together would splice their samples
+# into one stream. One at a time, in arrival order.
+_SPEAK_LOCK = asyncio.Lock()
+
+
+async def speak_line(state, text: str) -> None:
+    """Say one sentence outside a voice exchange (M5.4). Never raises.
+
+    An extension's timer fires when it fires — almost never during a spoken
+    turn — so `voice.say` needed somewhere to go when there is no sentence
+    queue to push into. The wording is still the frontend's: it renders the
+    sentence from a notification's `code` + `data` and hands it back, exactly
+    as it does for the confirm prompt (§ the i18n rule in CLAUDE.md).
+
+    **A live turn always wins**, and the check is across every connection, not
+    just the one that sent the message. The queue belongs to the *turn*, not to
+    the connection that happened to receive the broadcast, so a zombie window
+    answering must not synthesize behind the back of the window that is
+    mid-exchange: two voices would interleave in the shared player, and while
+    the mic is still open the synthesis would starve the capture (gotcha 11).
+
+    Failure is silence. A missing Kokoro, an unavailable speaker or a text-only
+    build all mean the user gets the toast without the announcement — the same
+    degradation as the readiness gate, where missing voice models warn rather
+    than block.
+    """
+    for conn in list(getattr(state, "connections", [])):
+        queue = getattr(conn, "voice_sentences", None)
+        if queue is not None:
+            queue.put_nowait(text)
+            return
+
+    io = state.voice_io
+    if io is None:
+        return
+    async with _SPEAK_LOCK:
+        try:
+            player = io.player()
+            player.start()
+            samples, _sr = await asyncio.to_thread(io.synthesize, text)
+            if samples.size:
+                player.enqueue(samples)
+                await player.drain()
+        except Exception:  # noqa: BLE001 - an announcement is never worth a crash
+            log.warning("could not speak a notification", exc_info=True)
 
 
 async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> None:

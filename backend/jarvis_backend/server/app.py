@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,12 +29,37 @@ from ..wake.detector import WakeError
 from ..wake.service import WakeService
 from . import protocol, readiness
 from .auth import origin_allowed, token_valid
-from .voice import VoiceIO, run_voice_exchange
+from .voice import VoiceIO, run_voice_exchange, speak_line
 
 AUTH_TIMEOUT_S = 5.0
 WS_POLICY_VIOLATION = 1008
 # Matches the auto-title length in _generate / run_voice_exchange.
 TITLE_MAX_CHARS = 80
+# How many spoken-notification ids to remember. Only needs to outlive the
+# window in which sibling UIs answer the same broadcast — seconds — so this is
+# generous. Bounded because a backend that runs for weeks would otherwise grow
+# this set forever, the same reasoning as MAX_SESSION_GRANTS.
+MAX_SPOKEN_NOTIFICATIONS = 64
+
+
+def _claim_spoken(state: AppState, notification_id: Any) -> bool:
+    """May this connection speak that notification? True for the first asker.
+
+    A notification is broadcast to every open window and each one answers with
+    `voice.say`, so without this Jarvis says the same sentence once per window
+    — gotchas 8 and 9's zombie-connection problem with a speaker attached.
+
+    An absent id always wins: the confirm prompt (M4.2) carries none and may
+    legitimately repeat.
+    """
+    if not isinstance(notification_id, str) or not notification_id:
+        return True
+    if notification_id in state.spoken_notifications:
+        return False
+    state.spoken_notifications[notification_id] = None
+    while len(state.spoken_notifications) > MAX_SPOKEN_NOTIFICATIONS:
+        state.spoken_notifications.popitem(last=False)
+    return True
 
 
 @dataclass
@@ -89,6 +115,11 @@ class AppState:
     # that declared `read_file` and lost the name conflict never claimed it, and
     # unregistering it would tear out the sandboxed core tool that won.
     extensions_loaded: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Notification ids already spoken (M5.4). Shared across connections on
+    # purpose: the double-speak this prevents comes from two *different*
+    # windows answering one broadcast, so a per-connection memo would catch
+    # nothing. Ordered so the oldest can be evicted; the value is unused.
+    spoken_notifications: OrderedDict[str, None] = field(default_factory=OrderedDict)
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -407,11 +438,23 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
 
         elif mtype == "voice.say":
             # The frontend owns all wording (i18n), but TTS lives here, so the
-            # client hands us the sentence to speak. Only meaningful during a
-            # live spoken turn; otherwise there is no player and nothing to say.
+            # client hands us the sentence to speak.
+            #
+            # M5.4: this used to be meaningful only during a live spoken turn,
+            # and dropped everything else. A notification fires when it fires —
+            # almost never mid-turn — so the idle case now goes to `speak_line`,
+            # which owns the "is any turn live?" question across every
+            # connection rather than just this one.
             text = msg.get("text")
-            if isinstance(text, str) and text.strip() and conn.voice_sentences is not None:
-                conn.voice_sentences.put_nowait(text.strip())
+            # The claim is taken only once the line is known to be sayable —
+            # otherwise a window sending an empty `text` with a real id would
+            # burn the claim and silence the window that had the sentence.
+            if isinstance(text, str) and text.strip():
+                if _claim_spoken(state, msg.get("notification_id")):
+                    if conn.voice_sentences is not None:
+                        conn.voice_sentences.put_nowait(text.strip())
+                    else:
+                        await speak_line(state, text.strip())
 
         elif mtype == "chat.send":
             if conn.busy:

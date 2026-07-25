@@ -249,6 +249,34 @@ source: what this is, who wrote it, which commit, and what it says it needs.
 the record already). **No extension auto-update, ever** — an extension that can update
 itself is an extension whose approved bytes are a suggestion.
 
+### The host API (M5.4), and why it changes nothing here
+
+`extensions/host.py` gives an extension two functions — `notify()` and `state_dir()` —
+because the tool contract could not express a timer: something has to happen *later*,
+with no model call in flight. `timers-reminders` is the first extension to need it.
+
+It is a **convenience, not a boundary, and it does not widen anything**. An approved
+extension already runs in this process with everything the process can do; it could
+reach the connection list by importing the server module or open its own socket. What
+the front door buys is that honest extensions are not coupled to internals that move.
+The bounds on it — a global 10/minute rate limit, `data` sanitized to something
+`send_json` can encode, `state_dir` names validated — are **reliability** properties:
+they stop a badly-written extension taking the sidecar or the WebSocket down with it.
+The rate limit is deliberately global rather than per-source, because `source` is a
+string the extension chose and nothing verifies it, so a per-source budget would be
+evaded by rotating the name.
+
+Notifications carry **codes and data, never sentences**, so §5 inherits the same i18n
+rule as everything else: the frontend renders the words, and a code it has never seen
+degrades to a neutral line rather than showing the user a raw identifier. `speak=True`
+is answered by the UI sending the sentence *it* rendered back as `voice.say`, which is
+what keeps English out of the backend; the notification's id makes that single-use so
+three open windows do not say the same line three times.
+
+`state_dir()` exists to close a trap rather than to add a capability: an extension
+writing beside its own `extension.py` changes the tree digest, so it would silently
+un-approve itself the first time it saved anything.
+
 **Residuals, stated rather than hidden:**
 
 - **`__pycache__` is excluded from the digest**, because it is written by importing the
@@ -280,4 +308,5 @@ itself is an extension whose approved bytes are a suggestion.
 - **A `safe` tool still reads.** `read_file` needs no confirmation by design (§2a), so a manipulated model can read any file under a root and put its contents in the conversation before anything is shown to the user. Taint makes the *consequences* confirm; it does not un-read the file. With a cloud backend that content has also left the machine.
 - **Only macOS has been exercised by hand.** Windows and Linux path handling — drive letters, UNC paths, 8.3 short names, `\\?\` prefixes, case rules that differ per volume — is covered by CI's test run and nothing else. The deny-side folding above closes the case-insensitivity class generically, but no one has run a file tool on those platforms.
 - **An approved extension is not sandboxed at all.** It runs in the sidecar process with everything that process can do, so its `[permissions]` declarations are advisory. What is enforced is *which bytes* run and *whether* they run — see §5, which leads with this rather than burying it.
+- **Revoking an extension removes its tools; it does not unload it.** A thread the extension started keeps running until Jarvis restarts, so a revoked `timers-reminders` still fires the timers it had pending — verified by hand in M5.4, not theorised. The panel says this in as many words rather than implying revoke is a full removal, and suppressing the *symptom* (dropping notifications from unloaded extensions) was deliberately rejected: it would make revoke look complete while the extension is still running, which is a worse lie than the honest caveat. A real fix is the per-extension subprocess that enforcing `[permissions]` would need anyway.
 - **`web_fetch` has a DNS-rebinding TOCTOU window.** The SSRF guard checks the IPs it resolves, but httpx resolves again at connect time; a 0-TTL attacker DNS could differ between the two. The direct vectors (internal IPs/hosts, metadata, redirect-to-internal) are closed — see §4 for the full note and why closing rebinding is deferred.

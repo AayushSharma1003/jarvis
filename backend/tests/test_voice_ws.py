@@ -488,28 +488,39 @@ def test_voice_say_speaks_a_line_the_frontend_wrote(make_voice_client, curated):
     assert prompt in io.synthesized
 
 
-def test_voice_say_outside_a_spoken_turn_is_ignored(make_voice_client):
-    """No live exchange means no player and nothing to interrupt. It must be a
-    no-op, not an error and certainly not a crash."""
+def test_voice_say_outside_a_spoken_turn_is_spoken_standalone(make_voice_client):
+    """**Changed in M5.4.** This used to assert the line was ignored.
+
+    Through M4.2 the only caller was the confirm prompt, which is always sent
+    mid-turn, so "no live exchange ⇒ drop it" cost nothing. A notification
+    fires when it fires, so dropping it would have swallowed the entire
+    announcement. It now goes to `speak_line`; the no-crash half of the
+    original property is still asserted here, and the routing is covered in
+    test_notification_ws.py.
+    """
     io = FakeVoiceIO(utterance_script())
     client, _ = make_voice_client(io)
     with connect(client) as ws:
         ws.send_json({"type": "voice.say", "text": "nobody is listening"})
         ws.send_json({"type": "ping"})
         assert ws.receive_json()["type"] == "pong"
-    assert io.synthesized == []
+    assert io.synthesized == ["nobody is listening"]
 
 
 def test_voice_say_is_released_when_the_turn_ends(make_voice_client):
     """The queue handle must not outlive the exchange, or a later voice.say
-    would push into a dead turn's queue and be silently swallowed."""
+    would push into a dead turn's queue and be silently swallowed.
+
+    Since M5.4 that release is what routes a later line to the standalone
+    player instead, so the handle being cleared is observable in two ways.
+    """
     io = FakeVoiceIO(utterance_script())
     client, state = make_voice_client(io)
     with connect(client) as ws:
         ws.send_json({"type": "voice.start"})
         drain_voice(ws)
         assert state.connections[0].voice_sentences is None
-        ws.send_json({"type": "voice.say", "text": "too late"})
+        ws.send_json({"type": "voice.say", "text": "after the turn"})
         ws.send_json({"type": "ping"})
         assert ws.receive_json()["type"] == "pong"
-    assert "too late" not in io.synthesized
+    assert io.synthesized[-1] == "after the turn"

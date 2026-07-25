@@ -310,6 +310,33 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     walk-through is not ceremony. Regression:
     `test_re_approving_a_changed_extension_loads_the_new_bytes`, which fails
     without the pre-unregister loop.
+24. **Lazy initialisation loses the work that has to resume itself** (M5.4,
+    `extensions/timers-reminders/extension.py`). The extension was lazy
+    everywhere on principle — importing *is* executing (§5), so a module body
+    should do as little as it can — and the scheduler thread started inside
+    `add()`. That is correct until a restart: the pending timers are read back
+    off disk and then **nothing ever looks at them again**, because nobody
+    calls `add()`. A reminder set yesterday never fires, and the only way to
+    wake it is to set a *new* timer, which no user would think to do. Fixed
+    with one `_schedule()` call at the bottom of the module plus an
+    `_ensure_thread()` when the loaded schedule is non-empty. **The lesson is
+    about the tests, not the code:** every unit test drove `tick(now)` by hand,
+    so they proved the firing logic perfectly and never once proved that
+    anything *calls* it — the gap between "the function works" and "the function
+    runs". Caught by restarting the real backend with a live timer and watching
+    the deadline pass with the entry still sitting in `timers.json`. Same shape
+    as gotcha 23: the thing a test suite structurally cannot see. Regression:
+    `test_a_restored_timer_wakes_the_scheduler_on_load`, which asserts
+    `_SCHEDULE is not None` **before** calling `_schedule()` — checking after
+    would build it in the test and pass with the fix reverted.
+25. **`time.monotonic()` does not advance while macOS sleeps, so
+    `threading.Timer` is wrong for anything a laptop might sleep through.**
+    Arm a one-hour timer, shut the lid for two hours, and it fires an hour
+    after the lid opens. Every deadline in `timers-reminders` is therefore an
+    absolute `time.time()` fired by a 1 s poll, never a countdown — which is
+    also what makes persistence correct, since an absolute timestamp survives a
+    restart and a countdown does not. The poll body is a pure `tick(now)`, so
+    tests inject a clock instead of sleeping.
 
 ## Repo map
 
@@ -565,6 +592,49 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    that fails without the fix (gotcha 23). **507 backend tests** (26 new), 16 new
    mutations proven, tsc clean. Still out of the box: no approvals ⇒ one new header
    button and nothing else changes.
+   ✅ **M5.4 default extension `timers-reminders` DONE** (2026-07-25) — the first
+   extension that *does* something, and the milestone that found the extension API
+   was request/response only. **The headline finding:** a tool takes a call and
+   returns a string, and a timer's whole job happens *later*, with no model call in
+   flight. There was no notification path anywhere in the stack (backend, frontend
+   or Rust), and `voice.say` only worked mid-turn. So M5.4 adds the smallest surface
+   that closes it: `extensions/host.py` (`notify` + `state_dir`, the only sanctioned
+   thing an extension imports), a `notification` WS broadcast, a `NotificationToast`,
+   and one new branch in `voice.say` routing to a new `speak_line()` when no turn is
+   live. **The words still never originate in the backend** — the UI renders the
+   sentence from `code` + `data` and sends it back as `voice.say`, the M4.2 confirm
+   pattern — and the notification's id makes that **single-use**, so three open
+   windows do not say the same line three times.
+   **Risk levels: all four stay `safe`, decided not inherited** (reasoning recorded
+   in `manifest.toml`). It only holds because of gotcha 21: an extension's `safe` is
+   not read-only, so these already confirm once the conversation is tainted. A
+   dialog in front of "set a timer for ten minutes" in a *clean* chat is the
+   confirmation fatigue §1 names as an attack surface, and the real risk — a model
+   looping `set_timer` — is a volume problem, which this codebase answers with a cap
+   (`MAX_PENDING = 32`, plus a global 10/min notification rate limit).
+   **Live-verified** (browser build, scratch dirs, qwen3:4b), and it earned it:
+   *(a)* **open item 7 closed** — a model drove an approved extension's tool
+   end-to-end for the first time, timer → toast a minute later. *(b)* **First live
+   proof of gotcha 21**: `web_fetch` example.com, then ask for a timer in the same
+   chat → the ROUTINE tool showed a permission dialog with the amber provenance
+   block and **no "allow this session" button**. *(c)* Two windows open, one
+   notification: **both** received it (fan-out, not `connections[-1]`) and **exactly
+   one** spoke it. *(d)* Editing a byte flipped it to `changed`, the overdue timer
+   stayed frozen until re-approval, then fired on load.
+   **The live run caught a real bug** — see gotcha 24: a timer survived a restart and
+   then never fired, because the scheduler thread only started inside `add()` and
+   nothing calls `add()` after a restart. Every unit test drove `tick()` by hand, so
+   they proved the firing logic and never that anything calls it. **593 backend
+   tests** (86 new), 43 mutations proven, ruff + tsc clean.
+   **Known limits, recorded rather than implied away:** a fired timer reaches a
+   hidden window only *audibly* (no OS-level toast without `tauri-plugin-notification`,
+   deliberately out of scope) and only while a UI is connected to answer `voice.say` —
+   the same dependency shape as `wake.detected`; and **revoke removes tools but
+   cannot unload code**, so a revoked extension's already-running scheduler still
+   fires its pending timers (observed, not theorised — suppressing the notification
+   was rejected as making revoke *look* complete while the extension still runs).
+   Not done: `calendar-macos` (pyobjc — its own conversation), and nothing yet copies
+   the bundled defaults into the data dir (documented `cp`, belongs with packaging).
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
@@ -685,22 +755,31 @@ explicit goal now, and it raises the bar on README/docs quality.
 ## Immediate next action
 
 **Phases 1-4 complete; Phase 5 in progress.** M5.1 (manifest, content-keyed
-approval, loader, risk floors, `jarvis extensions` CLI) and M5.2 (the in-app
-approval panel) are done and green — **507 backend tests, 2 Rust, tsc clean**. §5
-is fully built and live-verified; security-model.md and the code agree everywhere.
+approval, loader, risk floors, `jarvis extensions` CLI), M5.2 (the in-app approval
+panel) and M5.4 (`timers-reminders` + the host API) are done and green — **593
+backend tests, 2 Rust, ruff + tsc clean**. §5 is fully built and live-verified;
+security-model.md and the code agree everywhere.
 
 **Next, in the order that makes sense:**
-1. **M5.4 default extensions** — `timers-reminders` first (cross-platform
-   reference). **Revisit its risk levels when writing the code**: the committed
-   manifest declares `set_timer`/`set_reminder`/`cancel_timer` as `safe`, which
-   M5.1 made *safe-but-not-read-only* rather than wrong, but the author should
-   decide deliberately rather than inherit it. `calendar-macos` drags **pyobjc**
-   — a new dependency on a project that has been strict about them, and worth its
-   own conversation before it lands.
-3. **M5.3 `jarvis install <url>`** — the `source`/`commit` fields already exist in
+1. **M5.3 `jarvis install <url>`** — the `source`/`commit` fields already exist in
    the approval record. Needs a decision on shelling out to `git` (owner-approved:
-   yes, with a clear error code when absent).
-4. Branching UI, model catalog UI, "Hey Friday", opt-in VAD barge-in.
+   yes, with a clear error code when absent). Worth folding in: **nothing copies
+   the bundled defaults into the data dir**, so `extensions/timers-reminders/` is
+   source-only and installs by hand today (documented `cp` in extensions.md). That
+   gap belongs either here or with packaging, and it needs a decision about where
+   the folder lives inside a PyInstaller onedir bundle.
+2. **`calendar-macos`** — the other default extension, still a manifest with no
+   code. It drags **pyobjc**, a new dependency on a project that has been strict
+   about them, and it is the reference for platform gating + a TCC declaration.
+   Worth its own conversation before it lands.
+3. Branching UI, model catalog UI, "Hey Friday", opt-in VAD barge-in.
+
+**Two small things M5.4 noticed and did not fix** (neither blocks anything):
+`extension.loadedNote` ("Active") is defined in en.json but never rendered — the
+panel only shows the *not*-loaded note, so an approved-and-working extension reads
+as plain "Approved"; and `security/permissions.py`'s module docstring still cites
+`send_notification` as its example of a `safe` core tool, which has never existed
+(the M5.4 notification path is an extension-facing host call, not a tool).
 
 **Known M5.1 limits, deliberate:** single-file `extension.py` only (`sys.path` is
 untouched, because an extension shipping `json.py` would shadow the stdlib
@@ -899,6 +978,15 @@ hang it off.
    and fetched `http://example.com/` successfully with HTML stripped to text and
    `taint_source` set. Outstanding: a spoken/typed "run git status" and "fetch
    <url>" end-to-end through qwen3:4b in the real app, watching the dialog.
+7. **New (M5.2): the extensions panel has only been seen in a browser-hosted
+   build, not the real WKWebView** — same caveat as item 4's confirm dialog. The
+   full flow was driven with the preview browser against a real scratch backend
+   (pending → detail card → approve-loads-live → changed → revoke), zero console
+   errors, but nobody has clicked it in the packaged app.
+   ✅ **The second half of this item is CLOSED (M5.4, 2026-07-25):** qwen3:4b
+   drove `set_timer` end-to-end in a browser-hosted build against a scratch
+   backend — tool span, the timer firing a minute later, the toast. See the M5.4
+   entry below. Still open: nobody has clicked the panel in the real WKWebView.
 
 **Live-verified in M4.3** (browser-hosted build, scratch sandbox, qwen3:4b,
 2026-07-23): a read with **no dialog**, a write in the same conversation

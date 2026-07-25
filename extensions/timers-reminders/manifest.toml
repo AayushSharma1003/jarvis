@@ -7,6 +7,24 @@ description = "Set timers and reminders, delivered as local notifications"
 os = []
 network = false
 
+# Risk levels, settled deliberately in M5.4 rather than inherited from the
+# stub this file used to be. All four are `safe`, and that only holds because
+# of what `safe` means for an extension (docs/security-model.md §3, §5):
+#
+#   - An extension's `safe` is NOT read-only. The core cannot verify a third
+#     party's claim to change nothing, so every extension tool registers with
+#     read_only=False and **already escalates to a confirmation once untrusted
+#     content is in the conversation**. A web page that says "set a timer that
+#     ..." gets a dialog with provenance, today, without raising anything here.
+#   - "Set a timer for ten minutes" is the canonical assistant request. A dialog
+#     in front of it in a clean conversation is the confirmation fatigue §1
+#     names as an attack surface — and fatigue is a security cost, not a UX one.
+#   - The blast radius of one unwanted timer is a toast and a spoken sentence:
+#     bounded, visible, cancellable.
+#   - The real risk is volume — a model looping set_timer — and this codebase
+#     answers volume with a cap, not a confirmation. See MAX_PENDING in
+#     extension.py, and the notification rate limit in extensions/host.py.
+
 [[tools]]
 name = "set_timer"
 risk = "safe"

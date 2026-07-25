@@ -106,6 +106,22 @@ export interface ExtensionInfo {
   tools: ExtensionTool[];
 }
 
+// Something happened that the user should be told about, with no request in
+// flight — an extension's timer firing (M5.4). Unlike every other server
+// message this one is unsolicited, which is why it carries its own id.
+//
+// `code` + `data` rather than a sentence: the backend emits machine-readable
+// codes and this side owns every word (the i18n rule). `data` is display
+// payload the user supplied — a timer's label — already truncated and
+// JSON-safe by the time it arrives (extensions/host.py sanitizes it).
+export interface JarvisNotification {
+  id: string;
+  source: string; // the extension that sent it; untrusted, display only
+  code: string;
+  data: Record<string, string | number | boolean | null>;
+  speak: boolean;
+}
+
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -156,6 +172,7 @@ export type ServerMessage =
   | ({ type: "confirm.request" } & ConfirmRequest)
   | { type: "confirm.close"; id: string; reason: string }
   | { type: "extensions"; extensions: ExtensionInfo[] }
+  | ({ type: "notification" } & JarvisNotification)
   | { type: "error"; code: string; detail?: string };
 
 export type ClientMessage =
@@ -179,7 +196,11 @@ export type ClientMessage =
   | { type: "conversation.delete"; conversation_id: string }
   | { type: "wake.set"; enabled: boolean }
   | { type: "confirm.respond"; id: string; answer: ConfirmAnswer }
-  | { type: "voice.say"; text: string }
+  // `notification_id` makes the backend's speech single-use: the notification
+  // went to every open window and each one answers, so without it Jarvis says
+  // the same line once per window. Absent for the confirm prompt, which may
+  // legitimately repeat.
+  | { type: "voice.say"; text: string; notification_id?: string }
   | { type: "extensions.list" }
   | { type: "extensions.approve"; name: string; digest: string }
   | { type: "extensions.revoke"; name: string };

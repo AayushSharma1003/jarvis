@@ -34,6 +34,7 @@ from .config import (
     load_wake_enabled,
     save_wake_enabled,
 )
+from .extensions import host
 from .extensions.approvals import ApprovalStore
 from .extensions.loader import discover, load_approved
 from .llm.ollama import OllamaBackend
@@ -161,6 +162,13 @@ def run() -> None:
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
 
     async def serve() -> None:
+        # The extension host needs the *running* loop, so it binds here rather
+        # than beside confirm.bind() above — an extension's scheduler thread
+        # hands work back with call_soon_threadsafe and there is no loop to
+        # hand it to until now. Everything loaded before this point (which is
+        # every extension: load_extensions runs at composition time) simply
+        # notifies into the void, which is correct — there are no UIs yet.
+        host.bind(asyncio.get_running_loop(), lambda: state.connections)
         watchdog = None
         if parent := os.environ.get("JARVIS_PARENT_PID"):
             watchdog = asyncio.ensure_future(_watch_parent(int(parent), server))

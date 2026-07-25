@@ -53,7 +53,12 @@
       "URL_BLOCKED": "that address points inside your own network, so it's blocked",
       "FETCH_TIMEOUT": "the page took too long to load",
       "FETCH_FAILED": "the page couldn't be fetched",
-      "UNKNOWN": "unknown problem"
+      "UNKNOWN": "unknown problem",
+      "TIMER_INVALID_DURATION": "that isn't a length of time it can use",
+      "TIMER_LIMIT_REACHED": "there are already too many timers waiting",
+      "TIMER_NOT_FOUND": "there's no timer with that id",
+      "REMINDER_TIME_INVALID": "that isn't a date and time it can read",
+      "REMINDER_TIME_IN_PAST": "that time has already passed"
     }
   },
   "confirm": {
@@ -119,6 +124,16 @@
       "EXTENSION_IMPORT_FAILED": "its code didn't load",
       "EXTENSION_TOOL_MISSING": "a tool it promised isn't in its code",
       "EXTENSION_TOOL_CONFLICT": "a tool name is already taken"
+    }
+  },
+  "notification": {
+    "dismiss": "Dismiss",
+    "unknown": "{{source}} sent a notification ({{code}})",
+    "code": {
+      "TIMER_FINISHED": "Your {{minutes}}-minute timer is up.",
+      "TIMER_FINISHED_LABELED": "Timer finished: {{label}}",
+      "REMINDER_DUE": "Reminder: {{text}}",
+      "REMINDER_DUE_LATE": "Reminder from {{due}}: {{text}}"
     }
   },
   "conversation": {

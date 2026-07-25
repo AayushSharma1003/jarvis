@@ -7,6 +7,7 @@ import { ExtensionsPanel, pendingReviewCount } from "../settings/ExtensionsPanel
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { NotificationToasts } from "./NotificationToast";
 import { ConversationList } from "./ConversationList";
 import { MessageList } from "./MessageList";
 
@@ -285,6 +286,9 @@ export function ChatView() {
       </div>
 
       {extensionsOpen && <ExtensionsPanel onClose={() => setExtensionsOpen(false)} />}
+
+      {/* Before the confirm dialog, so a toast can never sit over one. */}
+      <NotificationToasts notifications={s.notifications} onDismiss={s.dismissNotification} />
 
       {/* Outermost so it covers the sidebar AND the extensions panel — a
           permission dialog you can click around is not a permission dialog. One

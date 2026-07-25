@@ -7,7 +7,7 @@ Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
 Server → client: ready, chat.start, chat.delta, chat.done, models,
                  conversations, history, error, pong, tool.span,
                  voice.state, stt.text, voice.level, wake.status, wake.detected,
-                 confirm.request, confirm.close, extensions
+                 confirm.request, confirm.close, extensions, notification
 
 Errors carry machine-readable codes only; the frontend owns the wording (i18n).
 
@@ -134,6 +134,39 @@ def extensions(rows: list[dict[str, Any]]) -> dict[str, Any]:
     backend-mints/client-echoes shape as a confirm correlation id.
     """
     return {"type": "extensions", "extensions": rows}
+
+
+def notification(
+    notification_id: str,
+    source: str,
+    code: str,
+    data: dict[str, Any],
+    speak: bool,
+) -> dict[str, Any]:
+    """Something happened that the user should be told about, right now (M5.4).
+
+    Unlike every other server→client message this one is not the answer to
+    anything: an extension's timer fires with no request in flight, which is the
+    whole reason extensions/host.py exists.
+
+    `code` + `data` rather than a sentence, per the i18n rule — the frontend
+    owns the wording and interpolates the values. `data` is display payload the
+    user supplied (a timer's label), never English this process authored.
+
+    `speak` asks the UI to have Jarvis say it. The UI answers by sending the
+    sentence it rendered back as `voice.say`, so the words still never
+    originate in the backend. `id` is what makes that single-use: the message
+    goes to every open window, and without it three windows would speak the
+    same line three times.
+    """
+    return {
+        "type": "notification",
+        "id": notification_id,
+        "source": source,
+        "code": code,
+        "data": data,
+        "speak": speak,
+    }
 
 
 def voice_state(state: str, reason: str = "") -> dict[str, Any]:
