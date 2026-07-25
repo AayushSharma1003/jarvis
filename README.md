@@ -10,7 +10,7 @@ and no network traffic you didn't ask for.
 
 <!-- DEMO GIF: record "Hey Jarvis" → question → spoken answer, sphere reacting. -->
 
-> **Status: pre-alpha, 4 of 6 phases complete, phase 5 underway.** The voice loop is real
+> **Status: pre-alpha, 5 of 6 phases complete, phase 6 (ship) underway.** The voice loop is real
 > and works end to end on an 8 GB M2: wake word, endpointing, transcription, local LLM,
 > streaming speech, barge-in, and an audio-reactive sphere. The permission engine, the
 > filesystem sandbox, taint tracking and the SSRF guard are **built and enforcing**, and
@@ -35,7 +35,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **687 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
+| Backend test suite | **705 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
 
 Four decisions this project is actually about:
 
@@ -74,7 +74,7 @@ Four decisions this project is actually about:
 | **Extensions** | ✅ working | Manifest, content-keyed approval, the loader, an in-app approval panel, `jarvis install <url>` and a host API for extensions that need to speak up on their own. Approving is two steps (a detail card of declared permissions and effective risks, then Approve) and keyed to the extension's exact bytes; it loads live, no restart. Install only accepts `http(s)` — `git clone 'ext::sh -c …'` executes the command — and names the folder from the manifest, never the URL. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
 | **Timers & reminders** | ✅ working | The reference extension, and the one that proved the extension API needed an escape hatch: a tool returns a string, but a timer fires *later*. Deadlines are absolute wall-clock (macOS's monotonic clock stops while the lid is shut) and survive a restart; when one fires, Jarvis shows a toast and says it out loud. |
 | **Branching** | ✅ working | Edit a question or regenerate an answer and it forks a sibling turn rather than overwriting anything; `‹ 2/3 ›` moves between the alternatives, landing on each branch's *end* rather than the fork point. The message tree has been immutable and branching-ready since day 1 — this is the UI that finally reaches it, and the old path comes back verbatim. |
-| **Installers** | 🚧 phase 6 | The release workflow already builds unsigned bundles for all three OSes on a tag. |
+| **Installers** | 🚧 phase 6 | The macOS `.app` and `.dmg` and the Windows `.msi`/`.exe` build on a tag; the Linux `.deb` does too, with the AppImage step still being fixed. No release has been published yet, so nothing here has been installed by a stranger — which is exactly the part phase 6 is for. |
 
 **Verified on macOS (Apple Silicon), hands-on.** Windows and Linux are built by CI every
 tag and are *not* yet hands-on tested — the cross-platform code paths exist, the hardware

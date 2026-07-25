@@ -4,14 +4,21 @@ Why this exists: `espeakng_loader.get_library_path()` builds
 `Path(__file__).parent / "libespeak-ng.<ext>"` at RUNTIME, so the library has
 to land beside the package in the frozen tree or the lookup misses it and the
 build ships mute -- gotcha 30, whose fix (`collect_data_files`) turned out to
-be macOS-only. On Linux PyInstaller's binary-vs-data reclassification takes a
-`.so` back out of `datas`, and it stops landing package-relative; the release
-workflow's Linux job failed on exactly that, on the first tag anyone ever
-pushed. Routing library files through `binaries` with an explicit destination
-says both things at once: treat it as a library, and put it *there*.
+work on macOS and Windows and never once on Linux.
 
-The classifier is tested rather than the spec because a .spec file is not
-importable; the spec is a thin caller of `split_collected`.
+The cause is a single asymmetry: `collect_data_files` excludes everything
+ending in `PyInstaller.compat.ALL_SUFFIXES`, which is Python's *extension
+module* suffix list -- `['.py', '.pyc', '.cpython-313-darwin.so', '.abi3.so',
+'.so']`. `.dylib` and `.dll` are not in it and are collected as data; a Linux
+shared library IS `.so`, so it is dropped **silently**. The release workflow's
+Linux job failed on exactly that, on the first tag anyone ever pushed.
+
+So libraries are collected explicitly from the installed package directory and
+stripped back out of the `collect_data_files` result on the platforms where it
+does return them.
+
+These are tested rather than the spec because a .spec file is not importable;
+the spec is a thin caller of `collect_package_libraries` + `drop_libraries`.
 """
 
 from __future__ import annotations

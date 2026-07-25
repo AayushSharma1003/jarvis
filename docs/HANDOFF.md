@@ -898,6 +898,119 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    by the app being quit, with a suggestive but unproven RSS decline. See
    "Immediate next action" A2; it has to be redone before gotcha 8 can be called
    closed.
+   ✅ **M6.1 verification debt + the Linux release DONE** (2026-07-26) — the
+   milestone where the packaged app stopped being something only the owner could
+   check. A `Jarvis.app` in `/Applications` has a bundle id and **can be driven
+   with computer-use**, so A1/A3/A4 were run by the session rather than narrated
+   to it. Three of the four items had never executed once.
+   **A1 — `show_window`, first execution ever.** Sent a `write_file` turn, closed
+   the window (hides to tray, `lib.rs:41`), and the confirm **revealed and focused
+   it**, in the real WKWebView, from `/Applications`, against a scratch data dir.
+   The dialog was correct in every particular M4.2 specified: amber PERMISSION
+   badge, Deny default-focused, path + content shown, and — the conversation being
+   clean — an "Allow this session" button. **A real finding came with it:** once
+   hidden, the tray icon is the app's ONLY way back. There is no Dock icon,
+   activating the app does not restore the window, and the Window menu carries no
+   entry for it (all three checked). That makes `show_window` load-bearing while
+   `lib.rs:13` discarded all three of its errors — they are logged now. The tray
+   icon itself was proved present by diffing the menu bar across a quit, and
+   `RunEvent::Exit` → `sidecar::kill` was proved clean (no orphaned sidecar) via
+   ⌘Q, which is the same handler the tray's Quit drives. **What is still
+   owner-gated:** the literal tray menu *clicks*. macOS hosts menu-bar extras
+   inside the Control Centre process, which is not grantable to computer-use, and
+   `osascript` is refused assistive access — so "Open Jarvis" and "Quit Jarvis"
+   remain two unclicked buttons. Two clicks, thirty seconds, owner's.
+   **A4 — `run_command` and `web_fetch` live, and the taint A/B.** `run_command`
+   showed the **RISKY** badge with **only two buttons** — no session grant, which
+   is `dangerous` enforced server-side — and returned `/Users/aayushsharma`,
+   live-confirming M4.4's documented "cwd = home" decision for the first time.
+   `web_fetch` showed the URL and fetched example.com for real. Then the same
+   `write_file` tool as A1, in the now-tainted conversation, rendered a **different
+   dialog**: the amber *"follows content Jarvis read from http://example.com"*
+   block, and the session button **gone**. Same tool, same risk level, two
+   dialogs — §3's escalation, isolated to one variable.
+   **A3 — a spoken file turn, heard end to end.** "Hey Jarvis" synthesised through
+   the speakers, heard by the real mic; whisper turned *"slash tmp slash j w slash
+   notes dot txt"* into `/tmp/jw/notes.txt`; `read_file` ran with **no dialog**
+   (read-only, correct); the `write_file` confirm carried **"from a spoken
+   request"** plus the taint block; the file landed with a genuine summary; and the
+   room recording caught Jarvis saying **"Summary written to /tmp/jw/summary.txt"**.
+   **A3 also found the one real UX gap of the milestone** — see "the sandbox is
+   undiscoverable" below.
+   **A2 — the wake soak, run for the full hour and CLOSED.** 60 minutes with the
+   window hidden to the tray, 30 samples, the app alive throughout — and then,
+   after **62 minutes occluded**, a synthesised "Hey Jarvis" through the speakers
+   woke it and the room recording caught **"The capital of France is Paris."**
+   spoken back. That reply is the proof, and nothing weaker is: it can only
+   happen if the WebContent process was alive enough to answer `wake.detected`
+   with `voice.start`. Gotcha 8's `backgroundThrottling: "disabled"` **holds after
+   an hour**. Worth noting the whole turn happened with **no window on screen at
+   all**, which is the real product experience rather than a test rig.
+   **The RSS story, settled.** The failed attempt's 38 MB → 5.2 MB monotonic
+   decline was **memory-pressure compaction, not suspension** — it ran at 17% free
+   memory. This run sat at 34-69% free and RSS *fluctuated* (3.4 → 18.4 at 16 min
+   → 4.4), which a suspended process does not do; it never approached the ~600 KB
+   signature the gotcha cites. **Do not read RSS as a suspension oracle** — it is
+   a memory-pressure reading with a suspension signal buried in it.
+   **One number that wants a cleaner re-measure**: sidecar CPU averaged **4.3%**
+   across the soak (2.8-6.9% per 10-minute window), against M3.1's 2.4% budget.
+   NOT a regression claim: this process had whisper, VAD and Kokoro resident from
+   the A3 voice turns, where M3.1 measured a fresh wake-only process, and gotcha 6
+   warns that idle CPU% on Apple Silicon reads high on E-cores. Re-measure on a
+   freshly started sidecar that has never spoken before treating it as real.
+   **B — the release workflow, and the Linux build that had never worked.** The
+   first `v*` tag anyone ever pushed **failed**, and `publish` never ran, which is
+   why no draft release or SHA256SUMS has ever existed. macOS built its dmg in
+   4m32s and Windows its msi/nsis; **Linux died in the sidecar step** on
+   `libespeak-ng.so: 1 data file(s) missing from the bundle` — gotcha 32, and
+   caught only because M6.0's gate is derived rather than a hardcoded file list.
+   Fixed; the second tag got Linux through the sidecar, through Rust, and through
+   `Jarvis_0.1.0_amd64.deb`, failing at `linuxdeploy` on the AppImage — a missing-
+   FUSE symptom on GitHub runners, answered with `APPIMAGE_EXTRACT_AND_RUN=1`
+   (**unverified**, needs one more tag; the fallback is shipping `.deb` alone).
+   **B1 — a dmg was downloaded, mounted and installed from, for the first time.**
+   `Jarvis_0.1.0_aarch64.dmg`, 72.7 MB, pulled from the rc2 run's artifact. It
+   mounts with the expected drag-to-install layout (`Jarvis.app` + an
+   `Applications` symlink), so create-dmg's AppleScript styling works on a CI
+   runner even though it times out locally (`-1712`). Installed to
+   `/Applications`, launched, sidecar spawned from the bundle, WS up, and a
+   wake-word voice turn completed end to end (*"Hello there friend."*).
+   **The half of B1 that mattered most: the >151-character install.** Copied to
+   `~/Downloads/jarvis-v0.1.0-macos-arm64-unsigned/Jarvis.app`, which puts the
+   espeak data path at **158 characters**, over gotcha 31's cliff. The frozen
+   sidecar started there, loaded Kokoro and synthesised with **no `exit(1)` and no
+   espeak error** — and the fallback is confirmed to have *fired*, not been
+   skipped: 121 files were copied to a 97-character path under the data dir.
+   **That branch had never executed in a real bundle before** — it is unit-tested,
+   and `/Applications` at 107 characters never reaches it.
+   **B3 — one honesty check passed, one is untestable this way.**
+   `codesign -dv` reports `Signature=adhoc`, `TeamIdentifier=not set`, exactly as
+   `unsigned-install.md` says. **But the Gatekeeper flow itself was NOT
+   reproduced**: `gh run download` does not set `com.apple.quarantine`, so the app
+   never went through the "Apple could not verify…" path the doc walks users
+   through. Only a browser download from a published release exercises that, and
+   there has never been one. The doc also still carries its
+   `<!-- SCREENSHOT PLACEHOLDERS -->`.
+   **C — the decisions, made.** `calendar-macos` and "Hey Friday" are **cut from
+   v1** and recorded in `architecture.md` rather than left implied. **Seventeen**
+   zero-byte files were deleted — HANDOFF's inventory had said fourteen and missed
+   `lib/api.ts`, `state/session.ts`, `state/settings.ts`. A 0-byte file the docs
+   describe as if it exists is worse than its absence on a public portfolio repo.
+   **705 backend tests** (18 new), 6 mutations proven, ruff + tsc + cargo clean.
+   **Known gap, stated not implied — the sandbox is undiscoverable.** Nothing tells
+   the model which directories it may touch: `prompts.py` names no paths (by
+   design — prompt length is TTFT, and hardening it made llama3.2:3b's discipline
+   *worse*), and `read_file`'s description is "Read a text file from the user's
+   computer." A3's first attempt asked for "notes.txt in my workspace" and qwen3:4b
+   guessed `/home/user/workspace/notes.txt` — refused, correctly, as
+   `PATH_OUTSIDE_SANDBOX`. It bites hardest exactly where it matters most: a user
+   **cannot speak an absolute path**, so voice + files needs the sandbox to be
+   discoverable. Mitigated by luck on the default roots (a guess at
+   `~/Documents/notes.txt` often lands) and fatal with any custom root. NOT fixed
+   here, because both candidate fixes — naming the roots in the system prompt, or
+   in the file tools' descriptions — spend the exact budget `prompts.py` documents
+   as measured and dangerous. Owner's call, with `docs/tool-calling.md` numbers in
+   hand.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
 
@@ -942,7 +1055,7 @@ must be green; if the first one isn't, stop and say so rather than folding a fix
 into new work:
 
 ```sh
-cd backend && uv run pytest              # 687 passed
+cd backend && uv run pytest              # 705 passed
 cd backend && uv run ruff check .        # clean
 cd app && npm run build                  # tsc + vite, clean
 cd app/src-tauri && cargo test --lib     # 2 passed
@@ -1040,103 +1153,132 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-5 complete. Phase 6 has started: M6.0 (the packaged build actually
-works) is DONE** — **687 backend tests, 2 Rust, ruff + tsc clean**. The macOS
-`.app` builds, installs, boots, seeds its bundled extension and speaks. See the
-Phase 6 entry above and gotchas 30-31 for what was broken and why nothing caught
-it.
+**Phases 1-5 complete. Phase 6: M6.0 and M6.1 are DONE** — **705 backend tests,
+2 Rust, ruff + tsc clean**. The macOS `.app` builds, installs, boots, seeds its
+bundled extension, speaks, and every dialog and tool path in it has now been
+driven live. See the Phase 6 entry above and gotchas 30-32.
 
-**Everything left before a v1 tag, in priority order.** Nothing here is secret
-knowledge — it is all either a verification nobody has run or a decision nobody
-has made.
+**What is actually left before a v1 tag is now short**, and most of it is one
+CI cycle plus two clicks:
 
-### A. Verification debt (the cheap half is no longer owner-only)
+1. **The AppImage fix is unverified.** `APPIMAGE_EXTRACT_AND_RUN=1` is in
+   `release.yml` but has never run. Push a tag; if Linux still fails at
+   `linuxdeploy`, ship `.deb` alone and drop `appimage` from the matrix — the
+   `.deb` already bundles cleanly.
+2. **No human has opened a dmg.** macOS builds one on every tag and `publish`
+   has never run, so no draft release and no SHA256SUMS have ever existed.
+   Install from the artifact, and **also install to a >151-character path** —
+   gotcha 31's fallback branch is unit-tested but has never executed in a real
+   bundle, and `/Applications` at 107 chars never reaches it.
+3. **The tray menu's two items have never been clicked** (A1 could not: macOS
+   hosts menu-bar extras in Control Centre, which computer-use cannot be
+   granted, and osascript is refused assistive access).
+4. **The sandbox is undiscoverable to the model** — a decision, not a bug. See
+   the M6.1 entry; it is the one thing standing between voice and files.
+5. **A5 (Windows/Linux by hand + the qwen3:8b probe)** — owner-gated, and
+   **not v1-blocking**: an untagged model already means tools off, so not
+   measuring qwen3:8b yields the correct behaviour by default.
+
+### A. Verification debt — A1/A2/A3/A4 CLOSED in M6.1, A5 open
 
 The July limitation is **gone**: a packaged `Jarvis.app` in `/Applications` has a
 bundle id (`app.jarvis-assistant.desktop`) and **can be driven directly with
 computer-use** — screenshots and clicks included. `target/debug/jarvis` still
-cannot, so build and install first, then verify. That flips most of this list from
-"owner reads a checklist aloud" to "session drives it and reports".
+cannot, so build and install first, then verify. Everything below marked ✅ was
+driven by a session, not narrated to one. Details in the M6.1 entry above.
 
-- **A1. `show_window` (tray reveal) has never executed.** The single highest-value
-  item left. `lib.rs:13` is three `let _ =` calls with every error discarded, so a
-  silent failure means a confirm raised while the app is hidden renders where
-  nobody can see it and times out into a deny. Close the window (it hides to the
-  tray, `lib.rs:41`), trigger a confirm, watch it reveal. **Also verify the tray
-  menu itself** (`tray.rs`): "Open Jarvis" and "Quit Jarvis" have never been
-  clicked either.
-- **A2. The background wake soak — attempted, INCONCLUSIVE, must be redone.**
-  Ran 2026-07-25 21:48 for **18 of the 60 minutes** and ended because the app was
-  quit (`[sidecar] backend killed on app exit` = Tauri's normal `RunEvent::Exit`
-  path; no crash report). What it did show, and what makes redoing it urgent:
-  the WebContent RSS **fell steadily — 38 MB → 42 → 30 → 13 → 15 → 5.2 MB at
-  15 min** while the sidecar stayed healthy (CPU climbing ~1.3%, wake worker
-  listening). That is the shape of gotcha 8, but it is *not* proof: 5.2 MB is not
-  the ~600 KB the gotcha cites, and the machine was at 17% free memory, so
-  ordinary compaction explains it just as well. **The decisive test was never
-  run** — nobody said "Hey Jarvis" at the end. Redo it on a quiet machine, full
-  hour, and finish with the wake word. `scratchpad/soak.sh` from that session is
-  the right shape (sample WebContent RSS + sidecar CPU + socket count on an
-  interval, so the answer is a diagnosis rather than a yes/no). **`ws=1` proves
-  nothing on its own** — WebKit's networking process keeps the TCP established
-  while the JS is frozen, which is the whole trap in gotcha 8.
-- **A3. A spoken *file* turn** — "read my notes and write a summary", out loud.
-  Still never heard. M4.2 proved voice+tools acoustically with the dev `echo`
-  tool; M4.3's file tools share `run_exchange` and the same gate, but this exact
-  turn has not happened.
-- **A4. `run_command` and `web_fetch` driven live by the model**, watching the
-  dialog and the taint provenance block. **Budget real time**: a qwen3:4b tool
-  turn measured **96 s** on the 8GB M2 under memory pressure. It looks exactly
-  like a hang — backend idle, no outbound connection to Ollama between requests,
-  UI sitting on "Stop". Do not diagnose a stuck turn before two minutes.
+- ✅ **A1. `show_window` — executed, works.** Window hidden to the tray, confirm
+  arrived, window revealed and focused, dialog correct, tool ran. Errors are now
+  logged instead of discarded, because the finding that came with it is that a
+  hidden window has **no other way back**: no Dock icon, activating does not
+  restore, no Window-menu entry. **Still open: the two tray menu items have
+  never been clicked** — macOS hosts menu-bar extras inside Control Centre,
+  which computer-use cannot be granted, and osascript is refused assistive
+  access. Owner's, thirty seconds. (The *handlers* are covered indirectly:
+  "show" is the same two calls `show_window` makes, and "quit" is `app.exit(0)`
+  → `RunEvent::Exit` → `sidecar::kill`, proved clean via ⌘Q with no orphan.)
+- ✅ **A2. The wake soak — CLOSED. Full hour, then a spoken reply.** See the
+  M6.1 soak entry. The 2026-07-25 attempt ran 18 of 60 minutes,
+  ended because the app was quit, and never ran the deciding test. The redo
+  ends by **speaking "Hey Jarvis" and listening for a spoken reply**, which is
+  the only thing that separates a live webview from a frozen one — **`ws=1`
+  proves nothing on its own**, because WebKit's networking process keeps the TCP
+  established while the JS is frozen. That is gotcha 8's whole trap.
+- ✅ **A3. A spoken file turn — heard, end to end.** Wake, whisper, `read_file`
+  with no dialog, a tainted `write_file` confirm marked "from a spoken request",
+  the file on disk, and the spoken reply recorded off the room.
+- ✅ **A4. `run_command` and `web_fetch` driven live**, with the taint A/B: the
+  same `write_file` tool showing a session-grant button in a clean conversation
+  and the amber provenance block with no session button in a tainted one.
+  **Budget real time**: qwen3:4b tool turns ran **3-5 minutes** here under
+  memory pressure, longer than the 96 s M6.0 measured. **How to tell a slow turn
+  from a stuck one** (better than the old "no outbound connection" heuristic,
+  which is only true *between* rounds): `lsof -nP -a -p <sidecar> -iTCP` — an
+  ESTABLISHED connection to `:11434` means a request is genuinely in flight, and
+  `ollama ps` showing an UNTIL that is not counting down means the model is
+  pinned by an active stream.
 - **A5. Windows/Linux file tools by hand** and the **`qwen3:8b` tool-calling
   probe** (`backend/tests/manual/probe_tool_calling.py`, ~20 min) on the A6000
   box. One AnyDesk session, independent of everything else. Expect qwen3:8b to
-  hit the same hybrid-reasoning latency trap as qwen3:4b (gotcha 12).
+  hit the same hybrid-reasoning latency trap as qwen3:4b (gotcha 12). **Not
+  v1-blocking** — an untagged model already means tools off, so the fail-safe
+  gives the right answer without the measurement.
 
-### B. Release mechanics — the largest remaining risk
+### B. Release mechanics — still the largest remaining risk, but now measured
 
-- **B1. The dmg has never been produced or opened by a human.** CI builds one on
-  every `v*` tag and nobody has installed from it. `bundle_dmg.sh` fails locally
-  for environmental reasons only — create-dmg runs an AppleScript to style the
-  Finder window and it times out (`-1712`) in a non-interactive session; the
-  `.app` itself builds cleanly with `--bundles app`. **Push a throwaway tag,
-  download the artifact, install from it, and run it.** M6.0's entire lesson is
-  that an unexercised release path is where the bugs live, and this is the last
-  stretch of it nobody has walked.
-- **B2. The full release workflow end-to-end** — three OS bundles, draft release,
-  SHA256SUMS. Never run to completion.
-- **B3. `docs/unsigned-install.md` honesty re-read** — it tells users how to get
-  past Gatekeeper on an unsigned build; nobody has followed it on a real artifact
-  since it was written.
+The workflow **has now been run**, twice, and it had never once succeeded.
 
-### C. Decisions nobody has made (not oversights — call them)
+- ✅ **B1. The dmg has now been produced, downloaded, mounted and installed
+  from** — including to a 158-character path, which fired gotcha 31's fallback
+  for the first time in a real bundle. See the M6.1 entry. **Still true: no
+  draft release and no SHA256SUMS have ever existed**, because `publish` needs
+  all three platforms and Linux has never passed.
+- **B2. Linux — was broken, now nearly there.** Sidecar ✅ (gotcha 32), Rust ✅,
+  `Jarvis_0.1.0_amd64.deb` ✅, AppImage ❌ at `linuxdeploy`.
+  `APPIMAGE_EXTRACT_AND_RUN=1` is now set in `release.yml` and is **unverified**
+  — linuxdeploy and the AppImage tools are themselves AppImages and need FUSE,
+  which GitHub runners lack, and the failure says only "failed to run
+  linuxdeploy". If the next tag still fails there, **drop `appimage` from the
+  matrix and ship `.deb`**; the deb already bundles, and one working Linux
+  artifact beats a red release.
+- **B3. `docs/unsigned-install.md` — half-verified.** The ad-hoc-signing claim is
+  true on a real artifact (`Signature=adhoc`, `TeamIdentifier=not set`). **The
+  Gatekeeper walkthrough is still unverified and cannot be verified this way**:
+  a `gh run download` sets no `com.apple.quarantine`, so the "Apple could not
+  verify…" path never triggers. It needs a **browser download from a published
+  release** — which is blocked on `publish` running, which is blocked on Linux.
+  Still carries `<!-- SCREENSHOT PLACEHOLDERS -->`.
 
-- **C1. `calendar-macos`.** Still a manifest with a 0-byte `extension.py`, now
-  explicitly excluded from seeding (`BUNDLED` in `extensions/bundled.py`) so the
-  stub cannot ship. It drags **pyobjc**, a new dependency on a dependency-strict
-  project, and it is the reference for platform gating + a TCC usage declaration.
-  Its own conversation before it lands; add it to `BUNDLED` when it has code.
-- **C2. How much Settings UI a v1 needs.** **Fourteen files are still 0 bytes**
-  and the repo map lists several as if they exist:
-  - *Settings surface (5)*: `settings/{Settings,BackendPicker,ModelCatalog,PermissionsPanel,VoicePicker}.tsx`
-    — every setting is a hand-edited `config.toml` today.
-  - *Onboarding (5)*: `onboarding/{Onboarding,MicCheck,ModelDownload,ToolPermissions,WakeWordTest}.tsx`
-    — cut in M3.3 "until there's an installer to hang them off". **There is one
-    now**, so the reason for the cut has expired.
-  - *Scripts (3)*: `scripts/install.sh`, `scripts/install.ps1`,
-    `scripts/train_wake_word.py` — the last of these means **"Hey Friday" has no
-    path at all**, despite being an approved feature.
-  - *Rust (1)*: `app/src-tauri/src/shortcuts.rs` — ⌘M works without it, so this
-    is a dead file rather than a missing feature; delete it or fill it.
-  Fine for a developer-audience v1 — but decide it rather than discover it
-  mid-release.
+### C. Decisions — ALL MADE 2026-07-25/26
+
+- ✅ **C1. `calendar-macos`: CUT from v1.** pyobjc on a dependency-strict
+  project, macOS-only (against cross-platform consistency), and it wants a TCC
+  usage declaration. Already excluded from `BUNDLED` in `extensions/bundled.py`,
+  so nothing ships broken. Add it to `BUNDLED` when it has code.
+- ✅ **C2. Settings/onboarding UI: CUT from v1, and the 17 empty files are
+  deleted.** The inventory here used to say fourteen and was itself wrong — it
+  missed `app/src/lib/api.ts`, `app/src/state/session.ts` and
+  `app/src/state/settings.ts`. M3.3's readiness gate already does onboarding's
+  load-bearing work, and on a public portfolio repo a 0-byte file that the repo
+  map describes as if it exists reads as abandoned scaffolding. Deleting is
+  honest; a stub is not — the same argument that keeps `calendar-macos` out of
+  `BUNDLED`.
+- ✅ **C3. "Hey Friday": CUT from v1.** `scripts/train_wake_word.py` was 0 bytes,
+  so an approved feature was silently unbuildable. Training a wake word needs
+  PyTorch and a data pipeline, against the project's no-torch ML story. Recorded
+  in `architecture.md` and the README rather than left implied.
+- **The one that replaced them: make the sandbox discoverable.** See the M6.1
+  entry. Naming `[filesystem] roots` somewhere the model can see costs prompt
+  budget that `prompts.py` documents as measured and dangerous, so it is an
+  owner call with `docs/tool-calling.md` in hand — but voice + files does not
+  really work until it is answered.
 
 ### D. Nice-to-haves, explicitly optional for v1
 
 Model catalog UI; opt-in VAD barge-in (approved as a v1 opt-in tier, with a
-headphones/beamforming-mic warning); "Hey Friday" (blocked on C2's training
-script).
+headphones/beamforming-mic warning); a read-only "what can Jarvis reach" view
+(today `[filesystem] roots` and `[tools] allow_dangerous` have no UI at all, so
+a user cannot see their own sandbox — the one real casualty of C2).
 
 ### E. Post-v1, already agreed
 
@@ -1149,9 +1291,14 @@ blocked on budget).
 panel only shows the *not*-loaded note, so an approved-and-working extension reads
 as plain "Approved"; `security/permissions.py`'s module docstring still cites
 `send_notification` as its example of a `safe` core tool, which has never existed
-(M5.4's notification path is an extension-facing host call, not a tool); and a
+(M5.4's notification path is an extension-facing host call, not a tool); a
 panel "install from URL" field would close M5.3's restart caveat but adds a second
-approval UI plus a `git` subprocess behind a webview message.
+approval UI plus a `git` subprocess behind a webview message; and **macOS's own
+Window menu binds ⌘M to Minimize**, which collides with the app's voice toggle —
+the app's binding was verified working in M3.x and again here, so the frontend
+handler is winning, but the collision is real and a future Tauri or WebKit change
+could flip it. Worth an explicit `preventDefault` audit if ⌘M ever "stops
+working" and starts minimising instead.
 
 **Known M5.1 limits, deliberate:** single-file `extension.py` only (`sys.path` is
 untouched, because an extension shipping `json.py` would shadow the stdlib

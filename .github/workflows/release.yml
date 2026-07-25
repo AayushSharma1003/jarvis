@@ -51,6 +51,13 @@ jobs:
 
       - name: Build app
         working-directory: app
+        env:
+          # linuxdeploy and the AppImage tools are themselves AppImages, and
+          # mounting one needs FUSE, which GitHub's runners do not provide —
+          # the failure surfaces only as `failed to run linuxdeploy` with no
+          # cause. This tells them to unpack and exec instead of mounting.
+          # Harmless on the other two platforms, which never invoke them.
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           npm ci
           # tauri.release.conf.json layers in the sidecar resources, which only
