@@ -253,6 +253,10 @@ export function ChatView() {
           <MessageList
             messages={s.messages}
             streamingText={s.streamingText}
+            turns={s.turns}
+            onFork={s.send}
+            onBranch={s.branchTo}
+            busy={s.streamKey !== null}
             subtitle={[tierNote, toolNote].filter(Boolean).join(" ")}
           />
         )}

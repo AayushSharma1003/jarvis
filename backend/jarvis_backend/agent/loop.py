@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from ..llm.base import ChatBackend, ChatMessage, LLMError, TextDelta, ToolCall
 from ..security.permissions import ToolContext
 from ..security.taint import TaintTracker
-from ..storage.conversations import Message, Store
+from ..storage.conversations import ACTIVE_LEAF, Message, Store, _ActiveLeaf
 from ..tools.registry import Registry, ToolResult
 from .prompts import system_prompt
 from .toolfilter import MalformedToolCallFilter
@@ -90,7 +90,7 @@ async def run_exchange(
     conversation_id: str,
     user_text: str,
     on_delta: Callable[[str], Awaitable[None]],
-    parent_turn_id: str | None = None,
+    parent_turn_id: str | None | _ActiveLeaf = ACTIVE_LEAF,
     voice_mode: bool = False,
     registry: Registry | None = None,
     on_span: Callable[[ToolSpan], Awaitable[None]] | None = None,
@@ -105,6 +105,17 @@ async def run_exchange(
     store never sees a half-open turn because the write happens after streaming
     ends.
     """
+    # **Resolve the parent ONCE.** This used to stay ACTIVE_LEAF (then `None`)
+    # all the way down to `append_turn`, so the live leaf was read twice — once
+    # here to build the history the model sees, once at the end to decide where
+    # the finished turn goes. Anything that moved the leaf in between grafted
+    # the reply onto a branch it was never asked in, with history from one
+    # branch and a parent from another. Branch switching (M5.5) is exactly such
+    # a thing, and so is a second connection generating into this conversation.
+    # Regression: test_the_parent_is_resolved_once_not_read_again_at_the_end.
+    if isinstance(parent_turn_id, _ActiveLeaf):
+        parent_turn_id = store.active_leaf(conversation_id)
+
     tools = registry.schemas() if registry is not None and len(registry) else None
     tool_names = {t["function"]["name"] for t in tools} if tools else set()
 

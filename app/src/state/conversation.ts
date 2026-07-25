@@ -11,8 +11,10 @@
 // Only ONE generation runs at a time: the backend allows one per connection and
 // answers BUSY otherwise, so `streamKey` is a single value, not a set.
 //
-// Branch navigation (siblings/tree) is still phase 5; this mirrors the active
-// path only.
+// Branch navigation landed in M5.5: `threads[key].turns` carries the path's
+// turn metadata (including each turn's siblings) beside the flattened
+// messages, which is what lets a bubble find the alternatives for the turn it
+// sits in. The mirror still shows one path at a time — the *active* one.
 
 import { create } from "zustand";
 import i18n from "../i18n";
@@ -40,6 +42,19 @@ export interface UiMessage {
   content: string;
   /** Present only when role === "tool": what the assistant ran and got back. */
   tool?: ToolSpanData;
+  /** Which turn this message belongs to (M5.5). A turn is the branching unit,
+   *  so a flat message list cannot answer "what else could have been here?"
+   *  without it. Absent on messages added optimistically before the backend
+   *  has told us the turn's id. */
+  turnId?: string;
+}
+
+/** The path's turn metadata, kept beside the flattened messages so a bubble can
+ *  find the alternatives for the turn it sits in. */
+export interface TurnMeta {
+  id: string;
+  parent_turn_id: string | null;
+  siblings: string[];
 }
 
 export type AppStatus = "starting" | SocketStatus | "backend-lost";
@@ -50,9 +65,11 @@ const NEW_THREAD = "__new__";
 interface Thread {
   messages: UiMessage[];
   streamingText: string | null; // non-null while an assistant reply streams
+  /** Root→leaf turn metadata for the branch on screen (M5.5). */
+  turns: TurnMeta[];
 }
 
-const EMPTY_THREAD: Thread = { messages: [], streamingText: null };
+const EMPTY_THREAD: Thread = { messages: [], streamingText: null, turns: [] };
 
 /** Errors only conversation.rename / conversation.delete can raise. The client
  *  validates their other failure mode (empty title / missing id) before
@@ -74,6 +91,7 @@ export interface ConversationState {
   streamKey: string | null; // thread owning the in-flight generation
   messages: UiMessage[]; // mirror of the active thread
   streamingText: string | null; // mirror of the active thread
+  turns: TurnMeta[]; // mirror of the active thread's path metadata (M5.5)
   voiceState: VoiceState;
   voiceLevel: number; // smoothed 0–1 audio level (mic or TTS) for the sphere
   voiceHint: string | null; // e.g. "no_speech" — transient, not an error
@@ -94,8 +112,14 @@ export interface ConversationState {
   // toast that shows one dismisses itself, and nothing here is persisted — a
   // timer you already heard is not history.
   notifications: JarvisNotification[];
+  // Set while a *forking* send is in flight (M5.5). An ordinary send appends
+  // a turn whose only sibling is itself, so nothing on screen changes; a fork
+  // grows a sibling set, and only a fresh history knows the new counts.
+  resyncAfterStream: boolean;
   init: () => Promise<void>;
-  send: (text: string) => void;
+  /** `parentTurnId` forks (M5.5): a turn id to fork there, `null` to fork at
+   *  the root. Omit it entirely to carry on from the live branch. */
+  send: (text: string, parentTurnId?: string | null) => void;
   stop: () => void;
   toggleVoice: () => void;
   setWakeEnabled: (enabled: boolean) => void;
@@ -111,6 +135,8 @@ export interface ConversationState {
   revokeExtension: (name: string) => void;
   clearExtensionError: () => void;
   dismissNotification: (id: string) => void;
+  /** Show a different branch of the open conversation. */
+  branchTo: (turnId: string) => void;
 }
 
 let socket: JarvisSocket | null = null;
@@ -135,7 +161,12 @@ function patchThread(
     const next = fn(s.threads[key] ?? EMPTY_THREAD);
     const threads = { ...s.threads, [key]: next };
     return key === keyOf(s.conversationId)
-      ? { threads, messages: next.messages, streamingText: next.streamingText }
+      ? {
+          threads,
+          messages: next.messages,
+          streamingText: next.streamingText,
+          turns: next.turns,
+        }
       : { threads };
   });
 }
@@ -148,10 +179,32 @@ function showThread(set: SetState, conversationId: string | null): void {
       conversationId,
       messages: t.messages,
       streamingText: t.streamingText,
+      turns: t.turns,
       errorCode: null,
       voiceHint: null,
     };
   });
+}
+
+/** The messages that survive a fork: everything before the turn being forked.
+ *
+ *  `parentTurnId` is the *parent* of the turn the user edited, so keep every
+ *  message up to and including that parent's turn. `null` means the fork is at
+ *  the root, so nothing survives — editing the first question replaces the
+ *  whole visible path. */
+function truncateAtTurn(
+  thread: Thread,
+  parentTurnId: string | null,
+): { messages: UiMessage[]; turns: TurnMeta[] } {
+  if (parentTurnId === null) return { messages: [], turns: [] };
+  const index = thread.turns.findIndex((t) => t.id === parentTurnId);
+  if (index === -1) return { messages: thread.messages, turns: thread.turns }; // unknown: keep it
+  const turns = thread.turns.slice(0, index + 1);
+  const keep = new Set(turns.map((t) => t.id));
+  return {
+    messages: thread.messages.filter((m) => m.turnId !== undefined && keep.has(m.turnId)),
+    turns,
+  };
 }
 
 /** Flatten a history path into chat bubbles and tool spans.
@@ -167,7 +220,7 @@ function messagesFromHistory(turns: HistoryTurn[]): UiMessage[] {
         try {
           const span = JSON.parse(m.content) as ToolSpanData;
           if (typeof span?.name !== "string") return [];
-          return [{ id: m.id, role: "tool", content: "", tool: span }];
+          return [{ id: m.id, role: "tool", content: "", tool: span, turnId: turn.id }];
         } catch {
           return [];
         }
@@ -175,7 +228,9 @@ function messagesFromHistory(turns: HistoryTurn[]): UiMessage[] {
       // An empty assistant row is the "model returned nothing" placeholder the
       // backend writes to keep the turn shape stable; it has nothing to render.
       if (!m.content) return [];
-      return [{ id: m.id, role: m.role as "user" | "assistant", content: m.content }];
+      return [
+        { id: m.id, role: m.role as "user" | "assistant", content: m.content, turnId: turn.id },
+      ];
     }),
   );
 }
@@ -195,6 +250,7 @@ export const useConversation = create<ConversationState>((set, get) => ({
   streamKey: null,
   messages: [],
   streamingText: null,
+  turns: [],
   voiceState: "idle",
   voiceLevel: 0,
   voiceHint: null,
@@ -204,6 +260,7 @@ export const useConversation = create<ConversationState>((set, get) => ({
   extensions: [],
   extensionError: null,
   notifications: [],
+  resyncAfterStream: false,
 
   init: async () => {
     if (initStarted) return;
@@ -236,22 +293,47 @@ export const useConversation = create<ConversationState>((set, get) => ({
     }
   },
 
-  send: (text: string) => {
+  send: (text: string, parentTurnId?: string | null) => {
     const { conversationId, currentModel, streamKey } = get();
     if (streamKey !== null || !socket) return; // one generation at a time
     const key = keyOf(conversationId);
+    // Forking = the argument was passed at all, including as `null` (fork at
+    // the root, i.e. editing the first message). `undefined` means carry on,
+    // and the two must stay apart all the way to the wire — the backend keeps
+    // an absent key and an explicit null distinct on purpose.
+    const forking = parentTurnId !== undefined;
     const ok = socket.send({
       type: "chat.send",
       content: text,
       ...(conversationId ? { conversation_id: conversationId } : {}),
       ...(currentModel ? { model: currentModel } : {}),
+      ...(forking ? { parent_turn_id: parentTurnId } : {}),
     });
     if (!ok) return;
-    set({ errorCode: null, streamKey: key });
-    patchThread(set, key, (t) => ({
-      streamingText: "",
-      messages: [...t.messages, { id: crypto.randomUUID(), role: "user", content: text }],
-    }));
+    set({ errorCode: null, streamKey: key, resyncAfterStream: forking });
+    patchThread(set, key, (t) => {
+      // A fork replaces everything from the forked turn onward: the new reply
+      // does not continue that branch, it is an alternative to it. Truncating
+      // here rather than waiting for history keeps the transcript honest while
+      // the reply streams — and `turns` has to be cut with `messages`, or the
+      // parent worked out at chat.done comes off the branch we just left.
+      const kept = forking ? truncateAtTurn(t, parentTurnId) : t;
+      return {
+        ...t,
+        turns: kept.turns,
+        streamingText: "",
+        messages: [
+          ...kept.messages,
+          { id: crypto.randomUUID(), role: "user", content: text },
+        ],
+      };
+    });
+  },
+
+  branchTo: (turnId: string) => {
+    const { conversationId } = get();
+    if (!conversationId) return;
+    socket?.send({ type: "conversation.branch", conversation_id: conversationId, turn_id: turnId });
   },
 
   stop: () => {
@@ -423,6 +505,7 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       // then arrives via chat.start/delta/done exactly like a typed turn.
       const key = get().streamKey ?? keyOf(get().conversationId);
       patchThread(set, key, (t) => ({
+        ...t,
         streamingText: "",
         messages: [...t.messages, { id: crypto.randomUUID(), role: "user", content: msg.text }],
       }));
@@ -528,6 +611,7 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
       patchThread(set, key, (t) => {
         const said = t.streamingText;
         return {
+          ...t,
           streamingText: "",
           messages: [
             ...t.messages,
@@ -543,27 +627,49 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
     case "chat.done": {
       const key = get().streamKey;
       if (key !== null) {
-        patchThread(set, key, (t) =>
-          // Empty means a tool span already sealed the last bubble and the
-          // model added nothing after it — appending here would leave a blank
-          // bubble hanging under the tool span.
-          t.streamingText
+        patchThread(set, key, (t) => {
+          // The turn now has an id, so stamp it onto everything this exchange
+          // put on screen: the optimistic user message and any tool spans went
+          // up before the backend had one. Without this a freshly-sent turn has
+          // no metadata until something re-fetches history, and the edit and
+          // branch controls — which hang off the turn — simply never appear.
+          const turnId = msg.turn_id;
+          const messages = t.messages.map((m) => (m.turnId ? m : { ...m, turnId }));
+          const parent = t.turns.length ? t.turns[t.turns.length - 1].id : null;
+          const turns = t.turns.some((x) => x.id === turnId)
+            ? t.turns
+            : [...t.turns, { id: turnId, parent_turn_id: parent, siblings: [turnId] }];
+          // Empty streamingText means a tool span already sealed the last
+          // bubble and the model added nothing after it — appending here would
+          // leave a blank bubble hanging under the tool span.
+          return t.streamingText
             ? {
+                ...t,
+                turns,
                 streamingText: null,
                 messages: [
-                  ...t.messages,
+                  ...messages,
                   {
                     id: msg.turn_id,
                     role: "assistant",
                     content: t.streamingText + (msg.interrupted ? " …" : ""),
+                    turnId,
                   },
                 ],
               }
-            : { ...t, streamingText: null },
-        );
+            : { ...t, turns, messages, streamingText: null };
+        });
       }
-      set({ streamKey: null });
+      const forked = get().resyncAfterStream;
+      set({ streamKey: null, resyncAfterStream: false });
       socket?.send({ type: "conversations.list" }); // titles + updated_at ordering
+      if (forked) {
+        // A fork just grew a sibling set, and only the backend knows the new
+        // counts and ids — so the switcher that should now appear needs a fresh
+        // history. Ordinary sends skip this: their turn's only sibling is
+        // itself, so nothing on screen would change.
+        socket?.send({ type: "conversation.history", conversation_id: msg.conversation_id });
+      }
       break;
     }
     case "conversations": {
@@ -582,6 +688,11 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
         patchThread(set, msg.conversation_id, () => ({
           messages: messagesFromHistory(msg.turns),
           streamingText: null,
+          turns: msg.turns.map((t) => ({
+            id: t.id,
+            parent_turn_id: t.parent_turn_id,
+            siblings: t.siblings,
+          })),
         }));
       }
       break;
@@ -604,6 +715,7 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
         patchThread(set, key, (t) =>
           t.streamingText
             ? {
+                ...t,
                 streamingText: null,
                 messages: [
                   ...t.messages,

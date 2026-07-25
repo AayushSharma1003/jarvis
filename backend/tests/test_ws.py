@@ -839,3 +839,258 @@ def test_denying_a_delete_leaves_the_file_alone(make_client, curated, tmp_path):
         span = next(m for m in rest if m["type"] == "tool.span")
         assert span["code"] == "TOOL_DENIED"
     assert doomed.exists()
+
+
+# -- which turn a send forks from (M5.5) ------------------------------------
+
+
+def test_an_absent_parent_extends_the_conversation(make_client):
+    """The distinction `msg.get()` cannot make.
+
+    An absent `parent_turn_id` means "carry on"; an explicit `null` means "a
+    root turn", which is what editing the first message produces. Collapsing
+    them turned an ordinary second message into a root sibling — caught by
+    test_chat_roundtrip_streams_and_persists, pinned deliberately here.
+    """
+    client, state = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _drain_chat(ws)
+        ws.send_json({"type": "chat.send", "content": "two", "conversation_id": cid})
+        _drain_chat(ws)
+
+    assert len(state.store.path(cid)) == 2
+
+
+def test_an_explicit_null_parent_forks_at_the_root(make_client):
+    client, state = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _, done, _ = _drain_chat(ws)
+        first = done["turn_id"]
+
+        ws.send_json(
+            {
+                "type": "chat.send",
+                "content": "one-edited",
+                "conversation_id": cid,
+                "parent_turn_id": None,
+            }
+        )
+        _, done, _ = _drain_chat(ws)
+
+    assert len(state.store.path(cid)) == 1, "the fork replaced the path, not extended it"
+    assert set(state.store.siblings(first)) == {first, done["turn_id"]}
+
+
+def test_an_explicit_parent_forks_there(make_client):
+    client, state = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _, done, _ = _drain_chat(ws)
+        first = done["turn_id"]
+        ws.send_json({"type": "chat.send", "content": "two", "conversation_id": cid})
+        _, done, _ = _drain_chat(ws)
+        second = done["turn_id"]
+
+        ws.send_json(
+            {
+                "type": "chat.send",
+                "content": "two-edited",
+                "conversation_id": cid,
+                "parent_turn_id": first,
+            }
+        )
+        _, done, _ = _drain_chat(ws)
+
+    assert set(state.store.siblings(second)) == {second, done["turn_id"]}
+    assert [t.id for t in state.store.path(cid)] == [first, done["turn_id"]]
+
+
+def test_forking_does_not_destroy_the_branch_it_forked_from(make_client):
+    """The immutability promise, from the WS layer this time."""
+    client, state = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _, done, _ = _drain_chat(ws)
+        first = done["turn_id"]
+        ws.send_json({"type": "chat.send", "content": "keep me", "conversation_id": cid})
+        _, done, _ = _drain_chat(ws)
+        original = done["turn_id"]
+
+        ws.send_json(
+            {
+                "type": "chat.send",
+                "content": "edited",
+                "conversation_id": cid,
+                "parent_turn_id": first,
+            }
+        )
+        _drain_chat(ws)
+
+    survivors = [m.content for t in state.store.path(cid, original) for m in t.messages]
+    assert "keep me" in survivors
+
+
+# -- moving between branches (M5.5) -----------------------------------------
+
+
+def _fork(ws, cid, first, text="edited"):
+    """Fork from `first` and return the new turn id."""
+    ws.send_json(
+        {"type": "chat.send", "content": text, "conversation_id": cid, "parent_turn_id": first}
+    )
+    _, done, _ = _drain_chat(ws)
+    return done["turn_id"]
+
+
+def _two_branches(ws):
+    """A chat forked once: (cid, root, original second turn, edited second turn)."""
+    ws.send_json({"type": "chat.send", "content": "one"})
+    cid = ws.receive_json()["conversation_id"]
+    _, done, _ = _drain_chat(ws)
+    root = done["turn_id"]
+    ws.send_json({"type": "chat.send", "content": "two", "conversation_id": cid})
+    _, done, _ = _drain_chat(ws)
+    original = done["turn_id"]
+    return cid, root, original, _fork(ws, cid, root)
+
+
+def _history(ws, cid):
+    ws.send_json({"type": "conversation.history", "conversation_id": cid})
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] == "history":
+            return msg
+
+
+def test_history_reports_the_alternatives_for_each_turn(make_client):
+    """Without this the UI cannot know a branch exists, which is why the tree
+    sat unreachable for four phases."""
+    client, _ = make_client()
+    with connect(client) as ws:
+        cid, root, original, edited = _two_branches(ws)
+        history = _history(ws, cid)
+
+    by_id = {t["id"]: t for t in history["turns"]}
+    assert by_id[root]["siblings"] == [root]
+    assert by_id[edited]["siblings"] == [original, edited], "oldest first"
+
+
+def test_a_linear_chat_reports_every_turn_as_its_own_only_sibling(make_client):
+    """So the frontend's rule is simply `length > 1`, with no empty-case."""
+    client, _ = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _drain_chat(ws)
+        history = _history(ws, cid)
+
+    assert [len(t["siblings"]) for t in history["turns"]] == [1]
+
+
+def test_branching_switches_the_visible_path(make_client):
+    client, _ = make_client()
+    with connect(client) as ws:
+        cid, _root, original, edited = _two_branches(ws)
+        assert [t["id"] for t in _history(ws, cid)["turns"]][-1] == edited
+
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": original})
+        switched = ws.receive_json()
+
+    assert switched["type"] == "history"
+    assert [t["id"] for t in switched["turns"]][-1] == original
+
+
+def test_switching_back_returns_the_original_question_and_reply(make_client):
+    """The immutability promise, as the user experiences it."""
+    client, _ = make_client()
+    with connect(client) as ws:
+        cid, _root, original, _edited = _two_branches(ws)
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": original})
+        switched = ws.receive_json()
+
+    contents = [m["content"] for t in switched["turns"] for m in t["messages"]]
+    assert "two" in contents and "edited" not in contents
+
+
+def test_switching_lands_on_the_branch_tip_not_the_turn_clicked(make_client):
+    """Branch A was continued after the fork; coming back must show all of it,
+    or the conversation looks like it lost turns."""
+    client, _ = make_client()
+    with connect(client) as ws:
+        cid, _root, original, _edited = _two_branches(ws)
+        # Continue the ORIGINAL branch, then leave it.
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": original})
+        ws.receive_json()
+        ws.send_json({"type": "chat.send", "content": "three", "conversation_id": cid})
+        _, done, _ = _drain_chat(ws)
+        deeper = done["turn_id"]
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": _edited})
+        ws.receive_json()
+
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": original})
+        back = ws.receive_json()
+
+    assert [t["id"] for t in back["turns"]][-1] == deeper
+
+
+def test_switching_does_not_reorder_the_sidebar(make_client):
+    client, state = make_client()
+    with connect(client) as ws:
+        cid, _root, original, _edited = _two_branches(ws)
+        before = state.store.get_conversation(cid).updated_at
+
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": original})
+        ws.receive_json()
+
+    assert state.store.get_conversation(cid).updated_at == before
+
+
+def test_branching_to_an_unknown_turn_is_an_error_not_a_disconnect(make_client):
+    client, _ = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _drain_chat(ws)
+
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": "nope"})
+        assert ws.receive_json()["code"] == "TURN_NOT_FOUND"
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+
+
+def test_branching_to_another_conversations_turn_is_refused(make_client):
+    """A turn id is not a capability: naming one from elsewhere must not graft
+    another conversation's history into this one."""
+    client, _ = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        first_cid = ws.receive_json()["conversation_id"]
+        _, done, _ = _drain_chat(ws)
+        stranger = done["turn_id"]
+        ws.send_json({"type": "chat.send", "content": "elsewhere"})
+        other_cid = ws.receive_json()["conversation_id"]
+        _drain_chat(ws)
+
+        ws.send_json(
+            {"type": "conversation.branch", "conversation_id": other_cid, "turn_id": stranger}
+        )
+        assert ws.receive_json()["code"] == "PARENT_TURN_MISMATCH"
+
+    assert first_cid != other_cid
+
+
+def test_branching_without_a_turn_id_is_refused(make_client):
+    client, _ = make_client()
+    with connect(client) as ws:
+        ws.send_json({"type": "chat.send", "content": "one"})
+        cid = ws.receive_json()["conversation_id"]
+        _drain_chat(ws)
+
+        ws.send_json({"type": "conversation.branch", "conversation_id": cid, "turn_id": 42})
+        assert ws.receive_json()["code"] == "BAD_MESSAGE"

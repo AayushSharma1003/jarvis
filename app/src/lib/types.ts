@@ -131,6 +131,11 @@ export interface HistoryMessage {
 export interface HistoryTurn {
   id: string;
   parent_turn_id: string | null;
+  /** Every alternative for this turn, oldest first, INCLUDING this one (M5.5).
+   *  The whole set rather than a count, so the arrows know where to point: a
+   *  count says a branch exists, an array says where it is. Always at least
+   *  `[id]`, so the "show a switcher" rule is a plain `length > 1`. */
+  siblings: string[];
   messages: HistoryMessage[];
 }
 
@@ -183,7 +188,11 @@ export type ClientMessage =
       content: string;
       conversation_id?: string;
       model?: string;
-      parent_turn_id?: string;
+      /** Which turn to fork from (M5.5). **Omit** to carry on from the live
+       *  branch; send `null` to fork at the root, i.e. edit the very first
+       *  message. The backend keeps absent and null apart deliberately —
+       *  see protocol.parent_turn_from. */
+      parent_turn_id?: string | null;
     }
   | { type: "chat.stop" }
   | { type: "voice.start"; conversation_id?: string; model?: string }
@@ -194,6 +203,7 @@ export type ClientMessage =
   | { type: "conversation.history"; conversation_id: string }
   | { type: "conversation.rename"; conversation_id: string; title: string }
   | { type: "conversation.delete"; conversation_id: string }
+  | { type: "conversation.branch"; conversation_id: string; turn_id: string }
   | { type: "wake.set"; enabled: boolean }
   | { type: "confirm.respond"; id: string; answer: ConfirmAnswer }
   // `notification_id` makes the backend's speech single-use: the notification

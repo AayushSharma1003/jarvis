@@ -366,6 +366,33 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     speaks. Worth rebuilding rather than reaching for a real network repo: it
     keeps the check hermetic and lets the test move HEAD to a new commit on
     demand.
+28. **An overloaded `None` can make a whole feature inexpressible** (M5.5,
+    `storage/conversations.py`). `append_turn(parent_turn_id=None)` meant
+    "append to the active leaf", which left **no way to say "a turn with no
+    parent"** — so a root sibling, which is precisely what editing the first
+    message of a conversation produces, could not be represented at all.
+    `test_root_branching` had recorded the limitation in a comment for four
+    phases rather than anyone reading it as a bug. Fixed by giving the two
+    meanings separate values: `None` is now no-parent, and `ACTIVE_LEAF` — a
+    sentinel that is deliberately **not a `str`**, so a turn id off the wire can
+    never impersonate it — is "carry on", and the default.
+    **The wire has to keep the same distinction, and `.get()` cannot.**
+    `msg.get("parent_turn_id")` returns `None` both when the key is absent and
+    when it is explicitly null, so the first version of this quietly turned every
+    ordinary second message into a root sibling. JSON *can* tell them apart —
+    `"parent_turn_id" in msg` — and `protocol.parent_turn_from` is the one place
+    that does. Caught by an existing test
+    (`test_chat_roundtrip_streams_and_persists`) within a minute of the change,
+    which is the argument for a suite that covers the boring paths.
+29. **Turn metadata that only arrives with `history` leaves fresh turns inert**
+    (M5.5). The branch and edit controls hang off the *turn*, and a turn's id is
+    only known once `chat.done` reports it — so a message the user had just sent
+    had no `turnId`, no entry in the path metadata, and therefore no controls.
+    Every unit test loaded a conversation from history, where the metadata is
+    always present, so none of them could see it; in the browser it read as "the
+    edit pencil is missing on the messages I care about most". `chat.done` now
+    stamps the new turn id onto the messages the exchange put on screen and
+    appends the turn to the path, rather than paying a history round trip.
 
 ## Repo map
 
@@ -708,6 +735,44 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    on the way out. A panel "install from URL" field would close it and was deliberately
    left out — it puts a network fetch and a `git` subprocess behind a webview message,
    and it is a second approval UI to keep in step.
+   ✅ **M5.5 branching UI DONE** (2026-07-25) — the tree the app has carried since
+   Phase 1, finally reachable. Edit a question or regenerate an answer to fork an
+   alternative, and `‹ 2/3 ›` moves between them.
+   **Most of it already existed and nobody could get at it.** `chat.send` already
+   took `parent_turn_id`, `run_exchange` already used it for both the history
+   context and the append, and `types.ts` already declared the field — so *forking*
+   worked. **Coming back did not**: `set_active_leaf` was called by nothing but
+   tests, and `history` carried no sibling data, so the UI could not know an
+   alternative existed. New: `Store.tip()`, `Store.active_leaf()`, a
+   `conversation.branch` message, `protocol.history()` carrying `siblings` per turn,
+   and the 0-byte `BranchSwitcher.tsx`.
+   **Three things that were not in the plan and had to be:**
+   *(a)* **`None` meant two things.** `append_turn(parent_turn_id=None)` meant
+   "append to the active leaf", so *a root turn had no representation* — editing the
+   first message of a conversation was literally inexpressible, and
+   `test_root_branching` documented the limitation in a comment. `None` now means no
+   parent; `ACTIVE_LEAF` (a non-str sentinel) means "carry on". See gotcha 28.
+   *(b)* **`Store.tip()`.** Switching to a sibling must land on that branch's *end*,
+   not the turn clicked — otherwise a branch you had continued comes back looking
+   truncated, which is exactly what an immutable tree exists to prevent.
+   *(c)* **The race the plan predicted.** `parent_turn_id` stayed unresolved from the
+   top of `run_exchange` to `append_turn`, so the live leaf was read **twice** —
+   history from one branch, parent from another. Resolved once at the top now.
+   **Verified live** (browser build, scratch dirs, llama3.2:3b), all eight steps:
+   edit the first question → root sibling with `‹ 2/2 ›`; switch back → the original
+   question, reply **and everything after it** return verbatim; regenerate → a second
+   counter on the same turn; **switch branches mid-stream** (caught at 1477 streamed
+   characters) → the stream survives and the reply lands on the branch it was asked
+   in; reload → the branch persists with sibling counts `[2,2,1,1]`; and the sidebar
+   order is unmoved (checked in the database, not just the UI). Final tree: two root
+   turns, two children of the first, nothing destroyed.
+   **The live run caught one bug** the tests could not: a freshly-sent turn carried
+   no turn metadata (that only arrived with `history`), so **the edit and branch
+   controls never appeared until something re-fetched** — you could not edit a
+   message you had just sent. `chat.done` now stamps the turn id onto the messages
+   the exchange put on screen. Fourth milestone running that the browser walk-through
+   found something the suite structurally could not.
+   **674 backend tests** (26 new), 18 mutations proven, ruff + tsc clean.
 6. **Ship** — installers, onboarding polish, docs, tagged unsigned release.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
@@ -798,8 +863,10 @@ keeps the old store contract for every other caller. Regression test:
 Storage cost is a **non-issue**: text only, ~1KB/turn — tens of MB/year under
 heavy use. Delete is a privacy/control feature, not a space-pressure one.
 
-**Still Phase 5:** branch navigation (the sibling/tree UI). `Store.siblings()`
-exists and is tested; it is deliberately not surfaced yet.
+**Branch navigation landed in M5.5.** `Store.siblings()` had existed and been
+tested since Phase 1 without ever being reachable; it now backs `‹ 2/3 ›`, with
+`Store.tip()` added so switching lands on a branch's *end* rather than the turn
+that was clicked.
 
 ## Publishing / GitHub (as of 2026-07-22)
 
@@ -827,24 +894,35 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## Immediate next action
 
-**Phases 1-4 complete; Phase 5's extension work is COMPLETE.** M5.1 (manifest,
-content-keyed approval, loader, risk floors, `jarvis extensions` CLI), M5.2 (the
-in-app approval panel), M5.3 (`jarvis install <url>`) and M5.4 (`timers-reminders`
-+ the host API) are all done and green — **648 backend tests, 2 Rust, ruff + tsc
-clean**. §5 is fully built and live-verified; security-model.md and the code agree
-everywhere. What remains in Phase 5 is UX/features, not security.
+**Phases 1-4 complete; Phase 5's extension work AND the branching UI are
+COMPLETE.** M5.1 (manifest, content-keyed approval, loader, risk floors, `jarvis
+extensions` CLI), M5.2 (the in-app approval panel), M5.3 (`jarvis install <url>`),
+M5.4 (`timers-reminders` + the host API) and M5.5 (the branching UI) are all done
+and green — **674 backend tests, 2 Rust, ruff + tsc clean**. §5 is fully built and
+live-verified; security-model.md and the code agree everywhere. Nothing in Phase 5
+is security work any more.
 
 **Next, in the order that makes sense:**
-1. **`calendar-macos`** — the other default extension, still a manifest with no
+1. **Verification debt, before Phase 6.** Several shipped features have only been
+   seen in a browser-hosted build: the confirm dialog, the extensions panel, and
+   `show_window` (reveal-from-tray) in the real WKWebView; the hour-long background
+   wake soak (the only real test of gotcha 8); a spoken *file* turn; `run_command`
+   and `web_fetch` driven live by the model; Windows/Linux file tools by hand; and
+   the `qwen3:8b` tool-calling probe on the A6000 box. Finding a surprise there
+   after cutting a release is much worse than finding it now, and most of it needs
+   the owner's hands rather than a session's.
+2. **`calendar-macos`** — the other default extension, still a manifest with no
    code. It drags **pyobjc**, a new dependency on a project that has been strict
    about them, and it is the reference for platform gating + a TCC declaration.
    Worth its own conversation before it lands.
-2. **Getting the bundled defaults installed.** Nothing copies
-   `extensions/timers-reminders/` into the data dir, so the two "default"
-   extensions are source-only and install by hand (documented `cp`, and now also
-   `jarvis install` from a git URL). This belongs with packaging — it needs a
-   decision about where the folder lives inside a PyInstaller onedir bundle.
-3. Branching UI, model catalog UI, "Hey Friday", opt-in VAD barge-in.
+3. **Phase 6 / ship** — installers, and with them: getting the bundled defaults
+   into the data dir (nothing copies them today; it needs a decision about where
+   the folder lives inside a PyInstaller onedir bundle) and the onboarding stubs
+   that were cut in M3.3 "until there's an installer to hang them off".
+4. Model catalog UI, "Hey Friday", opt-in VAD barge-in. **Worth stating plainly:
+   eleven `.tsx` files are still 0 bytes**, five of them a Settings surface that
+   was never built — every setting is a hand-edited `config.toml` today. Fine for
+   a developer-audience v1, but decide it rather than discover it mid-release.
 
 **Small things noticed and deliberately not fixed** (none block anything):
 `extension.loadedNote` ("Active") is defined in en.json but never rendered — the

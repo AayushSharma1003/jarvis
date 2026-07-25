@@ -7,6 +7,7 @@ import json
 from jarvis_backend.agent.loop import MAX_TOOL_ROUNDS, run_exchange
 from jarvis_backend.llm.base import ChatBackend, ModelInfo, TextDelta, ToolCall
 from jarvis_backend.security.permissions import SAFE, Decision, SafeOnlyGate
+from jarvis_backend.storage.conversations import Message
 from jarvis_backend.tools.registry import Registry
 
 MODEL = "fake:3b"
@@ -224,3 +225,91 @@ async def test_prompt_does_not_deny_tools_when_they_are_offered(store):
     system = backend.seen[0][0][0].content
     assert "no tools yet" not in system
     assert "never claim an action you did not actually take" in system.lower()
+
+
+# -- which branch the reply lands on (M5.5) ---------------------------------
+
+
+async def test_the_parent_is_resolved_once_not_read_again_at_the_end(store):
+    """**The race branch switching makes reachable.**
+
+    `parent_turn_id` used to stay `None` from the top of run_exchange all the
+    way to `append_turn`, so the active leaf was read *twice* — once to build
+    the history the model sees, once to decide where the turn goes. Anything
+    that moved the leaf in between (a `conversation.branch`, or a second
+    connection generating into the same conversation) grafted the reply onto a
+    branch it was never asked in, with history from one branch and a parent
+    from another.
+
+    The backend here moves the leaf mid-stream, which is exactly what a user
+    clicking a branch arrow does while a reply is coming back.
+    """
+    cid = store.create_conversation(title="t")
+    first = store.append_turn(cid, [Message("user", "one"), Message("assistant", "1")])
+    other = store.append_turn(
+        cid, [Message("user", "elsewhere"), Message("assistant", "e")], parent_turn_id=None
+    )
+    store.set_active_leaf(cid, first)
+
+    class MovesTheLeafMidStream(ScriptedBackend):
+        async def stream_chat(self, model, messages, tools=None):
+            self.seen.append((list(messages), tools))
+            yield TextDelta("part")
+            store.set_active_leaf(cid, other)  # the user clicks a branch arrow
+            yield TextDelta(" two")
+
+    result = await run_exchange(
+        store=store,
+        backend=MovesTheLeafMidStream(),
+        model=MODEL,
+        conversation_id=cid,
+        user_text="two",
+        on_delta=lambda d: _append([], d),
+    )
+
+    landed = store.path(cid, result.turn_id)
+    assert [t.id for t in landed][:-1] == [first], "the reply landed on the wrong branch"
+
+
+async def test_an_explicit_parent_still_wins(store):
+    """Forking: the turn goes where the caller said, not on the active leaf."""
+    cid = store.create_conversation(title="t")
+    first = store.append_turn(cid, [Message("user", "one"), Message("assistant", "1")])
+    store.append_turn(cid, [Message("user", "two"), Message("assistant", "2")])
+
+    result = await run_exchange(
+        store=store,
+        backend=ScriptedBackend([TextDelta("edited")]),
+        model=MODEL,
+        conversation_id=cid,
+        user_text="two-edited",
+        on_delta=lambda d: _append([], d),
+        parent_turn_id=first,
+    )
+
+    assert store.path(cid, result.turn_id)[-2].id == first
+    assert len(store.siblings(result.turn_id)) == 2
+
+
+async def test_forking_shows_the_model_the_branch_it_forked_from(store):
+    """History has to come from the fork point, not from whatever is active —
+    otherwise an edited question is answered with the *other* branch in
+    context."""
+    cid = store.create_conversation(title="t")
+    first = store.append_turn(cid, [Message("user", "one"), Message("assistant", "1")])
+    store.append_turn(cid, [Message("user", "SHOULD-NOT-BE-SEEN"), Message("assistant", "x")])
+
+    backend = ScriptedBackend([TextDelta("ok")])
+    await run_exchange(
+        store=store,
+        backend=backend,
+        model=MODEL,
+        conversation_id=cid,
+        user_text="two-edited",
+        on_delta=lambda d: _append([], d),
+        parent_turn_id=first,
+    )
+
+    sent = " ".join(m.content for m in backend.seen[0][0])
+    assert "SHOULD-NOT-BE-SEEN" not in sent
+    assert "one" in sent

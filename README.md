@@ -35,7 +35,7 @@ anywhere.
 | Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
 | Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
 | Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **648 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
+| Backend test suite | **674 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
 
 Four decisions this project is actually about:
 
@@ -73,6 +73,7 @@ Four decisions this project is actually about:
 | **Shell + `web_fetch`** | ✅ working | `run_command` always confirms with the full command shown — no classifier, no denylist — and takes no sandbox, because a subprocess escapes one by design. `web_fetch` is `ask` (a URL can carry data out) and runs behind an SSRF guard: scheme allowlist, every resolved IP checked, IP literals not resolved, every redirect hop re-validated. Both bounded by timeouts and incremental output caps. |
 | **Extensions** | ✅ working | Manifest, content-keyed approval, the loader, an in-app approval panel, `jarvis install <url>` and a host API for extensions that need to speak up on their own. Approving is two steps (a detail card of declared permissions and effective risks, then Approve) and keyed to the extension's exact bytes; it loads live, no restart. Install only accepts `http(s)` — `git clone 'ext::sh -c …'` executes the command — and names the folder from the manifest, never the URL. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
 | **Timers & reminders** | ✅ working | The reference extension, and the one that proved the extension API needed an escape hatch: a tool returns a string, but a timer fires *later*. Deadlines are absolute wall-clock (macOS's monotonic clock stops while the lid is shut) and survive a restart; when one fires, Jarvis shows a toast and says it out loud. |
+| **Branching** | ✅ working | Edit a question or regenerate an answer and it forks a sibling turn rather than overwriting anything; `‹ 2/3 ›` moves between the alternatives, landing on each branch's *end* rather than the fork point. The message tree has been immutable and branching-ready since day 1 — this is the UI that finally reaches it, and the old path comes back verbatim. |
 | **Installers** | 🚧 phase 6 | The release workflow already builds unsigned bundles for all three OSes on a tag. |
 
 **Verified on macOS (Apple Silicon), hands-on.** Windows and Linux are built by CI every
@@ -278,7 +279,7 @@ problem later instead of a refactor.
 2. ✅ **Voice loop** — VAD, whisper.cpp, Kokoro, barge-in, inside the latency budget.
 3. ✅ **Always-on + feel** — wake word, sphere, chat management, readiness gate, RAM tiering.
 4. ✅ **Agency + security** — the largest phase; tools ship *with* their security layer, never before it. The [model capability gate](docs/tool-calling.md) (tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property), the tool plumbing, the permission engine + confirmation, the filesystem sandbox + file tools + taint, then shell and `web_fetch` + SSRF.
-5. 🚧 **Extended scope** — the extension work is complete: loader, content-keyed approval gate, in-app approval panel, `jarvis install <url>`, a host API, and `timers-reminders` as the working reference. Still to come: branch navigation UI, model catalog UI, custom wake words.
+5. 🚧 **Extended scope** — the extension work is complete (loader, content-keyed approval gate, in-app approval panel, `jarvis install <url>`, a host API, and `timers-reminders` as the working reference), and so is the branching UI. Still to come: model catalog UI, custom wake words.
 6. **Ship** — installers, docs, a tagged unsigned release with checksums.
 
 Post-v1: acoustic echo cancellation (macOS Voice Processing AU, then WebRTC AEC3), voice

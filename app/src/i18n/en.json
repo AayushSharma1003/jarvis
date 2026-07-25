@@ -14,7 +14,14 @@
     "send": "Send",
     "stop": "Stop",
     "empty": "Local-first. Nothing leaves this machine.",
-    "interrupted": "(stopped)"
+    "interrupted": "(stopped)",
+    "edit": "Edit this message",
+    "regenerate": "Try this answer again",
+    "saveEdit": "Send",
+    "cancelEdit": "Cancel",
+    "branchOf": "{{index}} / {{count}}",
+    "branchPrev": "Previous version",
+    "branchNext": "Next version"
   },
   "tool": {
     "used": "Used {{name}}",

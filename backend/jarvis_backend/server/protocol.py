@@ -1,9 +1,9 @@
 """WebSocket message protocol. JSON objects with a `type` discriminator.
 
 Client → server: auth, chat.send, chat.stop, models.list, conversations.list,
-                 conversation.history, ping, voice.start, voice.stop, wake.set,
-                 confirm.respond, voice.say, extensions.list, extensions.approve,
-                 extensions.revoke
+                 conversation.history, conversation.branch, ping, voice.start,
+                 voice.stop, wake.set, confirm.respond, voice.say,
+                 extensions.list, extensions.approve, extensions.revoke
 Server → client: ready, chat.start, chat.delta, chat.done, models,
                  conversations, history, error, pong, tool.span,
                  voice.state, stt.text, voice.level, wake.status, wake.detected,
@@ -19,6 +19,29 @@ transcript renders identically for typed and spoken turns.
 from __future__ import annotations
 
 from typing import Any
+
+from ..storage.conversations import ACTIVE_LEAF
+
+
+def parent_turn_from(msg: dict[str, Any]) -> Any:
+    """Which turn a `chat.send` forks from — and the absent/null distinction.
+
+    Three cases the wire has to keep apart (storage/conversations.py):
+
+        key absent          extend the live branch  → ACTIVE_LEAF
+        "parent_turn_id": null   a root turn        → None
+        "parent_turn_id": "…"    fork from there    → the id
+
+    `msg.get("parent_turn_id")` collapses the first two, which is how an
+    ordinary second message briefly became a root sibling instead of continuing
+    the conversation (caught by test_chat_roundtrip_streams_and_persists). The
+    explicit null is what makes *editing the first message* expressible at all,
+    so the two cannot be merged back together.
+    """
+    if "parent_turn_id" not in msg:
+        return ACTIVE_LEAF
+    value = msg["parent_turn_id"]
+    return value if isinstance(value, str) and value else None
 
 
 def error(code: str, detail: str = "") -> dict[str, Any]:
@@ -166,6 +189,36 @@ def notification(
         "code": code,
         "data": data,
         "speak": speak,
+    }
+
+
+def history(
+    conversation_id: str, turns: list[Any], siblings: dict[str, list[str]]
+) -> dict[str, Any]:
+    """The active root→leaf path, and what else could have been there (M5.5).
+
+    `siblings` is the whole alternative set per turn, oldest first, **including
+    the turn itself** — so the client derives both "2 of 3" and which id the
+    arrows point at from one array, and its rule for showing the switcher is a
+    plain `length > 1` with no empty case to handle.
+
+    Sending the set rather than a count is what makes the arrows work at all: a
+    count says a branch exists, an array says where it is.
+    """
+    return {
+        "type": "history",
+        "conversation_id": conversation_id,
+        "turns": [
+            {
+                "id": t.id,
+                "parent_turn_id": t.parent_turn_id,
+                "siblings": siblings.get(t.id, [t.id]),
+                "messages": [
+                    {"id": m.id, "role": m.role, "content": m.content} for m in t.messages
+                ],
+            }
+            for t in turns
+        ],
     }
 
 

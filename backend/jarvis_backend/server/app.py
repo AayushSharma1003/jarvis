@@ -42,6 +42,18 @@ TITLE_MAX_CHARS = 80
 MAX_SPOKEN_NOTIFICATIONS = 64
 
 
+def _history_payload(state: AppState, conversation_id: str) -> dict[str, Any]:
+    """The active path plus each turn's alternatives (M5.5).
+
+    One `siblings()` per turn on the path — an indexed lookup each
+    (`idx_turns_parent`) over a path that is tens of turns long, so the extra
+    cost is not worth a schema change to avoid.
+    """
+    turns = state.store.path(conversation_id)
+    siblings = {t.id: state.store.siblings(t.id) for t in turns}
+    return protocol.history(conversation_id, turns, siblings)
+
+
 def _claim_spoken(state: AppState, notification_id: Any) -> bool:
     """May this connection speak that notification? True for the first asker.
 
@@ -558,25 +570,25 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             await _broadcast_conversations(state)
 
         elif mtype == "conversation.history":
+            await send(_history_payload(state, msg.get("conversation_id", "")))
+
+        elif mtype == "conversation.branch":
+            # Move the live path to a different branch (M5.5). The answer is a
+            # fresh history, so switching and loading are the same code path
+            # and cannot drift into showing different things.
             cid = msg.get("conversation_id", "")
-            turns = state.store.path(cid)
-            await send(
-                {
-                    "type": "history",
-                    "conversation_id": cid,
-                    "turns": [
-                        {
-                            "id": t.id,
-                            "parent_turn_id": t.parent_turn_id,
-                            "messages": [
-                                {"id": m.id, "role": m.role, "content": m.content}
-                                for m in t.messages
-                            ],
-                        }
-                        for t in turns
-                    ],
-                }
-            )
+            turn_id = msg.get("turn_id")
+            if not isinstance(turn_id, str) or not turn_id:
+                await send(protocol.error("BAD_MESSAGE", "turn_id required"))
+                return
+            # `tip` first: it raises TURN_NOT_FOUND for an id that does not
+            # exist, and set_active_leaf raises PARENT_TURN_MISMATCH for one
+            # belonging to another conversation — a turn id is not a capability.
+            leaf = state.store.tip(turn_id)
+            # touch=False: moving between branches of a chat you are already
+            # reading is navigation, not activity (the M3.3 rename precedent).
+            state.store.set_active_leaf(cid, leaf, touch=False)
+            await send(_history_payload(state, cid))
 
         else:
             await send(protocol.error("UNKNOWN_TYPE", mtype))
@@ -603,7 +615,7 @@ async def _generate(state: AppState, send, msg: dict[str, Any], content: str) ->
             conversation_id=conversation_id,
             user_text=content,
             on_delta=lambda text: send(protocol.chat_delta(text)),
-            parent_turn_id=msg.get("parent_turn_id"),
+            parent_turn_id=protocol.parent_turn_from(msg),
             registry=await state.registry_for(model),
             on_span=lambda span: send(protocol.tool_span(span)),
             taint=state.taint,
