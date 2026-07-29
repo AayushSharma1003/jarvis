@@ -9,7 +9,7 @@ JARVIS runs shell commands, reads files, and fetches web pages, driven by an LLM
 Every tool has a risk level: `safe` / `ask` / `dangerous`.
 
 - `safe` (e.g. `list_dir`, `send_notification`): runs freely.
-- `ask` (e.g. `write_file`, `get_clipboard` — yes, clipboard is `ask`: clipboards contain passwords): confirmation dialog showing the exact action and arguments.
+- `ask` (e.g. `write_file`, `web_fetch`): confirmation dialog showing the exact action and arguments. The classic illustration of this level is a clipboard read — `get_clipboard` would be `ask` rather than `safe`, because a clipboard holds passwords — but **clipboard is specified, not built: it is cut from v1** (architecture.md), so the shipping `ask` tools are `write_file` and `web_fetch`.
 - `dangerous` (e.g. `delete`, anything network-writing): per-call confirmation, globally disableable (`[tools] allow_dangerous` in config.toml; off means refused without even asking).
 
 `run_command` **always confirms, full command text shown, no exceptions.** There is no command classifier and no denylist — both are bypass generators. A future opt-in allowlist may skip confirmation for *exact-match* previously-approved commands only.
@@ -104,6 +104,10 @@ Implemented in `backend/jarvis_backend/security/sandbox.py`; the escape cases ar
 `read_file` and `list_dir` are `safe`, `write_file` is `ask`, `delete_file` is `dangerous`. Deleting a **directory** is refused outright rather than approximated: one confirmation cannot honestly represent an unbounded set of files.
 
 Reading is deliberately free of confirmation — it changes nothing, and a prompt per file is the fatigue this document warns about. What carries the security is that a read **taints** (§3). The residual risk is silent reading into context, which matters mainly with a cloud backend; §6's screen warning is the natural place that extends to.
+
+**The roots are named in the tool descriptions (M6.2), and that is discoverability, not permission.** `read_file`, `list_dir` and `write_file` end their descriptions with the configured roots, generated from the live `Sandbox` (`tools/filesystem.py`'s `roots_hint`). Nothing about enforcement changes: `Sandbox.resolve` is untouched and remains the only thing that decides, so a path outside the roots is refused exactly as before whether or not the model was told. It exists because the sandbox was invisible from the model's side in **both** directions — `agent/prompts.py` names no paths (prompt length is TTFT, and hardening that prompt measured *worse*), and a refusal teaches nothing either, since `agent/loop.py` sends the model `result.code` alone on failure, i.e. the bare string `PATH_OUTSIDE_SANDBOX`. So the model guessed, and the guess is unrecoverable exactly where it matters most: **a voice user cannot speak an absolute path.** Two deliberate limits — `delete_file` is left out (a destructive turn should not complete on a guessed path, and being `dangerous` it confirms with the resolved path shown anyway), and `run_command` is left out because it **is not sandboxed at all** (§1), so attaching a sentence about roots to it would be the one placement that states something false.
+
+One consequence for whoever builds the first cloud adapter: the roots are absolute paths, so they carry the user's home directory and therefore their **username**, and the tool schema is sent on every request. Local-only that is nothing — the paths never leave the machine they describe. It becomes a disclosure the moment a backend is remote, and it belongs in the same breath as §6's screen warning rather than being discovered later.
 
 ## 3. Taint tracking (prompt-injection defense)
 
@@ -348,7 +352,7 @@ un-approve itself the first time it saved anything.
 ## 6. Credentials, screen, telemetry
 
 - API keys never appear in prompts, logs, or exports. (Enforced by redaction at the config boundary.)
-- `take_screenshot` with a **cloud backend** active warns explicitly: your screen is about to leave this machine.
+- `take_screenshot` with a **cloud backend** active warns explicitly: your screen is about to leave this machine. **Neither half of that sentence ships in v1** — the tool is cut (every model inside the 8GB budget is text-only, so there is nothing to send an image to) and no cloud adapter is built. The rule stands as the design for whichever lands first; it is recorded here rather than in a future commit message because the warning is the *reason* the tool would be acceptable at all.
 - Telemetry: none. The model catalog is bundled data; refreshing it is a manual, explicit action — no automatic phone-home, ever.
 
 ## Known limitations (v1, documented on purpose)

@@ -21,7 +21,15 @@ JARVIS v1 ships unsigned — it's a zero-budget open-source project and code-sig
 
 ## Linux
 
-No gatekeeping. `.AppImage` needs `chmod +x`; `.deb` installs normally.
+No gatekeeping — install the `.deb` normally:
+
+```sh
+sudo apt install ./Jarvis_*_amd64.deb
+```
+
+Built on Ubuntu 22.04, so the glibc floor is 2.35. There is **no AppImage**: the
+build never once succeeded, and shipping the `.deb` was the honest call rather
+than spending more release cycles on it.
 
 ## Verifying what you downloaded
 
@@ -29,6 +37,6 @@ Every release publishes SHA-256 checksums. Compare before running:
 
 ```sh
 shasum -a 256 Jarvis_*.dmg   # macOS
-sha256sum jarvis_*.AppImage  # Linux
-Get-FileHash jarvis_*.msi    # Windows PowerShell
+sha256sum Jarvis_*.deb       # Linux
+Get-FileHash Jarvis_*.msi    # Windows PowerShell
 ```

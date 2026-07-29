@@ -19,8 +19,18 @@ jobs:
             bundles: dmg
           - os: windows-latest
             bundles: msi,nsis
+          # ubuntu-22.04 on purpose: the runner sets the glibc floor for the
+          # .deb, and jammy's 2.35 is what lets it install on older distros.
+          # Moving to 24.04 would trade that away.
+          #
+          # AppImage was CUT in M6.2. Three tags (rc1/rc2/rc3) died at
+          # `linuxdeploy` with Tauri swallowing its stderr, and
+          # APPIMAGE_EXTRACT_AND_RUN=1 on rc3 failed identically — so it was
+          # never the missing-FUSE case it looked like. The .deb is the primary
+          # desktop format; if AppImage is ever wanted back, invoke linuxdeploy
+          # by hand in its own step so the cause is visible.
           - os: ubuntu-22.04
-            bundles: deb,appimage
+            bundles: deb
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,13 +61,6 @@ jobs:
 
       - name: Build app
         working-directory: app
-        env:
-          # linuxdeploy and the AppImage tools are themselves AppImages, and
-          # mounting one needs FUSE, which GitHub's runners do not provide —
-          # the failure surfaces only as `failed to run linuxdeploy` with no
-          # cause. This tells them to unpack and exec instead of mounting.
-          # Harmless on the other two platforms, which never invoke them.
-          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           npm ci
           # tauri.release.conf.json layers in the sidecar resources, which only
@@ -70,7 +73,7 @@ jobs:
           mkdir -p release-artifacts
           find app/src-tauri/target/release/bundle \
             \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.deb' -o -name '*.AppImage' \) \
+               -o -name '*.deb' \) \
             -exec cp {} release-artifacts/ \;
           ls -la release-artifacts
 

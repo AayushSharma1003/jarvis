@@ -20,12 +20,20 @@ tool schema at all.
 What it reports, per model:
   routing   — when a tool IS needed, is it the right one?
   restraint — when NO tool is needed, does it keep its hands in its pockets?
+  discovery — when the user names a place in WORDS ("in my documents"), does it
+              produce an absolute path the sandbox will actually accept?
   malformed — did a botched tool call leak out as visible assistant text?
               (llama3.2:3b does this; such text would be rendered in the
               transcript AND spoken aloud by Kokoro.)
   roundtrip — can it consume a tool result and answer from it?
 
 Restraint is the one that separates models. Routing is easy; declining is not.
+
+`--roots` (M6.2) is the A/B switch for sandbox discoverability: it appends the
+shipping `roots_hint()` sentence to the three file tools, so one script measures
+both sides of that change on the same machine in the same session. Run it both
+ways — the cost lands in `restraint` (more plausible paths in front of a model
+that already over-calls) and the benefit lands in `discovery`.
 """
 
 from __future__ import annotations
@@ -36,11 +44,19 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
+from jarvis_backend.tools.filesystem import roots_hint
+
 DEFAULT_URL = "http://127.0.0.1:11434"
 DEFAULT_MODELS = ["llama3.2:3b", "qwen3:4b", "qwen2.5:7b"]
+
+# Stand-ins for the real `[filesystem] roots` defaults (Documents / Downloads /
+# Desktop via platformdirs). Fixed strings rather than this machine's actual
+# roots so a run here and a run on the A6000 box are comparable.
+PROBE_ROOTS = [Path("/Users/me/Documents"), Path("/Users/me/Downloads"), Path("/Users/me/Desktop")]
 
 # The real system prompt shape (agent/prompts.py), plus the one line about tools.
 # Deliberately NOT "hardened": prompt hardening was measured to make llama3.2:3b
@@ -73,21 +89,33 @@ def _fn(name: str, description: str, props: dict, required: list[str] | None = N
 # jammed every request into read_file, including "how are you?" ->
 # read_file("C:\\Users\\JARVIS\\Desktop\\howareyou.txt"). Shrinking the tool list
 # is a security-surface argument, never an accuracy one.
-TOOLS = [
-    _fn("read_file", "Read the contents of a text file on this computer.",
-        {"path": {"type": "string", "description": "Absolute path"}}, ["path"]),
-    _fn("write_file", "Write text to a file on this computer.",
-        {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
-    _fn("list_dir", "List files in a directory.",
-        {"path": {"type": "string"}}, ["path"]),
-    _fn("run_command", "Run a shell command on this computer.",
-        {"command": {"type": "string"}}, ["command"]),
-    _fn("web_fetch", "Fetch the contents of a web page by URL.",
-        {"url": {"type": "string"}}, ["url"]),
-    _fn("web_search", "Search the web for current information.",
-        {"query": {"type": "string"}}, ["query"]),
-    _fn("get_clipboard", "Read the current clipboard contents.", {}),
-]
+#
+# Built per run rather than as a module constant so `--roots` can measure the
+# real sentence: the hint comes from `roots_hint()` itself, not a copy of it, or
+# the probe would be measuring a string that never ships.
+def build_tools(roots: list[Path] | None) -> list[dict]:
+    """The seven schemas, with or without the sandbox hint on the file tools."""
+    hint = f" {roots_hint(roots)}" if roots else ""
+    return [
+        _fn("read_file", "Read the contents of a text file on this computer." + hint,
+            {"path": {"type": "string", "description": "Absolute path"}}, ["path"]),
+        _fn("write_file", "Write text to a file on this computer." + hint,
+            {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+        _fn("list_dir", "List files in a directory." + hint,
+            {"path": {"type": "string"}}, ["path"]),
+        # The three below take no path, so the sandbox has nothing to say about
+        # them. run_command is deliberately untouched even though it reaches the
+        # filesystem: it is NOT sandboxed (security-model.md §1), and implying
+        # otherwise in its description would be the one genuinely dangerous
+        # place to put this sentence.
+        _fn("run_command", "Run a shell command on this computer.",
+            {"command": {"type": "string"}}, ["command"]),
+        _fn("web_fetch", "Fetch the contents of a web page by URL.",
+            {"url": {"type": "string"}}, ["url"]),
+        _fn("web_search", "Search the web for current information.",
+            {"query": {"type": "string"}}, ["query"]),
+        _fn("get_clipboard", "Read the current clipboard contents.", {}),
+    ]
 
 
 @dataclass(frozen=True)
@@ -95,12 +123,19 @@ class Case:
     name: str
     prompt: str
     expect: str | None  # tool name, or None for "must not call anything"
-    group: str  # "routing" | "restraint"
+    group: str  # "routing" | "restraint" | "discovery"
 
 
 CASES = [
     # --- routing: a tool genuinely is the only way to answer -----------------
-    Case("read", "What's in the file /Users/me/notes.txt?", "read_file", "routing"),
+    # The read path sits under a PROBE_ROOT on purpose. It used to be
+    # /Users/me/notes.txt, which `--roots` would place OUTSIDE the advertised
+    # directories — a model correctly declining to call read_file would then
+    # have scored as a routing miss, and the A/B would have read that confound
+    # as a regression. Changed in BOTH variants so the two stay comparable;
+    # it does shift the absolute numbers slightly against the table in
+    # docs/tool-calling.md, which is noted there.
+    Case("read", "What's in the file /Users/me/Documents/notes.txt?", "read_file", "routing"),
     Case("list", "What files are in /Users/me/Documents?", "list_dir", "routing"),
     Case("shell", "Run `git status` in my repo.", "run_command", "routing"),
     Case("clipboard", "What's on my clipboard right now?", "get_clipboard", "routing"),
@@ -108,13 +143,51 @@ CASES = [
     # --- restraint: answering directly is correct; a tool call is a false alarm
     # These are where models actually differ. Each one, if it misfires, is a
     # permission dialog (or a taint event) the user never asked for.
+    #
+    # This is also where the COST of --roots would show up. tool-calling.md
+    # records llama3.2:3b answering "how are you?" with
+    # read_file("C:\Users\JARVIS\Desktop\howareyou.txt") when it had too few
+    # tools to choose from; handing a model three real, plausible directories
+    # is exactly the input that could make that instinct worse.
     Case("greeting", "Hey, how are you doing today?", None, "restraint"),
     Case("knowledge", "What's the capital of France?", None, "restraint"),
     Case("arithmetic", "What's 17 times 4?", None, "restraint"),
     Case("definition", "What does idempotent mean?", None, "restraint"),
     Case("meta", "What did I just ask you?", None, "restraint"),
     Case("opinion", "Do you think Python or Rust is better for CLI tools?", None, "restraint"),
+    # --- discovery: the user names a place in WORDS, never a path ------------
+    # The half the probe could not see before M6.2, and the half that decides
+    # whether advertising the roots is worth any prompt budget at all. A hit
+    # needs the right tool AND a path the sandbox would actually accept —
+    # calling read_file with /home/user/workspace/notes.txt is a miss, because
+    # that is the exact M6.1 failure this is meant to fix.
+    #
+    # Every one of these is phrased the way somebody SPEAKS, because that is
+    # where it bites: a voice user cannot say "slash Users slash me slash
+    # Documents". Expect ~0 before the hint and that is the point.
+    Case("spoken_read", "Read notes.txt in my documents and tell me what it says.",
+         "read_file", "discovery"),
+    Case("spoken_list", "What's in my Downloads folder?", "list_dir", "discovery"),
+    Case("spoken_write", "Save a haiku about autumn to haiku.txt on my desktop.",
+         "write_file", "discovery"),
 ]
+
+
+def _path_is_reachable(raw: object) -> bool:
+    """Would the real sandbox accept this argument?
+
+    Mirrors `Sandbox.resolve`'s allow-side rule deliberately: absolute, and
+    under a root, compared **exactly** (no casefolding — see the asymmetry in
+    security/sandbox.py, where folding the roots test would widen the sandbox).
+    Not imported from there because that class resolves against the real
+    filesystem, and PROBE_ROOTS do not exist on this machine.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    p = Path(raw)
+    if not p.is_absolute():
+        return False
+    return any(p == r or p.is_relative_to(r) for r in PROBE_ROOTS)
 
 # A tool call the model failed to emit through the proper channel and instead
 # printed as prose. Matching on the JSON-ish shape rather than any single model's
@@ -128,6 +201,11 @@ class Result:
     routing_total: int = 0
     restraint_hits: int = 0
     restraint_total: int = 0
+    # Right tool AND a path the sandbox would accept. Reported, never a gate —
+    # a model that cannot find the sandbox is a bad assistant, not an unsafe
+    # one, and the gates stay on the properties with a security consequence.
+    discovery_hits: int = 0
+    discovery_total: int = 0
     malformed: int = 0
     latencies: list[float] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
@@ -142,7 +220,12 @@ class Result:
 
 
 def call(
-    client: httpx.Client, url: str, model: str, messages: list[dict], think: bool | None = None
+    client: httpx.Client,
+    url: str,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    think: bool | None = None,
 ) -> tuple[dict, float]:
     """One non-streaming exchange. `think=False` disables hybrid reasoning.
 
@@ -151,7 +234,7 @@ def call(
     (docs/latency.md) has no room for it. Always report the mode alongside the
     numbers.
     """
-    body: dict = {"model": model, "messages": messages, "tools": TOOLS, "stream": False}
+    body: dict = {"model": model, "messages": messages, "tools": tools, "stream": False}
     if think is not None:
         body["think"] = think
     t0 = time.time()
@@ -160,45 +243,69 @@ def call(
     return r.json()["message"], time.time() - t0
 
 
-def probe(client: httpx.Client, url: str, model: str, n: int, think: bool | None = None) -> Result:
+def probe(
+    client: httpx.Client,
+    url: str,
+    model: str,
+    n: int,
+    tools: list[dict],
+    think: bool | None = None,
+) -> Result:
     res = Result()
     for case in CASES:
         got: list[str | None] = []
+        paths: list[str] = []
+        hits = 0
         for _ in range(n):
             msg, dt = call(
                 client, url, model,
                 [{"role": "system", "content": SYSTEM}, {"role": "user", "content": case.prompt}],
-                think=think,
+                tools, think=think,
             )
             res.latencies.append(dt)
             calls = msg.get("tool_calls") or []
             name = calls[0]["function"]["name"] if calls else None
             got.append(name)
+            if case.group == "discovery":
+                # The tool alone is not the win. A model that calls read_file
+                # with /home/user/workspace/notes.txt has done exactly what
+                # M6.1 watched qwen3:4b do, and the sandbox refuses it.
+                arg = (calls[0]["function"].get("arguments") or {}).get("path") if calls else None
+                paths.append(str(arg))
+                hits += name == case.expect and _path_is_reachable(arg)
+            else:
+                hits += name == case.expect
             if not calls and _MALFORMED.search(msg.get("content", "")):
                 res.malformed += 1
-        hits = sum(g == case.expect for g in got)
         if case.group == "routing":
             res.routing_hits += hits
             res.routing_total += n
+        elif case.group == "discovery":
+            res.discovery_hits += hits
+            res.discovery_total += n
         else:
             res.restraint_hits += hits
             res.restraint_total += n
         mark = "ok  " if hits == n else "FAIL"
         want = case.expect or "(no tool)"
-        print(f"    {mark} {case.name:11} {hits}/{n}  want={want:14} got={got}")
+        shown = paths if case.group == "discovery" else got
+        print(f"    {mark} {case.name:12} {hits}/{n}  want={want:14} got={shown}")
         if hits < n:
-            res.failures.append(f"{case.name}: wanted {want}, got {got}")
+            res.failures.append(f"{case.name}: wanted {want}, got {shown}")
     return res
 
 
-def roundtrip(client: httpx.Client, url: str, model: str, think: bool | None = None) -> str:
+def roundtrip(
+    client: httpx.Client, url: str, model: str, tools: list[dict], think: bool | None = None
+) -> str:
     """Can it use a tool RESULT? Every model tested so far passes this — the
     hard part is deciding to call, not consuming the answer."""
     messages = [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": "What's in the file /Users/me/notes.txt?"},
+        # Under a PROBE_ROOT, matching the `read` routing case — see the note there.
+        {"role": "user", "content": "What's in the file /Users/me/Documents/notes.txt?"},
     ]
-    msg, _ = call(client, url, model, messages, think=think)
+    msg, _ = call(client, url, model, messages, tools, think=think)
     if not (msg.get("tool_calls") or []):
         return "SKIPPED (no tool call on round 1)"
     messages += [
@@ -209,7 +316,7 @@ def roundtrip(client: httpx.Client, url: str, model: str, think: bool | None = N
             "content": "Buy oat milk. Call the dentist. Renew the domain by Friday.",
         },
     ]
-    reply, _ = call(client, url, model, messages, think=think)
+    reply, _ = call(client, url, model, messages, tools, think=think)
     text = (reply.get("content") or "").strip().replace("\n", " ")
     if reply.get("tool_calls"):
         return f"FAIL (called a tool again instead of answering): {text[:80]}"
@@ -289,8 +396,16 @@ def main() -> int:
         "think=false. Measure the mode you intend to SHIP — qwen3:4b scores "
         "perfectly with thinking on, at a latency the voice path cannot pay.",
     )
+    ap.add_argument(
+        "--roots",
+        action="store_true",
+        help="append the shipping roots_hint() sentence to the three file "
+        "tools (M6.2 sandbox discoverability). Run the same command with and "
+        "without it: the cost shows in restraint, the benefit in discovery.",
+    )
     args = ap.parse_args()
     think = False if args.think == "off" else None
+    tools = build_tools(PROBE_ROOTS if args.roots else None)
 
     with httpx.Client() as client:
         try:
@@ -302,9 +417,11 @@ def main() -> int:
             m["name"] for m in client.get(f"{args.url}/api/tags", timeout=30).json()["models"]
         }
         print(
-            f"ollama {version} — {args.n} run(s) per case, {len(TOOLS)} tool schemas, "
-            f"think={args.think}\n"
+            f"ollama {version} — {args.n} run(s) per case, {len(tools)} tool schemas, "
+            f"think={args.think}, roots={'ON' if args.roots else 'off'}\n"
         )
+        if args.roots:
+            print(f"    file-tool hint: {roots_hint(PROBE_ROOTS)}\n")
 
         summary = []
         for model in args.models:
@@ -320,8 +437,8 @@ def main() -> int:
                 print("    -> no 'tools' capability; skipping\n")
                 summary.append((model, "UNSUPPORTED — no tools capability", 0.0, 0.0))
                 continue
-            res = probe(client, args.url, model, args.n, think=think)
-            print(f"    roundtrip: {roundtrip(client, args.url, model, think=think)}")
+            res = probe(client, args.url, model, args.n, tools, think=think)
+            print(f"    roundtrip: {roundtrip(client, args.url, model, tools, think=think)}")
             ttft = warm_ttft(client, args.url, model)
             v = verdict(res, ttft)
             median = sorted(res.latencies)[len(res.latencies) // 2]
@@ -329,6 +446,7 @@ def main() -> int:
             print(
                 f"    routing {res.routing_hits}/{res.routing_total}  "
                 f"restraint {res.restraint_hits}/{res.restraint_total}  "
+                f"discovery {res.discovery_hits}/{res.discovery_total}  "
                 f"malformed {res.malformed}  median {median:.1f}s  "
                 f"warm-ttft {ttft_s}"
             )
@@ -337,14 +455,20 @@ def main() -> int:
                 model, v,
                 res.routing_hits / max(res.routing_total, 1),
                 res.restraint_hits / max(res.restraint_total, 1),
+                res.discovery_hits / max(res.discovery_total, 1),
             ))
 
-        print("=" * 78)
-        print(f"{'model':16} {'routing':>9} {'restraint':>11}  verdict")
-        print("-" * 78)
-        for model, v, routing, restraint in summary:
-            print(f"{model:16} {routing:>8.0%} {restraint:>11.0%}  {v}")
-        print(json.dumps({m: v for m, v, _, _ in summary}, indent=2))
+        print("=" * 88)
+        print(f"roots={'ON' if args.roots else 'off'}")
+        print(f"{'model':16} {'routing':>9} {'restraint':>11} {'discovery':>11}  verdict")
+        print("-" * 88)
+        for model, v, routing, restraint, discovery in summary:
+            print(f"{model:16} {routing:>8.0%} {restraint:>11.0%} {discovery:>11.0%}  {v}")
+        print(json.dumps(
+            {m: {"verdict": v, "routing": ro, "restraint": rs, "discovery": d}
+             for m, v, ro, rs, d in summary},
+            indent=2,
+        ))
     return 0
 
 

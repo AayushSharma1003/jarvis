@@ -20,6 +20,7 @@ Risk levels, and why each is what it is (docs/security-model.md §1):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..security.permissions import ASK, DANGEROUS, SAFE
@@ -43,6 +44,43 @@ MAX_READ_BYTES = 256 * 1024
 MAX_ENTRIES = 200
 
 
+def roots_hint(roots: Sequence[Path]) -> str:
+    """The one sentence that tells the model where it may reach.
+
+    **Discoverability, not permission.** `security/sandbox.py` is unchanged and
+    remains the only thing that decides; this just stops the model having to
+    guess what it already enforces. Nothing here widens anything — an argument
+    naming a path outside the roots is refused exactly as before.
+
+    It exists because the sandbox was invisible from the model's side, in both
+    directions. `agent/prompts.py` names no paths on purpose (prompt length is
+    TTFT, and hardening that prompt measured *worse* — docs/tool-calling.md),
+    and a refusal teaches nothing either: `agent/loop.py` sends the model
+    `result.code` on failure, so a rejected call comes back as the bare string
+    `PATH_OUTSIDE_SANDBOX` with no hint of what *is* in range. So it guesses —
+    M6.1 watched qwen3:4b try `/home/user/workspace` on a Mac — and the guess
+    is unrecoverable where it matters most, because **a voice user cannot speak
+    an absolute path**.
+
+    Generated from the live roots rather than written down, so a user's
+    configured `[filesystem] roots` is what the model is told, not the default
+    three. No cap on how many are listed: a user with twenty roots chose them,
+    and "… and 17 more" would tell the model strictly less than nothing.
+
+    Empty roots is a real configuration (`roots = []` means no file access, and
+    config.py keeps that distinct from an absent key), and it gets a sentence of
+    its own — the tools still register and still refuse everything, which is
+    unchanged; what changes is that the model stops spending a round finding out.
+    """
+    if not roots:
+        return "File access is turned off: there are no directories you can reach."
+    listed = ", ".join(str(r) for r in roots)
+    return (
+        f"Use an absolute path under one of these directories: {listed}. "
+        "Paths anywhere else are refused."
+    )
+
+
 def _describe(entry: Path) -> str:
     try:
         if entry.is_dir():
@@ -56,6 +94,10 @@ def _describe(entry: Path) -> str:
 
 def build(sandbox: Sandbox) -> list[tuple]:
     """Return (fn, kwargs) registration specs for the file tools."""
+    # Built once from the live roots and shared by the three path-taking tools,
+    # so the three descriptions cannot drift apart. `delete_file` deliberately
+    # does not carry it — see its registration below.
+    hint = roots_hint(sandbox.roots)
 
     def read_file(path: str) -> ToolOutput:
         """Read a text file from the user's computer."""
@@ -139,8 +181,7 @@ def build(sandbox: Sandbox) -> list[tuple]:
                 # the read is free, everything it goes on to justify is not.
                 "read_only": True,
                 "description": (
-                    "Read the contents of a text file on the user's computer. "
-                    "Use the absolute path."
+                    f"Read the contents of a text file on the user's computer. {hint}"
                 ),
                 "params": {"path": "Absolute path to the file to read"},
             },
@@ -152,7 +193,7 @@ def build(sandbox: Sandbox) -> list[tuple]:
                 "read_only": True,
                 "description": (
                     "List the files and folders inside a directory on the user's "
-                    "computer. Use the absolute path."
+                    f"computer. {hint}"
                 ),
                 "params": {"path": "Absolute path to the directory to list"},
             },
@@ -163,7 +204,7 @@ def build(sandbox: Sandbox) -> list[tuple]:
                 "risk": ASK,
                 "description": (
                     "Write text to a file on the user's computer, creating it or "
-                    "replacing its contents. Use the absolute path."
+                    f"replacing its contents. {hint}"
                 ),
                 "params": {
                     "path": "Absolute path to the file to write",
@@ -175,6 +216,14 @@ def build(sandbox: Sandbox) -> list[tuple]:
             delete_file,
             {
                 "risk": DANGEROUS,
+                # No `hint` here, deliberately. The discoverability problem it
+                # solves is a VOICE problem — nobody can speak an absolute path
+                # — and "delete my notes" is not a turn anyone should be able to
+                # complete hands-free on a guessed path. This tool is
+                # `dangerous`: it confirms every time with the resolved path in
+                # front of the user, so a wrong guess costs a refusal that fails
+                # safe, which is the outcome we want here. Cheaper too — three
+                # copies of the sentence instead of four.
                 "description": (
                     "Permanently delete a file from the user's computer. "
                     "Cannot be undone. Use the absolute path."

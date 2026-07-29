@@ -13,6 +13,7 @@ import pytest
 from jarvis_backend.agent.toolfilter import DECISION_WINDOW, MalformedToolCallFilter
 from jarvis_backend.security.permissions import ASK, DANGEROUS, SAFE, Decision, SafeOnlyGate
 from jarvis_backend.tools import DEV_TOOLS_ENV, default_registry, get_datetime
+from jarvis_backend.tools.filesystem import roots_hint
 from jarvis_backend.tools.registry import MAX_RESULT_CHARS, Registry, Tool, build_parameters
 
 
@@ -541,3 +542,80 @@ def test_no_tool_that_can_change_anything_claims_to_be_read_only(workspace):
         assert tool is not None
         if tool.risk != SAFE:
             assert tool.read_only is False, f"{tool.name} is {tool.risk} but claims read-only"
+
+
+# -- the sandbox is discoverable (M6.2) -------------------------------------
+#
+# These assert on the tool DESCRIPTIONS, which is unusual and deliberate: the
+# description is the only channel that reaches the model before it guesses.
+# `agent/prompts.py` names no paths (prompt length is TTFT), and on a refusal
+# `agent/loop.py` hands the model `result.code` alone — the bare string
+# `PATH_OUTSIDE_SANDBOX` — so a rejected call teaches it nothing either. Naming
+# the roots here is the whole mechanism; if it silently stopped happening,
+# nothing else in the suite would notice.
+
+
+@pytest.mark.parametrize("name", ["read_file", "list_dir", "write_file"])
+def test_the_path_tools_name_every_root_they_can_reach(tmp_path, name):
+    """Two roots, both named, from a registry built the way main.py builds it.
+
+    Two rather than one on purpose: with a single root a hardcoded string could
+    pass by coincidence, and the point is that this is generated from whatever
+    the user configured.
+    """
+    docs, downloads = tmp_path / "Papers", tmp_path / "Inbox"
+    docs.mkdir()
+    downloads.mkdir()
+    r = default_registry(SafeOnlyGate(), Sandbox([docs, downloads]))
+    tool = r.get(name)
+    assert tool is not None
+    assert str(docs) in tool.description
+    assert str(downloads) in tool.description
+
+
+def test_the_roots_reach_the_schema_the_model_is_actually_sent(workspace):
+    """The Tool object is not what crosses the wire. `Registry.schemas()` is
+    what `run_exchange` snapshots and hands to Ollama, so that is where the
+    sentence has to survive."""
+    r = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    sent = {s["function"]["name"]: s["function"]["description"] for s in r.schemas()}
+    assert str(workspace) in sent["read_file"]
+
+
+def test_delete_file_does_not_advertise_the_roots(workspace):
+    """Deliberate asymmetry, not an oversight (see the comment on its
+    registration). Discoverability exists so a spoken request can land without
+    an absolute path; "delete my notes" is precisely the turn that should NOT
+    complete on a guessed path. It is `dangerous`, so it confirms every time
+    with the resolved path shown, and a wrong guess fails safe."""
+    r = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    tool = r.get("delete_file")
+    assert tool is not None
+    assert str(workspace) not in tool.description
+
+
+def test_no_roots_says_so_instead_of_naming_nothing(tmp_path):
+    """`roots = []` is a real configuration meaning no file access at all, and
+    config.py keeps it distinct from an absent key. The tools still register and
+    still refuse everything — unchanged — but the description must not degrade
+    into a sentence inviting the model to use a list that is empty."""
+    r = default_registry(SafeOnlyGate(), Sandbox([]))
+    tool = r.get("read_file")
+    assert tool is not None
+    assert "turned off" in tool.description
+    # The failure this rules out is the naive f-string: "under one of these
+    # directories: . Paths anywhere else are refused."
+    assert "directories:" not in tool.description
+    assert ": ." not in tool.description
+
+
+def test_the_hint_is_one_sentence_shared_by_the_tools_that_take_a_path(workspace):
+    """One source, three consumers. Three hand-written copies would drift the
+    first time a root's phrasing changed, and the model would be told two
+    different things about the same sandbox in the same request."""
+    r = default_registry(SafeOnlyGate(), Sandbox([workspace]))
+    hint = roots_hint([workspace])
+    for name in ("read_file", "list_dir", "write_file"):
+        tool = r.get(name)
+        assert tool is not None
+        assert tool.description.endswith(hint), name

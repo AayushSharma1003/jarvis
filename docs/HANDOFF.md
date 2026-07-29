@@ -8,9 +8,9 @@
 
 A **local-first, voice-activated AI assistant** that runs on the user's own
 machine. Cross-platform desktop (macOS, Windows, Linux). Wake word ("Hey Jarvis"
-/ "Hey Friday") → speak → a local LLM with tool access (web, files, shell,
-clipboard, screenshots) responds in a natural voice while an animated sphere UI
-reacts to the audio. Fully local by default (zero API keys, works offline after
+/ "Hey Friday") → speak → a local LLM with tool access (files, shell, web fetch;
+clipboard and screenshots are cut from v1 — architecture.md) responds in a
+natural voice while an animated sphere UI reacts to the audio. Fully local by default (zero API keys, works offline after
 install); cloud LLM backends are an optional toggle. Target user: developers and
 power users who want an assistant they control and that can *do* things on their
 computer. Pitch: Open Interpreter + movie-Jarvis UX + LM Studio polish, in one
