@@ -22,7 +22,7 @@ property this document measures.
 
 ## What is measured
 
-Eleven cases, `n` runs each (default 3), against a realistic seven-tool schema:
+Fourteen cases, `n` runs each (default 3), against a realistic seven-tool schema:
 
 - **routing** (5 cases) — a tool genuinely is the only way to answer. Read a
   named file, list a directory, run a named command, read the clipboard, fetch
@@ -30,13 +30,27 @@ Eleven cases, `n` runs each (default 3), against a realistic seven-tool schema:
 - **restraint** (6 cases) — answering directly is correct and a tool call is a
   false alarm. A greeting, a general-knowledge question, arithmetic, a
   definition, a question about the conversation itself, an opinion.
+- **discovery** (3 cases, added M6.2) — the user names a place in **words**
+  ("in my documents", "on my desktop"), never a path. A hit needs the right
+  tool *and* an absolute path the sandbox would actually accept. Reported,
+  never a gate: a model that cannot find the sandbox is a bad assistant, not an
+  unsafe one.
 - **malformed** — a botched tool call printed as visible prose instead of
   emitted through the tool channel. This is not cosmetic: such text renders in
-  the transcript **and gets spoken aloud by Kokoro**.
+  the transcript **and gets spoken aloud by Kokoro**. Attributed per case
+  (`LEAK xN`), because the aggregate alone cannot distinguish a new case
+  finding a new leak from an old case regressing.
 - **roundtrip** — can the model consume a tool result and answer from it.
 
 Routing is the easy half; every model tested passes it. Restraint is what
 separates them, and it is the half that maps onto a security property.
+
+**The numbers below the M6.2 line are not directly comparable to the table
+above.** Three cases were added, and the `read` routing case moved from
+`/Users/me/notes.txt` to `/Users/me/Documents/notes.txt` so that it sits inside
+the roots `--roots` advertises — otherwise a model *correctly* declining an
+out-of-root path would have scored as a routing miss and the A/B would have read
+that confound as a regression. Compare within a run, not across the document.
 
 ### Thresholds (`verdict()` in the probe)
 
@@ -159,6 +173,65 @@ with two deliberate exceptions:
   overriding the choice.
 - **If every candidate is a reasoning model, one is used anyway.** A slow
   assistant beats `NO_MODELS`.
+
+## Making the sandbox discoverable (M6.2) — measured, and it landed
+
+The one change to a model-facing string this project has ever shipped, and it
+was gated on this probe because `prompts.py` documents prompt text as a measured
+**discipline** risk, not just a latency one (see "Prompt hardening" below).
+
+**The problem.** The sandbox was invisible from the model's side in both
+directions: `agent/prompts.py` names no paths, and a refusal teaches nothing
+either, because `agent/loop.py` sends the model `result.code` alone on
+failure — the bare string `PATH_OUTSIDE_SANDBOX`, with no hint of what *is* in
+range. So the model guessed. It bites hardest on voice, where **a user cannot
+speak an absolute path**.
+
+**The change.** `read_file`, `list_dir` and `write_file` end their descriptions
+with the configured roots, generated from the live `Sandbox`
+(`tools/filesystem.py`'s `roots_hint`). ~125 tokens on a ~780-token tool block.
+`delete_file` and `run_command` are deliberately excluded — see
+[security-model.md §2a](security-model.md).
+
+**The A/B.** Same script, same machine, same session, `--roots` off then on
+(Ollama 0.32.1, 8 GB M2 Pro, n=3):
+
+| Model | | routing | restraint | discovery | malformed |
+|---|---|---|---|---|---|
+| `qwen3:4b` | before | 15/15 | **18/18** | **0/9** | 1 |
+| `qwen3:4b` | after | 15/15 | **18/18** | **9/9** | **0** |
+| `llama3.2:3b` | before | 12/15 | 7/18 | 0/9 | 12 |
+| `llama3.2:3b` | after | **15/15** | 6/18 | 8/9 | **6** |
+
+**`qwen3:4b` is the gate**, because it is the only model in
+`catalog/models.toml` carrying the `tool-calling` tag — i.e. the only model that
+sees these descriptions in a shipping default config. Restraint did not move,
+routing did not move, and malformed went to zero. Discovery went from **nothing
+to everything**.
+
+**Discovery was 0/9 on both models before, and the raw guesses are the argument:**
+
+| Model | Asked | Guessed |
+|---|---|---|
+| `qwen3:4b` | "what's in my Downloads folder?" | `Downloads` — relative, refused as `PATH_NOT_ABSOLUTE` |
+| `qwen3:4b` | "save … on my desktop" | `/Desktop/haiku.txt` — absolute, but the filesystem root |
+| `qwen3:4b` | "read notes.txt in my documents" | *called no tool at all*, 3/3 |
+| `llama3.2:3b` | "what's in my Downloads folder?" | `C:\Users\[User]\Downloads`, 3/3 — **Windows paths on a Mac**, with a literal `[User]` placeholder |
+
+That last row is what a model with no information looks like: it is sampling
+from its training distribution, not reasoning about this machine. One
+`llama3.2:3b` attempt, `~/Documents/notes.txt`, *would* have worked in the real
+app (`Sandbox.resolve` calls `expanduser`), which is the "lucky on the default
+roots, fatal on a custom root" caveat — one coincidence in eighteen is not a
+feature.
+
+**`llama3.2:3b` restraint 7/18 → 6/18 is noise, and saying otherwise would be
+overreading one call.** Its restraint has measured 22% (the table above), 39%
+and 33% across three runs of the same cases; the per-case detail thrashes in
+both directions (arithmetic 3/3 → 0/3, opinion 0/3 → 2/3, greeting 2/3 → 3/3).
+Nothing here moves it outside its established band, and on the other three
+metrics it improved. It is `optin`-gated and already carries a FAIL verdict, so
+per the M6.2 decision it does not veto a fix for the model that ships.
 
 ## Things that did not work
 

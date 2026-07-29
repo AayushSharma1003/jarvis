@@ -256,6 +256,12 @@ def probe(
         got: list[str | None] = []
         paths: list[str] = []
         hits = 0
+        # Attributed per case, not just totalled. The aggregate alone is
+        # un-actionable: when qwen3:4b's malformed count moved from 0 to 1 on
+        # the M6.2 run there was no way to tell whether a new case had found a
+        # new leak or an old case had regressed, and those call for opposite
+        # responses.
+        leaked = 0
         for _ in range(n):
             msg, dt = call(
                 client, url, model,
@@ -277,6 +283,7 @@ def probe(
                 hits += name == case.expect
             if not calls and _MALFORMED.search(msg.get("content", "")):
                 res.malformed += 1
+                leaked += 1
         if case.group == "routing":
             res.routing_hits += hits
             res.routing_total += n
@@ -289,7 +296,8 @@ def probe(
         mark = "ok  " if hits == n else "FAIL"
         want = case.expect or "(no tool)"
         shown = paths if case.group == "discovery" else got
-        print(f"    {mark} {case.name:12} {hits}/{n}  want={want:14} got={shown}")
+        leak = f"  LEAK x{leaked}" if leaked else ""
+        print(f"    {mark} {case.name:12} {hits}/{n}  want={want:14} got={shown}{leak}")
         if hits < n:
             res.failures.append(f"{case.name}: wanted {want}, got {shown}")
     return res

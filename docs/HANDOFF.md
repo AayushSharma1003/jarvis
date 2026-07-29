@@ -1015,6 +1015,87 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    in the file tools' descriptions — spend the exact budget `prompts.py` documents
    as measured and dangerous. Owner's call, with `docs/tool-calling.md` numbers in
    hand.
+   ✅ **CLOSED in M6.2** (2026-07-29) — measured, and the fear was the wrong one.
+   `tools/filesystem.py`'s `roots_hint()` names the live `Sandbox` roots at the end
+   of `read_file`/`list_dir`/`write_file`; `delete_file` and `run_command` are
+   excluded on purpose (a destructive turn should not complete on a guessed path,
+   and the shell **is not sandboxed at all**, so a sentence about roots on it would
+   be the one placement that lies). ~125 tokens on a ~780-token tool block.
+   **A/B'd with the probe, same machine, same session** (see the new section in
+   docs/tool-calling.md): on **qwen3:4b — the only `tool-calling`-tagged model, so
+   the only one this reaches by default — restraint did not move (18/18 → 18/18),
+   routing did not move, malformed went 1 → 0, and discovery went 0/9 → 9/9.**
+   The prompt-budget worry did not materialise, and the thing it was protecting
+   was already broken: discovery measured **0/9 on both models** beforehand.
+   The pre-fix guesses are the argument, and they are worse than "sometimes wrong":
+   qwen3:4b answered "what's in my Downloads folder" with the relative string
+   `Downloads`, wrote to `/Desktop/haiku.txt` (the filesystem root), and on "read
+   notes.txt in my documents" **called no tool at all, 3/3**; llama3.2:3b answered
+   the same question with `C:\Users\[User]\Downloads` — Windows paths on a Mac,
+   with the placeholder left in. That is a model sampling its training
+   distribution, not reasoning about this machine.
+   ✅ **M6.2 the release exists, and the sandbox is discoverable DONE**
+   (2026-07-29) — the milestone where `publish` finally ran. **713 backend tests**
+   (8 new), 6 mutations proven, ruff + tsc + cargo clean.
+   **The AppImage is CUT, not fixed.** `bundles: deb,appimage` → `deb`, and the
+   `APPIMAGE_EXTRACT_AND_RUN` env came back out along with the comment asserting a
+   missing-FUSE diagnosis that rc3 had already disproved — leaving it would have
+   told the next reader something known to be false. Still ubuntu-22.04: the
+   runner sets the `.deb`'s glibc floor.
+   **B2/B1 CLOSED — the first successful Release run in the project's life.**
+   `v0.1.0-rc4`: all three build jobs green, **`publish` green**, and a draft
+   release carrying `Jarvis_0.1.0_aarch64.dmg` (72.7 MB), `_amd64.deb` (83.2 MB),
+   `_x64-setup.exe` (51.7 MB), `_x64_en-US.msi` (70.1 MB) and — for the first time
+   ever — **`SHA256SUMS.txt`**. The dmg was downloaded and verified against it with
+   the exact command `unsigned-install.md` tells users to run: match.
+   **C4 CLOSED.** The seven 0-byte backend modules are deleted, and
+   `tests/test_hygiene.py` now fails on any 0-byte module under `jarvis_backend/`
+   (mutation-proven) so there is no third sweep. `architecture.md` distinguishes
+   two states that had been blurred: **specified-deferred** (the OpenAI-compatible
+   and Anthropic adapters — the pattern is real, the implementations are not) and
+   **cut from v1** (`take_screenshot`, and **clipboard**, which had been dropped by
+   silence since phase 4 and is now an actual decision).
+   **The sandbox is discoverable, and the fear was the wrong one.** See the M6.1
+   gap entry above, now marked closed. Gated on the probe because `prompts.py`
+   documents prompt text as a measured *discipline* risk; the A/B says the budget
+   was not the problem. On **qwen3:4b** — the only `tool-calling`-tagged model, so
+   the only one this reaches by default — restraint held at **18/18**, routing at
+   15/15, malformed went **1 → 0**, and discovery went **0/9 → 9/9**. What the
+   probe could not see before is that discovery was **0/9 on both models**: the
+   thing the prompt budget was protecting was already broken.
+   **Live-verified in the packaged frozen sidecar against a CUSTOM root** — the
+   case HANDOFF called "fatal" — first typed, then **acoustically**: Kokoro through
+   the speakers, heard by the real mic, whisper, and qwen3:4b emitting the
+   **108-character** scratch path from the spoken words *"notes.txt in my
+   workspace"*, `read_file` with no dialog (read-only, correct), and the summary
+   spoken back. That is the M6.1 A3 failure, reproduced and fixed.
+   **The probe gained a `discovery` group and a `--roots` switch**, because it
+   hardcodes its own schemas and would otherwise have measured a change it could
+   not see — two identical numbers. It now imports `roots_hint()` itself, so the
+   A/B tests the sentence that actually ships. Also `LEAK xN` per case: the
+   aggregate malformed count could not distinguish a new case finding a new leak
+   from an old case regressing, and that ambiguity showed up immediately.
+   **B3 — a real finding, and one honest gap.** `codesign -dv` says `adhoc` /
+   `TeamIdentifier=not set`, as M6.1 recorded — but that reads the **main
+   executable's** signature. The **bundle has no `Contents/_CodeSignature/
+   CodeResources` at all**, so `codesign --verify --strict` and `spctl --assess`
+   both fail with *"code has no resources but signature indicates they must be
+   present"*. True of every build ever made here (local, the rc2 copy in
+   `/Applications`, and rc4), so it is a property of bundling without an identity,
+   not a regression. It matters because it is the difference between macOS saying
+   *"cannot be verified"* (which "Open Anyway" fixes) and *"is damaged"* (which it
+   does not). **Also found: App Translocation.** A quarantined app launched from
+   `Downloads` or from inside the dmg runs from a randomised
+   `/private/var/folders/…/AppTranslocation/…` path, which puts the espeak data
+   path at **206 characters** — past gotcha 31's 151 cliff. `unsigned-install.md`
+   now says to drag to `/Applications` *before* launching, and carries a
+   verified/not-verified table instead of an unqualified walkthrough.
+   **Still not seen by a human: the Gatekeeper dialog itself.** A hand-set
+   `com.apple.quarantine` reproduced translocation and left the process alive at
+   ~32 KB RSS with no sidecar for six minutes — consistent with it being blocked on
+   the modal, which is what the doc describes, but screen access was declined so it
+   was not confirmed. **Do not read that as "the app is broken"; it is unresolved.**
+   It needs one person to double-click it once.
 - **Post-v1:** AEC milestone (macOS Voice Processing AU then WebRTC AEC3), voice
   cloning TTS eval (Chatterbox-Turbo tier), auto-update (blocked on signing).
 
@@ -1165,28 +1246,29 @@ driven live. See the Phase 6 entry above and gotchas 30-32.
 **What is actually left before a v1 tag is now short**, and most of it is one
 CI cycle plus two clicks:
 
-1. **Linux AppImage is broken and should be CUT, not fixed.** Three tags
-   (rc1/rc2/rc3) have been spent; `APPIMAGE_EXTRACT_AND_RUN=1` did not help.
-   Change `bundles: deb,appimage` → `bundles: deb` in `release.yml`, and take
-   the now-pointless `APPIMAGE_EXTRACT_AND_RUN` env back out. That single change
-   unblocks `publish`, and everything else in B follows from it. See §B2 for why
-   ubuntu-24.04 is the wrong fix.
-2. **`publish` has never run, so no draft release and no SHA256SUMS have ever
-   existed.** It needs all three platforms green, so it is blocked entirely on
-   item 1. The dmg itself IS now verified (downloaded, mounted, installed from,
-   including to a 158-char path that fired gotcha 31's fallback) — what has
-   never happened is a *published* release.
-3. **The Gatekeeper walkthrough in `unsigned-install.md` cannot be verified
-   until item 2 lands.** `gh run download` sets no `com.apple.quarantine`, so
-   the "Apple could not verify…" path never triggers; it needs a **browser
-   download from a published release**.
-4. **Seven 0-byte files in the backend** that the C2 sweep missed — three are
-   dead duplicates that actively mislead. See §C4.
+1. ✅ **Linux AppImage CUT in M6.2**, not fixed. `bundles: deb`, env removed.
+2. ✅ **`publish` RAN, on `v0.1.0-rc4`** — the first successful Release run ever.
+   Draft release with four bundles and `SHA256SUMS.txt`; the dmg was downloaded
+   and checksum-verified with the doc's own command.
+3. ⬅ **The Gatekeeper walkthrough is STILL unverified, and it is now the last
+   thing standing in front of a v1 tag.** Everything around it is done — the
+   release exists, the checksums verify, the doc is corrected and carries an
+   explicit verified/not-verified table. What is missing is one person
+   double-clicking the app once and reporting **which dialog appears**: "cannot
+   be verified" (Open Anyway works, the doc is right) or "is damaged" (Open
+   Anyway does NOT fix it, and v1 has a real problem). M6.2 found why this is a
+   live question rather than a formality — the bundle has no sealed
+   `_CodeSignature`; see the M6.2 entry. **Owner, 60 seconds.**
+4. ✅ **The seven 0-byte backend files are deleted (M6.2)**, with the deferrals
+   recorded in `architecture.md` and `tests/test_hygiene.py` guarding against a
+   third sweep.
 5. **The tray menu's two items have never been clicked** (A1 could not: macOS
    hosts menu-bar extras in Control Centre, which computer-use cannot be
    granted, and osascript is refused assistive access). Owner, 30 seconds.
-6. **The sandbox is undiscoverable to the model** — a decision, not a bug. See
-   the M6.1 entry; it is the one thing standing between voice and files.
+6. ✅ **The sandbox is undiscoverable to the model — CLOSED in M6.2.** Measured
+   before and after with the probe; `qwen3:4b` held restraint at 18/18 and went
+   0/9 → 9/9 on the new **discovery** cases. See the M6.2 entry and the new
+   section in `docs/tool-calling.md`.
 7. **A5 (Windows/Linux by hand + the qwen3:8b probe)** — owner-gated, and
    **not v1-blocking**: an untagged model already means tools off, so not
    measuring qwen3:8b yields the correct behaviour by default.
