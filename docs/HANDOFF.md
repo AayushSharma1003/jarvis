@@ -965,9 +965,13 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    `libespeak-ng.so: 1 data file(s) missing from the bundle` — gotcha 32, and
    caught only because M6.0's gate is derived rather than a hardcoded file list.
    Fixed; the second tag got Linux through the sidecar, through Rust, and through
-   `Jarvis_0.1.0_amd64.deb`, failing at `linuxdeploy` on the AppImage — a missing-
-   FUSE symptom on GitHub runners, answered with `APPIMAGE_EXTRACT_AND_RUN=1`
-   (**unverified**, needs one more tag; the fallback is shipping `.deb` alone).
+   `Jarvis_0.1.0_amd64.deb`, failing at `linuxdeploy` on the AppImage.
+   **`APPIMAGE_EXTRACT_AND_RUN=1` was tried on rc3 and did NOT fix it** — same
+   error, same place, so it is not the missing-FUSE case it looked like. Tauri
+   swallows linuxdeploy's stderr, so the log says only `failed to run
+   linuxdeploy` and nothing else; the next diagnosis has to come from running
+   linuxdeploy by hand in the workflow, not from the Tauri output. See §B2 for
+   the recommendation, which is to stop paying for this and ship the `.deb`.
    **B1 — a dmg was downloaded, mounted and installed from, for the first time.**
    `Jarvis_0.1.0_aarch64.dmg`, 72.7 MB, pulled from the rc2 run's artifact. It
    mounts with the expected drag-to-install layout (`Jarvis.app` + an
@@ -1161,21 +1165,29 @@ driven live. See the Phase 6 entry above and gotchas 30-32.
 **What is actually left before a v1 tag is now short**, and most of it is one
 CI cycle plus two clicks:
 
-1. **The AppImage fix is unverified.** `APPIMAGE_EXTRACT_AND_RUN=1` is in
-   `release.yml` but has never run. Push a tag; if Linux still fails at
-   `linuxdeploy`, ship `.deb` alone and drop `appimage` from the matrix — the
-   `.deb` already bundles cleanly.
-2. **No human has opened a dmg.** macOS builds one on every tag and `publish`
-   has never run, so no draft release and no SHA256SUMS have ever existed.
-   Install from the artifact, and **also install to a >151-character path** —
-   gotcha 31's fallback branch is unit-tested but has never executed in a real
-   bundle, and `/Applications` at 107 chars never reaches it.
-3. **The tray menu's two items have never been clicked** (A1 could not: macOS
+1. **Linux AppImage is broken and should be CUT, not fixed.** Three tags
+   (rc1/rc2/rc3) have been spent; `APPIMAGE_EXTRACT_AND_RUN=1` did not help.
+   Change `bundles: deb,appimage` → `bundles: deb` in `release.yml`, and take
+   the now-pointless `APPIMAGE_EXTRACT_AND_RUN` env back out. That single change
+   unblocks `publish`, and everything else in B follows from it. See §B2 for why
+   ubuntu-24.04 is the wrong fix.
+2. **`publish` has never run, so no draft release and no SHA256SUMS have ever
+   existed.** It needs all three platforms green, so it is blocked entirely on
+   item 1. The dmg itself IS now verified (downloaded, mounted, installed from,
+   including to a 158-char path that fired gotcha 31's fallback) — what has
+   never happened is a *published* release.
+3. **The Gatekeeper walkthrough in `unsigned-install.md` cannot be verified
+   until item 2 lands.** `gh run download` sets no `com.apple.quarantine`, so
+   the "Apple could not verify…" path never triggers; it needs a **browser
+   download from a published release**.
+4. **Seven 0-byte files in the backend** that the C2 sweep missed — three are
+   dead duplicates that actively mislead. See §C4.
+5. **The tray menu's two items have never been clicked** (A1 could not: macOS
    hosts menu-bar extras in Control Centre, which computer-use cannot be
-   granted, and osascript is refused assistive access).
-4. **The sandbox is undiscoverable to the model** — a decision, not a bug. See
+   granted, and osascript is refused assistive access). Owner, 30 seconds.
+6. **The sandbox is undiscoverable to the model** — a decision, not a bug. See
    the M6.1 entry; it is the one thing standing between voice and files.
-5. **A5 (Windows/Linux by hand + the qwen3:8b probe)** — owner-gated, and
+7. **A5 (Windows/Linux by hand + the qwen3:8b probe)** — owner-gated, and
    **not v1-blocking**: an untagged model already means tools off, so not
    measuring qwen3:8b yields the correct behaviour by default.
 
@@ -1233,14 +1245,21 @@ The workflow **has now been run**, twice, and it had never once succeeded.
   for the first time in a real bundle. See the M6.1 entry. **Still true: no
   draft release and no SHA256SUMS have ever existed**, because `publish` needs
   all three platforms and Linux has never passed.
-- **B2. Linux — was broken, now nearly there.** Sidecar ✅ (gotcha 32), Rust ✅,
-  `Jarvis_0.1.0_amd64.deb` ✅, AppImage ❌ at `linuxdeploy`.
-  `APPIMAGE_EXTRACT_AND_RUN=1` is now set in `release.yml` and is **unverified**
-  — linuxdeploy and the AppImage tools are themselves AppImages and need FUSE,
-  which GitHub runners lack, and the failure says only "failed to run
-  linuxdeploy". If the next tag still fails there, **drop `appimage` from the
-  matrix and ship `.deb`**; the deb already bundles, and one working Linux
-  artifact beats a red release.
+- **B2. Linux — sidecar ✅ (gotcha 32), Rust ✅, `.deb` ✅, AppImage ❌.**
+  Three tags spent: rc1 died in the sidecar step, rc2 got to `linuxdeploy`, rc3
+  added `APPIMAGE_EXTRACT_AND_RUN=1` and **failed identically** — so it is not
+  the missing-FUSE case, and the FUSE env var should probably come back out.
+  Tauri swallows linuxdeploy's stderr; the log carries only `failed to run
+  linuxdeploy`, which is why three cycles bought so little.
+  **RECOMMENDATION: drop `appimage` from the matrix and ship the `.deb`.**
+  `bundles: deb` is a one-word change, it unblocks `publish` — and therefore the
+  draft release, SHA256SUMS, and B1/B3 — and `.deb` is the primary desktop
+  format anyway. **Do NOT "fix" this by moving to ubuntu-24.04**: the runner
+  version sets the glibc floor for the `.deb` too, and jammy's 2.35 is why the
+  deb runs on older distros. Trading that for an AppImage is a downgrade.
+  If AppImage is ever wanted back, the next diagnosis is to invoke linuxdeploy
+  by hand in a workflow step so its stderr is visible, rather than guessing
+  through Tauri.
 - **B3. `docs/unsigned-install.md` — half-verified.** The ad-hoc-signing claim is
   true on a real artifact (`Signature=adhoc`, `TeamIdentifier=not set`). **The
   Gatekeeper walkthrough is still unverified and cannot be verified this way**:
@@ -1255,7 +1274,7 @@ The workflow **has now been run**, twice, and it had never once succeeded.
   project, macOS-only (against cross-platform consistency), and it wants a TCC
   usage declaration. Already excluded from `BUNDLED` in `extensions/bundled.py`,
   so nothing ships broken. Add it to `BUNDLED` when it has code.
-- ✅ **C2. Settings/onboarding UI: CUT from v1, and the 17 empty files are
+- ✅ **C2. Settings/onboarding UI: CUT from v1, and 17 empty files are
   deleted.** The inventory here used to say fourteen and was itself wrong — it
   missed `app/src/lib/api.ts`, `app/src/state/session.ts` and
   `app/src/state/settings.ts`. M3.3's readiness gate already does onboarding's
@@ -1263,6 +1282,25 @@ The workflow **has now been run**, twice, and it had never once succeeded.
   map describes as if it exists reads as abandoned scaffolding. Deleting is
   honest; a stub is not — the same argument that keeps `calendar-macos` out of
   `BUNDLED`.
+- ⬅ **C4. SEVEN MORE 0-byte files, in the BACKEND — found by a later audit,
+  not yet actioned.** The C2 sweep was frontend-and-scripts only, so it missed
+  these entirely. All seven are confirmed **unreferenced** (nothing imports
+  them; `__init__.py` package markers are excluded and are fine):
+  - **Dead duplicates — delete, they actively mislead.** A maintainer opening
+    any of these expecting the implementation finds an empty file:
+    `agent/capabilities.py` (real one is `llm/capabilities.py`),
+    `extensions/installer.py` (real one is `extensions/install.py`, M5.3),
+    `server/websocket.py` (real one is `server/app.py`).
+  - **Unbuilt, and each is a decision rather than a deletion:**
+    `llm/anthropic.py` + `llm/openai_compat.py` — the cloud adapters named in
+    the approved stack, deferred and never written; `tools/clipboard.py` —
+    clipboard was cut from Phase 4 "to phase 5" and phase 5 shipped without it,
+    so it was dropped silently rather than decided; `tools/desktop.py` —
+    `take_screenshot`, explicitly cut from v1 (every model in the 8GB budget is
+    text-only), so this one is settled and only the file lingers.
+  Same call as C2 is the consistent one: delete all seven and record the
+  deferrals in `architecture.md`. Deleting `llm/anthropic.py` does **not** cut
+  the adapter feature — a 0-byte file was never the feature.
 - ✅ **C3. "Hey Friday": CUT from v1.** `scripts/train_wake_word.py` was 0 bytes,
   so an approved feature was silently unbuildable. Training a wake word needs
   PyTorch and a data pipeline, against the project's no-torch ML story. Recorded
