@@ -24,7 +24,13 @@ JARVIS v1 ships unsigned — it's a zero-budget open-source project and code-sig
 
 3. Launch Jarvis again and confirm once. Never asked again for this version.
 
+4. **Approve the microphone when macOS asks.** Wake word and push-to-talk both need it. If you are upgrading from any earlier build you *will* be asked again even though you granted it before — v0.1.0-rc5 changed the app's signing identity, and macOS keys every permission to that identity, so the old grant no longer applies to the new app.
+
 **If you instead see `"Jarvis" is damaged and can't be opened`**, you have a build from **v0.1.0-rc4 or earlier**. That is a different failure and step 2 cannot fix it — the bundle signature was broken (see below). Download rc5 or later.
+
+**If Jarvis never hears you** — no reaction to "Hey Jarvis", and ⌘M always ending in "didn't catch that" — check System Settings → Privacy & Security → **Microphone**. If Jarvis is absent from that list entirely and you are never prompted, you are on a build older than rc5 that was signed without the microphone entitlement; there is nothing to grant and only a newer build fixes it.
+
+> **A note on `Open Anyway` and quarantine.** Approving does **not** remove the `com.apple.quarantine` attribute — it sets an "approved" bit and leaves the flag. That matters because App Translocation (below) keys on the flag being *present*, so an approved app can still run from a randomised read-only path. Installing to `/Applications` with a Finder **drag** before first launch avoids the whole situation; `cp -R` from a shell does not, because translocation applies to any quarantined bundle the *user* has not moved.
 
 <!-- SCREENSHOT PLACEHOLDER: the "Jarvis Not Opened" dialog (wording transcribed above) -->
 <!-- SCREENSHOT PLACEHOLDER: System Settings > Privacy & Security > Open Anyway -->
@@ -41,7 +47,7 @@ It hid for so long because the two failure modes are invisible without a quarant
 
 If you launch a quarantined `Jarvis.app` from `Downloads` or from inside the mounted `.dmg`, macOS runs it from a randomised read-only path under `/private/var/folders/…/AppTranslocation/…` instead of where you put it. Two consequences, both real:
 
-- Jarvis's bundled espeak data path lands at **~206 characters**, past the 151-character limit at which espeak-ng terminates the process (see the espeak note in `docs/HANDOFF.md`). The fallback that copies the data elsewhere is designed for exactly this, but this path has never been exercised end to end.
+- Jarvis's bundled espeak data path lands at **206 characters** (measured, not estimated), past the 151-character limit at which espeak-ng terminates the process (see the espeak note in `docs/HANDOFF.md`). The fallback that copies the data to the data directory is designed for exactly this, and **it holds**: a translocated build was observed running with a live sidecar, resolving espeak from a 69-character path instead. One caveat — the copy already existed from an earlier long-path run, so the *first-run* copy under translocation still has not been exercised.
 - Dragging the app to `/Applications` first avoids translocation entirely, which is why the instruction above is to install before launching.
 
 ## Windows

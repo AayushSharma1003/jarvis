@@ -91,6 +91,30 @@ jobs:
           codesign -dv "$APP" 2>&1 | grep -q 'Signature=adhoc'
           echo "bundle signature ok: consistent ad-hoc seal"
 
+      # The other half of gotcha 34's fix, and the half that cost a day.
+      # Signing the bundle also turns ON the hardened runtime, which is what
+      # makes entitlements enforced instead of ignored — so the same commit
+      # that fixed Gatekeeper silently took the microphone away. A hardened
+      # process without `com.apple.security.device.audio-input` gets a stream
+      # that opens normally and returns exactly 0.0 forever, with NO permission
+      # prompt (the request is refused before TCC is consulted, which is why
+      # `tccutil reset` does nothing). Wake word and push-to-talk both die and
+      # every automated check stays green — `system.readiness` still reports
+      # `microphone: ok` because it only enumerates devices. See gotcha 36.
+      - name: Verify the macOS microphone entitlement
+        if: runner.os == 'macOS'
+        run: |
+          APP=app/src-tauri/target/release/bundle/macos/Jarvis.app
+          # Assert the hardened runtime really is on, so this gate cannot be
+          # "passed" by a future build that quietly stops signing.
+          codesign -dvvv "$APP" 2>&1 | grep -qE 'flags=.*runtime' \
+            || { echo "::error::hardened runtime missing — re-check signing"; exit 1; }
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null \
+            | plutil -convert xml1 -o - - \
+            | grep -q 'com.apple.security.device.audio-input' \
+            || { echo "::error::mic entitlement missing — the app will be silently deaf (gotcha 36)"; exit 1; }
+          echo "microphone entitlement ok: hardened runtime + audio-input"
+
       - name: Collect artifacts
         shell: bash
         run: |

@@ -575,9 +575,20 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     one in from a shell still gets it run from a random read-only
     `/private/var/folders/…/AppTranslocation/<UUID>/d/Jarvis.app` — 145
     characters, which also puts the espeak data path near 228 and straight over
-    gotcha 31's cliff. Clicking **Open Anyway** clears quarantine and ends
-    translocation, so the recovery for (b) is the same click that verifies the
-    Gatekeeper flow.
+    gotcha 31's cliff.
+    **CORRECTED in M6.3 — "Open Anyway" does NOT end translocation.** This
+    entry originally said the click clears quarantine and therefore fixes (b).
+    It does not, at least on macOS 15: approving sets the `USER_APPROVED` bit
+    and **leaves the attribute in place** (observed as
+    `com.apple.quarantine: 00c1` = `DOWNLOAD | HARD | USER_APPROVED` on an app
+    the owner had already approved), and translocation keys on the attribute
+    being *present*, not on approval. So the app launches with no dialog and
+    still runs from `/private/var/folders/…`. What actually ends it is removing
+    the attribute (`xattr -dr com.apple.quarantine`) or a real Finder drag,
+    which marks the bundle user-moved. Note the consequence for verification:
+    once approved, a copy can no longer reproduce the first-run dialog, so
+    Gatekeeper screenshots must come from a **fresh download**, not from a
+    machine that has already said yes.
     **The diagnostic lesson:** TCC failures are invisible from inside the
     process and `TCC.db` is unreadable without Full Disk Access, so a mic that
     returns silence looks identical to a mic that was never granted. When voice
@@ -585,6 +596,62 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     suspect identity before suspecting code — and check
     `codesign -dv | grep Identifier` first, because it takes one second and the
     alternative is auditing the audio path.
+
+36. **Signing the bundle turned ON the hardened runtime, which made the missing
+    microphone entitlement fatal — the app was deaf with a green baseline and
+    no way to grant anything** (M6.3, `app/src-tauri/Entitlements.plist`).
+    Gotcha 35 blamed the identity change for the dead microphone and was only
+    half right. The identity change was real, but re-granting could never have
+    worked, because there was nothing to grant:
+
+        signingIdentity: "-"  → Tauri signs the bundle
+                              → Tauri also sets flags=0x10002(adhoc,RUNTIME)
+                              → hardened runtime ENFORCES entitlements
+                              → bundle declared NO entitlements at all
+                              → microphone denied, silently, forever
+
+    Before M6.2 the bundle was never signed, so there was no hardened runtime,
+    so entitlements were never enforced and the mic worked with none declared.
+    **The fix for gotcha 34 is what broke it**, and it broke it in a second,
+    independent way on top of 35a — one commit, two voice regressions, only one
+    of which was diagnosed at the time.
+    **The fingerprint is exact silence, not an error.** The stream opens, every
+    callback fires on schedule, and every sample is `0.0`. Measured through the
+    packaged app: **79/79 chunks at 0.000**, while a plain shell process in the
+    same room, at the same volume, seconds later read **93/93 non-zero (max
+    0.393)**. That differential is the whole diagnosis — same hardware, same
+    room, different code identity.
+    **No permission prompt is ever shown, and that is the tell.** The request is
+    refused before TCC is consulted, so `tccutil reset Microphone
+    app.jarvis-assistant.desktop` succeeds, changes nothing, and re-launching
+    still produces no dialog. If an app has no TCC entry and *still* does not
+    prompt, stop investigating permissions — the answer is upstream of them.
+    Check `codesign -dvvv | grep flags=` for `runtime`, then
+    `codesign -d --entitlements -` for what the bundle actually declares.
+    **The entitlements plist must not contain XML comments.** The first version
+    documented all of the above inline and `codesign` rejected it with
+    `Failed to parse entitlements: AMFIUnserializeXML: syntax error near line
+    5`. AMFI's parser is not a general plist parser. Keep the file minimal and
+    put the prose here — which is also why `disable-library-validation` is
+    deliberately absent: the frozen sidecar is a separate, non-hardened process,
+    so the dylibs it loads are not the app's concern, and every entitlement is a
+    hole in the runtime the security model just bought.
+    **`release.yml` gates both halves** (runtime flag AND the entitlement), same
+    argument as gotchas 30 and 34: run the gate against the *current* artifact
+    first and watch it fail, or it is decoration. It failed on the build that
+    was installed at the time, naming the missing key.
+    **Verified after the fix, on the packaged app**: the mic differential
+    inverted (58/59 non-zero, max 0.506), a full turn ran
+    `loading→listening→transcribing→thinking→speaking→idle(done)`, the wake
+    detector fired on an idle app (control asserted first, per gotcha 33),
+    *"Introduce yourself"* spoke its whole reply with the reply **confirmed to
+    contain "JARVIS"**, and barge-in still cut an ordinary reply off with
+    `reason="stopped"`.
+    **Still unproven and deliberately flagged:** the fix was applied to the
+    installed app with a direct `codesign`, which bypasses Tauri's bundler.
+    That Tauri actually applies `bundle.macOS.entitlements` during a real build
+    has not been observed yet — the gate exists to catch it, and needs one
+    build to run against.
 
 ## Repo map
 
@@ -1368,34 +1435,37 @@ explicit goal now, and it raises the bar on README/docs quality.
   auto-commit mislabelling only affected the earliest Phase-1 commit. Do NOT
   offer to rewrite history.
 
-## OPEN AT END OF M6.2 — start here next session
+## OPEN AT END OF M6.3 — start here next session
 
-The baseline is **green** (722 backend, ruff, tsc, cargo) and both M6.2 fixes are
-verified. Everything below is either an owner click or a consequence of gotcha 35.
+The baseline is **green** (722 backend, ruff, tsc, cargo) and voice is **working
+again on the packaged app** — see gotcha 36 for what was actually wrong.
 
-1. **Voice is dead on the installed app, and it is gotcha 35, not code.** Neither
-   wake nor ⌘M. Two causes, both environmental: the signing fix changed the
-   bundle identity so the **microphone TCC grant no longer applies**, and the app
-   was `cp`'d in rather than dragged, so it is running **translocated** from
-   `/private/var/folders/…/AppTranslocation/…`. Recovery, in order:
-   *(i)* click **Open Anyway** (System Settings → Privacy & Security → Security)
-   — this clears quarantine and ends translocation; *(ii)* relaunch from
-   `/Applications` and **grant the microphone** when prompted; *(iii)* if no
-   prompt appears, remove Jarvis from System Settings → Privacy & Security →
-   Microphone and relaunch. **Verify with `codesign -dv /Applications/Jarvis.app
-   | grep Identifier` first** — it should read `app.jarvis-assistant.desktop`.
-   Then re-run the two acoustic checks that passed pre-install: "introduce
-   yourself" must speak its whole reply, and "Hey Jarvis" over an ordinary reply
-   must still cut it off.
-2. **Nothing is committed.** Both fixes (gotchas 33 + 34), the `release.yml`
-   signature gate, and all doc updates are sitting in the working tree.
-   `origin/main` is still at `f8ed708`.
-3. **Tag `v0.1.0-rc5`** once committed — rc1–rc4 are all unusable (gotcha 34), so
-   rc5 is the first build a stranger could install. **Put the mic re-grant in the
-   release notes** (gotcha 35a).
-4. **Finish the Gatekeeper walkthrough**: step 1's dialog is confirmed and
-   transcribed in `unsigned-install.md`; steps 2–3 (Open Anyway actually
-   launching it) and the two screenshots remain. Item 1 above does this anyway.
+1. ✅ **Voice is FIXED, and gotcha 35 was only half the story.** The mic was not
+   recoverable by granting anything: signing turned on the hardened runtime and
+   the bundle declared no `com.apple.security.device.audio-input`, so the stream
+   returned exact zeros and macOS never prompted. See **gotcha 36**. Fixed with
+   `app/src-tauri/Entitlements.plist` + `bundle.macOS.entitlements`, plus a
+   `release.yml` gate on the runtime flag and the entitlement. Verified on the
+   packaged app: mic 58/59 non-zero, wake control fired on an idle app,
+   *"Introduce yourself"* spoke its whole reply (reply confirmed to contain
+   "JARVIS"), barge-in still `reason="stopped"`.
+   Translocation was also real and is fixed — but by removing the quarantine
+   attribute, **not** by Open Anyway (see the correction in gotcha 35b).
+2. **THE ENTITLEMENT FIX HAS NOT BEEN THROUGH A REAL BUILD.** It was applied to
+   the installed app with a direct `codesign`, which bypasses Tauri's bundler.
+   The next build must confirm Tauri honours `bundle.macOS.entitlements` — the
+   new gate will fail the release if it does not. Until then the installed
+   `/Applications/Jarvis.app` carries a hand-made signature, not the build's,
+   and should be replaced rather than trusted.
+3. **Tag `v0.1.0-rc5`** — rc1–rc4 are all unusable (gotcha 34). Release notes
+   must cover **both** permission consequences: changing signing identity
+   revokes every OS permission the app held (35a), and users of any earlier
+   build will be prompted for the microphone afresh (36).
+4. **Finish the Gatekeeper walkthrough — needs a FRESH download.** `spctl -a -t
+   exec` on the fixed build returns a plain `rejected`, which is the recoverable
+   "cannot be verified" path, so gotcha 34's fix is confirmed. But this machine
+   has already approved the app, and approval is sticky, so the two screenshots
+   can only come from a newly downloaded rc5.
 5. **The two tray menu items** have still never been clicked (computer-use cannot
    reach Control Centre). Thirty seconds.
 6. **A5** — Windows/Linux file tools by hand + the `qwen3:8b` probe on the A6000.
