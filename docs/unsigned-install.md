@@ -19,9 +19,11 @@ JARVIS v1 ships unsigned — it's a zero-budget open-source project and code-sig
 
 ### What "unsigned" means here, precisely
 
-The main executable **is** ad-hoc signed — Apple Silicon refuses to run anything else, and Tauri applies it automatically. `codesign -dv` reports `Signature=adhoc`, `TeamIdentifier=not set`, which is accurate.
+The app is **ad-hoc signed**: `codesign -dv` reports `Signature=adhoc` and `TeamIdentifier=not set`, and `codesign --verify --deep --strict` passes. That is the correct state for an unsigned release — Apple Silicon will not run anything less, and the bundle's resource seal is internally consistent, so Gatekeeper's complaint is about *notarization* and nothing else. That is what makes "Open Anyway" work.
 
-What the bundle does **not** have is a sealed resource directory: there is no `Contents/_CodeSignature/CodeResources`, so `codesign --verify --strict` reports *"code has no resources but signature indicates they must be present"* and `spctl --assess` reports the same. This is true of every build — local, and every release artifact — and it is a consequence of bundling without a signing identity, not of anything in this repo. It is recorded because it is the difference between macOS saying *"cannot be verified"* (which "Open Anyway" fixes) and *"is damaged"* (which it does not), and **which of those a first-time user sees has not yet been confirmed.**
+**Every release before v0.1.0-rc5 was NOT in that state, and it mattered.** Tauri was never told to sign the bundle, so `Contents/_CodeSignature/CodeResources` was missing while the code directory declared that resources must be sealed. `codesign --verify --strict` failed on every artifact the project ever produced. A user who downloaded such a build got **"Jarvis is damaged and can't be opened. You should move it to the Trash."** — which "Open Anyway" cannot rescue, because it is a broken-signature error rather than an unnotarized one. Fixed by `bundle.macOS.signingIdentity: "-"` in `tauri.conf.json`, and now enforced by a `codesign --verify --deep --strict` gate in `release.yml` so it cannot regress silently. See gotcha 34 in `docs/HANDOFF.md`.
+
+It hid for so long because the two failure modes are invisible without a quarantine flag: artifacts fetched with `gh run download` carry no `com.apple.quarantine`, so Gatekeeper is never consulted and a broken bundle launches perfectly.
 
 ### App Translocation
 
@@ -74,8 +76,9 @@ worse than one that admits it.
 | Release publishes `.dmg` / `.msi` / `.exe` / `.deb` + `SHA256SUMS.txt` | ✅ verified on a real release |
 | The checksum commands above, run against a downloaded `.dmg` | ✅ verified — matched |
 | `codesign -dv` reports ad-hoc, no team identifier | ✅ verified |
-| No sealed `_CodeSignature`; `codesign --verify --strict` fails | ✅ verified (see above) |
-| The macOS "could not verify" dialog and "Open Anyway" | ❌ **not yet seen by a human** |
-| Whether macOS says "cannot be verified" or "is damaged" | ❌ **unknown, and it matters** |
+| `codesign --verify --deep --strict` passes on the bundle | ✅ verified (rc5 onward; **failed** on rc1–rc4) |
+| "is damaged" on a quarantined pre-rc5 build | ✅ **observed by the owner** — the bug this fixed |
+| `spctl --assess` on a fixed build returns a plain `rejected` | ✅ verified — the recoverable path, not a signature error |
+| The macOS "could not verify" dialog and "Open Anyway" on a **fixed** build | ❌ not yet seen by a human |
 | Windows SmartScreen flow | ❌ never run |
 | Linux `.deb` install | ❌ never run |

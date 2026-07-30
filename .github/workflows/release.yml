@@ -67,6 +67,30 @@ jobs:
           # exist after the sidecar build step (keeps plain `cargo check` green).
           npm run tauri build -- --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
 
+      # A build gate, not a formality. Unsigned and BROKEN-signed are two very
+      # different products on macOS, and they look identical until a user with
+      # a quarantined download double-clicks:
+      #
+      #   consistent ad-hoc signature -> "cannot be verified"  -> Open Anyway works
+      #   resource seal missing       -> "is damaged"           -> Open Anyway CANNOT fix it
+      #
+      # Every build before M6.2 was the second kind. Tauri never signed the
+      # bundle (no `macOS.signingIdentity`), so `_CodeSignature/CodeResources`
+      # was absent while the code directory said resources must be sealed —
+      # `codesign --verify --strict` failed on every artifact ever shipped, and
+      # nothing noticed, because a build downloaded with `gh` carries no
+      # quarantine and Gatekeeper is therefore never consulted. See gotcha 34.
+      - name: Verify the macOS bundle signature
+        if: runner.os == 'macOS'
+        run: |
+          APP=app/src-tauri/target/release/bundle/macos/Jarvis.app
+          # Fails loudly on a missing or inconsistent resource seal.
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          # And assert it is ad-hoc, so nobody "fixes" this gate by quietly
+          # requiring a paid identity the project has decided not to buy.
+          codesign -dv "$APP" 2>&1 | grep -q 'Signature=adhoc'
+          echo "bundle signature ok: consistent ad-hoc seal"
+
       - name: Collect artifacts
         shell: bash
         run: |

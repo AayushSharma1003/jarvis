@@ -507,6 +507,52 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     first: enable via the `wake.set` message, play the wake word into an *idle*
     app, and see it fire — only then is a negative result evidence.
 
+34. **"Unsigned" and "broken-signed" are different products, and every build
+    this project ever shipped was the second one** (M6.2,
+    `app/src-tauri/tauri.conf.json`). Tauri was never told to sign the macOS
+    bundle — there was no `bundle.macOS.signingIdentity` key at all — so
+    `Contents/_CodeSignature/CodeResources` was **absent** while the main
+    executable's code directory declared that resources must be sealed.
+    `codesign --verify --deep --strict` failed on every artifact ever produced
+    with *"code has no resources but signature indicates they must be
+    present"*. The consequence is not cosmetic:
+
+        consistent ad-hoc seal  → "cannot be verified"  → Open Anyway WORKS
+        resource seal missing   → "is damaged"          → Open Anyway CANNOT fix it
+
+    A user who downloads the dmg gets the second dialog and is told to move the
+    app to the Trash. **Observed by the owner on rc4**, minutes after installing
+    it.
+    **Why it survived four release candidates and an entire verification
+    milestone:** the two states are indistinguishable without a quarantine
+    flag. `gh run download` does not set `com.apple.quarantine`, so Gatekeeper
+    is never consulted, and a broken bundle launches perfectly — which is
+    exactly what M6.1's B1 observed and reasonably read as success. `codesign
+    -dv` also *looks* fine: it reports `Signature=adhoc` / `TeamIdentifier=not
+    set`, matching the docs word for word, because it is reading the **main
+    executable's** embedded signature and not the bundle seal. Two independent
+    checks both said "unsigned, as intended". Only `--verify --strict` and a
+    real quarantined double-click disagreed.
+    **The diagnosis that isolated it:** two copies on disk, one launching and
+    one refusing, with *identical* broken signatures — the only difference
+    being that one carried quarantine. The working copy was never healthy;
+    macOS simply never checked it. Do not read "it launches here" as evidence
+    about a signature.
+    **Fix:** `"macOS": {"signingIdentity": "-"}`. Tauri then runs a proper
+    bundle sign (nested sidecar included — verified `Signature=adhoc` on the
+    frozen binary too), `--verify --deep --strict` passes, the bundle
+    identifier becomes the real `app.jarvis-assistant.desktop` instead of a
+    synthesised `jarvis-0d3473aa…`, and a quarantined copy now returns a plain
+    `spctl: rejected` — the recoverable, unnotarized path. **Signing does not
+    break PyInstaller**: the frozen sidecar in the signed bundle boots and
+    synthesises speech (checked, because ad-hoc signing a bootloader is exactly
+    the sort of thing that could have).
+    **`release.yml` now gates on it**, same argument as gotcha 30's derived
+    data gate: a property nobody can see by looking has to be asserted by the
+    build, or the next person to touch bundling reintroduces it. The gate also
+    asserts `Signature=adhoc`, so it cannot be "fixed" by requiring a paid
+    identity this project deliberately does not buy.
+
 ## Repo map
 
 ```
@@ -1303,15 +1349,15 @@ CI cycle plus two clicks:
 2. ✅ **`publish` RAN, on `v0.1.0-rc4`** — the first successful Release run ever.
    Draft release with four bundles and `SHA256SUMS.txt`; the dmg was downloaded
    and checksum-verified with the doc's own command.
-3. ⬅ **The Gatekeeper walkthrough is STILL unverified, and it is now the last
-   thing standing in front of a v1 tag.** Everything around it is done — the
-   release exists, the checksums verify, the doc is corrected and carries an
-   explicit verified/not-verified table. What is missing is one person
-   double-clicking the app once and reporting **which dialog appears**: "cannot
-   be verified" (Open Anyway works, the doc is right) or "is damaged" (Open
-   Anyway does NOT fix it, and v1 has a real problem). M6.2 found why this is a
-   live question rather than a formality — the bundle has no sealed
-   `_CodeSignature`; see the M6.2 entry. **Owner, 60 seconds.**
+3. ✅ **The Gatekeeper question is ANSWERED, and the answer was the bad one —
+   now fixed.** The owner double-clicked a quarantined rc4 and got **"Jarvis is
+   damaged"**, which "Open Anyway" cannot rescue. Root cause: Tauri was never
+   told to sign the bundle, so the resource seal was missing on every artifact
+   the project ever built. Fixed with `bundle.macOS.signingIdentity: "-"` plus a
+   `codesign --verify --deep --strict` gate in `release.yml`. See gotcha 34.
+   **Still open, and now cheap:** the "cannot be verified" → Open Anyway
+   walkthrough on a **fixed** (rc5+) build, plus the two screenshots. One
+   double-click.
 4. ✅ **The seven 0-byte backend files are deleted (M6.2)**, with the deferrals
    recorded in `architecture.md` and `tests/test_hygiene.py` guarding against a
    third sweep.
