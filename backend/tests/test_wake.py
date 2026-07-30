@@ -22,7 +22,7 @@ from jarvis_backend.storage import db
 from jarvis_backend.storage.conversations import Store
 from jarvis_backend.wake.detector import WakeError
 from jarvis_backend.wake.pipeline import WakePipeline
-from jarvis_backend.wake.service import WakeService
+from jarvis_backend.wake.service import WakeService, contains_wake_word
 from tests.test_voice_ws import SILENCE, FakeVoiceIO, drain_voice, utterance_script
 from tests.test_ws import TOKEN, FakeBackend, connect
 
@@ -223,11 +223,11 @@ async def test_score_stream_below_threshold_never_wakes():
 # --- barge-in (handle_wake) -------------------------------------------------
 
 
-def make_state(**kwargs) -> AppState:
+def make_state(backend=None, **kwargs) -> AppState:
     return AppState(
         token=TOKEN,
         store=Store(db.connect(":memory:")),
-        backend=FakeBackend(chunks=("hi",)),
+        backend=backend or FakeBackend(chunks=("hi",)),
         config=Config(
             ollama_url="http://unused",
             default_model="",
@@ -327,8 +327,8 @@ class FakeWake:
 
 @pytest.fixture
 def make_wake_client(tmp_path):
-    def _make(voice_io=None, wake=None):
-        state = make_state(voice_io=voice_io)
+    def _make(voice_io=None, wake=None, backend=None):
+        state = make_state(voice_io=voice_io, backend=backend)
         state.wake = wake
         from fastapi.testclient import TestClient
 
@@ -438,3 +438,103 @@ def test_real_detector_hears_synthesized_hey_jarvis():
 
     assert max_score("Hey Jarvis!") > 0.9
     assert max_score("Hello there, how are you?") < 0.2
+
+
+# -- self-wake: Jarvis must not trigger itself by saying its own name (M6.2) --
+#
+# Found live, not by a test: "introduce yourself" made the app speak two words
+# ("I'm JARVIS") and interrupt itself. The wake detector runs during the
+# speaking phase ON PURPOSE (that is barge-in), there is no AEC, so the mic
+# hears the speakers — and the reply contained the wake word. Measured on the
+# real chain through real speakers: that sentence scores 0.990 against a 0.5
+# threshold and fires three times; "The capital of France is Paris." scores
+# 0.000. handle_wake then cancels the generation, which stops playback.
+#
+# Five phases of acoustic testing missed it because every verified reply
+# happened not to contain the word: the M6.1 soak ended on "The capital of
+# France is Paris.", A3 on "Summary written to …", M5.4 on "Hello there
+# friend." The bug needs the assistant to say its own name, and no test had
+# ever asked it to.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("I'm JARVIS, your computer's personal assistant.", True),
+        ("jarvis", True),
+        ("Yes, Jarvis here.", True),
+        ("The capital of France is Paris.", False),
+        # NOT a wake word, and deliberately so: "Hey Friday" is cut from v1
+        # (architecture.md), the model does not ship, and `friday` is a common
+        # English word. Matching it would blind barge-in on "your meeting is on
+        # Friday" in exchange for protecting a wake word that cannot fire.
+        ("Your meeting is on Friday.", False),
+        ("", False),
+    ],
+)
+def test_contains_wake_word(text, expected):
+    assert contains_wake_word(text) is expected
+
+
+def test_a_reply_that_says_the_wake_word_silences_wake_while_it_plays(make_wake_client):
+    """The regression. Without the guard this reply wakes the app mid-sentence."""
+    wake = FakeWake()
+    client, _ = make_wake_client(
+        voice_io=FakeVoiceIO(utterance_script()),
+        wake=wake,
+        backend=FakeBackend(chunks=("I'm JARVIS, your assistant.",)),
+    )
+    with connect(client) as ws:
+        ws.receive_json()  # wake.status
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws)
+    # Two holds: the listening phase (mic ownership) and this one (self-speech).
+    assert wake.calls.count("suppress") == 2
+    # Balanced — a turn that silenced wake must give it back, or the wake word
+    # is dead for the rest of the process's life.
+    assert wake.calls.count("resume") == 2
+    assert wake.calls[-1] == "resume"
+
+
+def test_an_ordinary_reply_leaves_barge_in_live(make_wake_client):
+    """The other half, and the reason this is not just `suppress while speaking`.
+
+    Wake-word barge-in is an approved v1 tier. A reply with no wake word in it
+    cannot trigger the detector, so it must stay listening — otherwise the fix
+    for the self-wake bug quietly cuts the feature it was protecting.
+    """
+    wake = FakeWake()
+    client, _ = make_wake_client(
+        voice_io=FakeVoiceIO(utterance_script()),
+        wake=wake,
+        backend=FakeBackend(chunks=("The capital of France is Paris.",)),
+    )
+    with connect(client) as ws:
+        ws.receive_json()  # wake.status
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws)
+    assert wake.calls.count("suppress") == 1  # listening only
+    assert wake.calls.count("resume") == 1
+
+
+async def test_a_standalone_announcement_that_says_the_wake_word_silences_wake():
+    """The same hazard on the other path that speaks (M5.4's `speak_line`).
+
+    A timer notification is a frontend-authored sentence, so it can perfectly
+    well contain "Jarvis" — and it is spoken with wake FULLY live, because no
+    turn is in flight to have suppressed it. Without the guard the app hears
+    its own announcement and opens a voice turn nobody asked for.
+    """
+    from jarvis_backend.server.voice import speak_line
+
+    wake = FakeWake()
+    io = FakeVoiceIO(utterance_script())
+    state = make_state(voice_io=io)
+    state.wake = wake
+
+    await speak_line(state, "Jarvis here — your ten minutes are up.")
+    assert wake.calls == ["suppress", "resume"]
+
+    wake.calls.clear()
+    await speak_line(state, "Your ten minutes are up.")
+    assert wake.calls == []  # nothing to protect against, wake stays live

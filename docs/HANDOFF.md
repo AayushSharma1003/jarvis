@@ -465,6 +465,48 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     changed nothing, because the file never reached the reclassifier. Reading
     PyInstaller's source cost five minutes and a CI cycle costs eleven.
 
+33. **The assistant said its own wake word and interrupted itself — and five
+    phases of acoustic testing could not see it** (M6.2, `wake/service.py`,
+    `server/voice.py`). Ask the packaged app to *"introduce yourself"* and it
+    speaks two words — *"I'm JARVIS"* — then stops dead and starts listening.
+    Every link was working as designed: the wake detector runs during the
+    speaking phase **on purpose** (that is wake-word barge-in, an approved v1
+    tier), there is no AEC so the microphone hears the speakers (gotcha 7 says
+    so), and `handle_wake` cancels the in-flight generation, which its own
+    comment describes as stopping playback instantly. Nobody had put those
+    three facts next to a reply that contains the word "Jarvis".
+    **Measured on the real chain, through real speakers, into the real mic:**
+    *"I'm JARVIS, your computer's personal assistant."* scores **0.990** against
+    a 0.5 threshold and fires **three times** in one sentence; *"The capital of
+    France is Paris."* scores **0.000**. One variable.
+    **Why the suite structurally could not catch it**: the bug needs the
+    assistant to say its own name, and every acoustic verification in the
+    project's history used a reply that happens not to contain it — the M6.1
+    hour-long soak ended on *"The capital of France is Paris."* (literally the
+    control line), A3 on *"Summary written to …"*, M5.4 on *"Hello there
+    friend."* Same family as 23, 24 and 27, but sharper: this one is reachable
+    by the single most obvious sentence a new user will ever type, and it
+    survived to a release candidate.
+    **The fix is deliberately not "suppress wake while speaking."** That is
+    three lines and it silently deletes barge-in. Instead the exchange takes a
+    *second*, independent suppression for any sentence whose text contains a
+    wake word (`contains_wake_word`), held to the end of that turn's speech —
+    so barge-in stays live for every reply that cannot possibly trigger the
+    detector. It generalises past the reported bug for free: reading aloud a
+    file or web page containing "Jarvis" was the same hazard.
+    `speak_line` needed it too, and is worse — a notification is spoken with
+    wake **fully** live, because no turn is in flight to have suppressed it.
+    **`_WAKE_WORDS` is `("jarvis",)` and the omission is the design.** Adding
+    `"friday"` before the "Hey Friday" model ships would blind barge-in on *"your
+    meeting is on Friday"* to protect a wake word that cannot fire.
+    **A verification trap came with it, and it nearly published a false pass:**
+    `[wake] enabled` in `config.toml` is **not** the toggle — the wake state
+    lives in `state.toml` in the *data* dir (`config.save_wake_enabled`). The
+    first acoustic re-run therefore reported a clean PASS with the wake service
+    **switched off**, which proves exactly nothing. Always assert the control
+    first: enable via the `wake.set` message, play the wake word into an *idle*
+    app, and see it fire — only then is a negative result evidence.
+
 ## Repo map
 
 ```
@@ -1090,6 +1132,17 @@ catalog/models.toml   curated model catalog (bundled data, manual refresh)
    path at **206 characters** — past gotcha 31's 151 cliff. `unsigned-install.md`
    now says to drag to `/Applications` *before* launching, and carries a
    verified/not-verified table instead of an unqualified walkthrough.
+   **The owner found a real bug in the rc4 build within minutes of installing
+   it: Jarvis wakes itself.** "Introduce yourself" → two words spoken, then
+   silence and listening. Full write-up in gotcha 33; the short version is that
+   the reply contains the wake word, the detector runs during speaking by
+   design, and there is no AEC. Fixed with a second, wake-word-conditional
+   suppression rather than by muting wake for the whole speaking phase, so
+   barge-in survives. **722 backend tests** (9 more), 7 mutations proven, and
+   both halves verified acoustically: the reported turn now speaks its whole
+   reply (`reason="done"`), while "Hey Jarvis" over an ordinary reply still
+   cuts it off mid-word (`reason="stopped"`). **rc4 ships this bug** — any
+   build cut before this fix has it.
    **Still not seen by a human: the Gatekeeper dialog itself.** A hand-set
    `com.apple.quarantine` reproduced translocation and left the process alive at
    ~32 KB RSS with no sidecar for six minutes — consistent with it being blocked on

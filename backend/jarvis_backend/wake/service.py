@@ -14,6 +14,19 @@ re-trigger); it runs again during thinking/speaking so the wake word can
 barge in — on_wake cancels the active generation, which stops playback
 instantly.
 
+**With one exception, and it is not theoretical: Jarvis saying its own name.**
+There is no AEC in v1, so the microphone hears the speakers. Ask the app to
+introduce itself and it replies "I'm JARVIS, your…", the detector hears that
+through the room, and it barges in on itself — measured on the real chain at
+score **0.990** against a 0.5 threshold, three times in one sentence, where
+"The capital of France is Paris." scores 0.000. The user sees two words spoken
+and then, abruptly, listening. So the voice exchange takes a *second*
+suppression for any sentence whose text contains the wake word
+(`contains_wake_word`), held to the end of that turn's speech. Barge-in stays
+live for every other reply, which is the point — suppressing the whole
+speaking phase would have been three lines and would have cut an approved v1
+feature.
+
 The enable toggle persists (config.save_wake_enabled) so it survives
 restarts: on stays on until the user turns it off. The mic is only ever open
 while the toggle is on — flipping it off closes the stream within one chunk
@@ -37,6 +50,32 @@ from .detector import WakeError
 COOLDOWN_S = 1.0  # after a trigger: debounce + time for the client to act
 _ERROR_RETRY_S = 5.0  # mic/model failure: don't hot-loop, retry calmly
 _POLL_S = 0.2  # worker's queue timeout = how fast it notices stop requests
+
+# The words that can trigger the shipped detector, for the self-speech check.
+#
+# Only "jarvis", and the omission is the decision: "Hey Friday" is cut from v1
+# (architecture.md) so no model can fire on it, while `friday` is a common
+# English word. Listing it would silence barge-in on "your meeting is on
+# Friday" to protect a wake word that does not exist. Add it here in the same
+# commit that ships the model, never before.
+#
+# Substring rather than word-boundary matching, deliberately: the detector is
+# acoustic and does not care about punctuation or morphology, so "Jarvis's"
+# and "JARVIS," must both count. A false positive costs one reply's barge-in;
+# a false negative costs the bug this exists to stop.
+_WAKE_WORDS = ("jarvis",)
+
+
+def contains_wake_word(text: str) -> bool:
+    """Could speaking this text aloud trigger our own detector?
+
+    Used by the voice exchange to silence wake for the rest of a turn whose
+    reply says the wake word — see the module docstring. Generalises past the
+    reported bug on purpose: it is equally true of Jarvis reading a file or a
+    web page that happens to contain the word.
+    """
+    folded = text.casefold()
+    return any(w in folded for w in _WAKE_WORDS)
 
 
 class WakeService:

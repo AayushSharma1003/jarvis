@@ -27,6 +27,7 @@ from ..stt.endpointing import Endpointer, Event, State
 from ..stt.transcriber import STTError
 from ..tts.base import TTSError
 from ..tts.chunker import SentenceChunker
+from ..wake.service import contains_wake_word
 from . import protocol
 
 log = logging.getLogger(__name__)
@@ -188,7 +189,15 @@ async def speak_line(state, text: str) -> None:
     io = state.voice_io
     if io is None:
         return
+    # Same self-wake hazard as the exchange, and worse here: nothing has
+    # suppressed the wake service, because no turn is in flight. A frontend
+    # sentence is free to contain "Jarvis" ("Jarvis here — your timer's up"),
+    # and hearing itself say that would open a voice turn nobody asked for.
+    wake = getattr(state, "wake", None)
+    held = wake is not None and contains_wake_word(text)
     async with _SPEAK_LOCK:
+        if held:
+            wake.suppress()
         try:
             player = io.player()
             player.start()
@@ -198,6 +207,12 @@ async def speak_line(state, text: str) -> None:
                 await player.drain()
         except Exception:  # noqa: BLE001 - an announcement is never worth a crash
             log.warning("could not speak a notification", exc_info=True)
+        finally:
+            # In the finally, not after the try: a failed synthesis must still
+            # give the wake word back, or one broken announcement kills
+            # always-on listening until the app restarts.
+            if held:
+                wake.resume()
 
 
 async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> None:
@@ -224,12 +239,35 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
     # wake word can barge in on playback.
     wake = state.wake
     wake_held = False
+    # ...with one exception: a reply that says the wake word wakes US. No AEC
+    # in v1, so the mic hears the speakers, and "I'm JARVIS, your…" scores
+    # 0.990 against a 0.5 threshold on the real chain. This is a SECOND,
+    # independent hold — the listening hold is already released by the time
+    # anything is spoken, so one flag could not track both.
+    self_speech_held = False
 
     def _release_wake() -> None:
         nonlocal wake_held
         if wake_held:
             wake.resume()
             wake_held = False
+
+    def _release_self_speech() -> None:
+        nonlocal self_speech_held
+        if self_speech_held:
+            wake.resume()
+            self_speech_held = False
+
+    def _guard_self_speech(text: str) -> None:
+        """Silence wake for the rest of this turn if we are about to say our
+        own name. Once per turn: the counter is reentrant, but resume() is
+        driven by a single flag, and re-suppressing per sentence would need a
+        matching count to unwind."""
+        nonlocal self_speech_held
+        if wake is None or self_speech_held or not contains_wake_word(text):
+            return
+        wake.suppress()
+        self_speech_held = True
 
     try:
         # The mic opens BEFORE the engines load. The first exchange after app
@@ -327,7 +365,9 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
         if conn is not None:
             conn.voice_sentences = sentences
         speaking = asyncio.Event()
-        synth_task = asyncio.create_task(_synth_worker(io, player, sentences, send, speaking))
+        synth_task = asyncio.create_task(
+            _synth_worker(io, player, sentences, send, speaking, _guard_self_speech)
+        )
         level_task = asyncio.create_task(_level_reporter(player, send, speaking))
 
         async def on_delta(delta: str) -> None:
@@ -421,6 +461,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
         if conn is not None:
             conn.voice_sentences = None
         _release_wake()
+        _release_self_speech()
 
 
 async def _synth_worker(
@@ -429,9 +470,17 @@ async def _synth_worker(
     sentences: asyncio.Queue[str | None],
     send,
     speaking: asyncio.Event,
+    guard_self_speech=None,
 ) -> None:
-    """Synthesize sentences strictly in order; the player buffers the audio."""
+    """Synthesize sentences strictly in order; the player buffers the audio.
+
+    `guard_self_speech` is consulted BEFORE synthesis, not before enqueue: the
+    wake service must already be down by the time any of this audio can reach
+    a speaker, and synthesis is the slow part.
+    """
     while (text := await sentences.get()) is not None:
+        if guard_self_speech is not None:
+            guard_self_speech(text)
         try:
             samples, _sr = await asyncio.to_thread(io.synthesize, text)
         except TTSError as e:
