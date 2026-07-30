@@ -553,6 +553,39 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     asserts `Signature=adhoc`, so it cannot be "fixed" by requiring a paid
     identity this project deliberately does not buy.
 
+35. **Fixing the signature silently revoked the microphone, and `cp` into
+    /Applications silently translocated the app** (M6.2, discovered minutes
+    after gotcha 34's fix). Voice stopped working entirely — neither "Hey
+    Jarvis" nor ⌘M — with a **green** baseline and a fix that had just been
+    verified acoustically. Two independent environmental causes, no code
+    regression:
+    *(a)* **macOS keys TCC permissions on code identity.** Gotcha 34's fix
+    changed the bundle identifier from a synthesised `jarvis-0d3473aa5636e31f`
+    to the real `app.jarvis-assistant.desktop`, so the OS sees a **different
+    app** and the previously granted microphone permission no longer applies.
+    Both the wake word and push-to-talk need the mic, so both die at once, and
+    nothing says why — the mic simply returns nothing.
+    **The release consequence, which is the important half:** anyone upgrading
+    across this change loses their mic grant and must re-approve. It should be
+    in the rc5 release notes, and the general rule is that **changing signing
+    identity is a breaking change for every OS permission the app holds** —
+    never do it casually after a release.
+    *(b)* **`cp -R` into /Applications is not a Finder drag.** App Translocation
+    applies to a quarantined bundle that the *user* has not moved, so copying
+    one in from a shell still gets it run from a random read-only
+    `/private/var/folders/…/AppTranslocation/<UUID>/d/Jarvis.app` — 145
+    characters, which also puts the espeak data path near 228 and straight over
+    gotcha 31's cliff. Clicking **Open Anyway** clears quarantine and ends
+    translocation, so the recovery for (b) is the same click that verifies the
+    Gatekeeper flow.
+    **The diagnostic lesson:** TCC failures are invisible from inside the
+    process and `TCC.db` is unreadable without Full Disk Access, so a mic that
+    returns silence looks identical to a mic that was never granted. When voice
+    dies right after *any* change to signing, bundling, or install location,
+    suspect identity before suspecting code — and check
+    `codesign -dv | grep Identifier` first, because it takes one second and the
+    alternative is auditing the audio path.
+
 ## Repo map
 
 ```
@@ -1334,6 +1367,45 @@ explicit goal now, and it raises the bar on README/docs quality.
 - Commit history is fine (conventional prefixes + milestone tags); the
   auto-commit mislabelling only affected the earliest Phase-1 commit. Do NOT
   offer to rewrite history.
+
+## OPEN AT END OF M6.2 — start here next session
+
+The baseline is **green** (722 backend, ruff, tsc, cargo) and both M6.2 fixes are
+verified. Everything below is either an owner click or a consequence of gotcha 35.
+
+1. **Voice is dead on the installed app, and it is gotcha 35, not code.** Neither
+   wake nor ⌘M. Two causes, both environmental: the signing fix changed the
+   bundle identity so the **microphone TCC grant no longer applies**, and the app
+   was `cp`'d in rather than dragged, so it is running **translocated** from
+   `/private/var/folders/…/AppTranslocation/…`. Recovery, in order:
+   *(i)* click **Open Anyway** (System Settings → Privacy & Security → Security)
+   — this clears quarantine and ends translocation; *(ii)* relaunch from
+   `/Applications` and **grant the microphone** when prompted; *(iii)* if no
+   prompt appears, remove Jarvis from System Settings → Privacy & Security →
+   Microphone and relaunch. **Verify with `codesign -dv /Applications/Jarvis.app
+   | grep Identifier` first** — it should read `app.jarvis-assistant.desktop`.
+   Then re-run the two acoustic checks that passed pre-install: "introduce
+   yourself" must speak its whole reply, and "Hey Jarvis" over an ordinary reply
+   must still cut it off.
+2. **Nothing is committed.** Both fixes (gotchas 33 + 34), the `release.yml`
+   signature gate, and all doc updates are sitting in the working tree.
+   `origin/main` is still at `f8ed708`.
+3. **Tag `v0.1.0-rc5`** once committed — rc1–rc4 are all unusable (gotcha 34), so
+   rc5 is the first build a stranger could install. **Put the mic re-grant in the
+   release notes** (gotcha 35a).
+4. **Finish the Gatekeeper walkthrough**: step 1's dialog is confirmed and
+   transcribed in `unsigned-install.md`; steps 2–3 (Open Anyway actually
+   launching it) and the two screenshots remain. Item 1 above does this anyway.
+5. **The two tray menu items** have still never been clicked (computer-use cannot
+   reach Control Centre). Thirty seconds.
+6. **A5** — Windows/Linux file tools by hand + the `qwen3:8b` probe on the A6000.
+   Not v1-blocking; an untagged model already means tools off.
+7. **Deliberately deferred, recorded not forgotten:** teachable refusals
+   (`agent/loop.py` sends the model only `result.code`, so `PATH_OUTSIDE_SANDBOX`
+   teaches it nothing — a zero-token complement to M6.2's discoverability fix,
+   but it changes what every tool reports on failure); AEC (the real fix for
+   gotcha 33's whole class); and the App Translocation espeak path, which the
+   gotcha-31 fallback should cover but nobody has exercised.
 
 ## Immediate next action
 

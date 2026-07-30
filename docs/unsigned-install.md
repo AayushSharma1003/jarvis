@@ -8,13 +8,25 @@ JARVIS v1 ships unsigned — it's a zero-budget open-source project and code-sig
 
 **Install to `/Applications`.** Mount the `.dmg` and drag `Jarvis.app` onto the `Applications` shortcut in the same window. Do not run it from inside the disk image or from `Downloads` — see "App Translocation" below.
 
-**Note:** since macOS 15 (Sequoia), the old right-click → Open trick **no longer bypasses Gatekeeper.** The expected flow:
+**Note:** since macOS 15 (Sequoia), the old right-click → Open trick **no longer bypasses Gatekeeper.** The flow, as observed on **macOS 26.5.2**:
 
-1. Open the app; macOS blocks it ("Apple could not verify…").
-2. **System Settings → Privacy & Security** → scroll down → **"Open Anyway"** next to the JARVIS message.
-3. Confirm once. Never asked again for this version.
+1. Open the app. A dialog appears, titled **`"Jarvis" Not Opened`**:
 
-<!-- SCREENSHOT PLACEHOLDER: the macOS "could not verify" dialog -->
+   > Apple could not verify "Jarvis" is free of malware that may harm your Mac or compromise your privacy.
+
+   Its two buttons are **`Done`** and **`Move to Bin`**. **Click `Done`.** Do not click `Move to Bin` — it deletes the app, and nothing is wrong with it. This dialog is what *every* unsigned app shows; it is about the absence of Apple notarization, not about anything being broken.
+
+2. **System Settings → Privacy & Security** → scroll to **Security**. There is a line reading *"Jarvis was blocked to protect your Mac"* with an **`Open Anyway`** button. Click it and authenticate. Shortcut to that pane:
+
+   ```sh
+   open "x-apple.systempreferences:com.apple.preference.security?General"
+   ```
+
+3. Launch Jarvis again and confirm once. Never asked again for this version.
+
+**If you instead see `"Jarvis" is damaged and can't be opened`**, you have a build from **v0.1.0-rc4 or earlier**. That is a different failure and step 2 cannot fix it — the bundle signature was broken (see below). Download rc5 or later.
+
+<!-- SCREENSHOT PLACEHOLDER: the "Jarvis Not Opened" dialog (wording transcribed above) -->
 <!-- SCREENSHOT PLACEHOLDER: System Settings > Privacy & Security > Open Anyway -->
 
 ### What "unsigned" means here, precisely
@@ -79,6 +91,8 @@ worse than one that admits it.
 | `codesign --verify --deep --strict` passes on the bundle | ✅ verified (rc5 onward; **failed** on rc1–rc4) |
 | "is damaged" on a quarantined pre-rc5 build | ✅ **observed by the owner** — the bug this fixed |
 | `spctl --assess` on a fixed build returns a plain `rejected` | ✅ verified — the recoverable path, not a signature error |
-| The macOS "could not verify" dialog and "Open Anyway" on a **fixed** build | ❌ not yet seen by a human |
+| The `"Jarvis" Not Opened` dialog on a **fixed** build (step 1) | ✅ **observed on macOS 26.5.2**, wording transcribed above |
+| "Open Anyway" actually launching it (steps 2–3) | ⬅ in progress |
+| Screenshots | ❌ two placeholders remain |
 | Windows SmartScreen flow | ❌ never run |
 | Linux `.deb` install | ❌ never run |
