@@ -487,7 +487,11 @@ function handleMessage(msg: ServerMessage, set: SetState, get: () => Conversatio
         ...(msg.state === "idle"
           ? {
               voiceLevel: 0,
-              voiceHint: msg.reason === "no_speech" ? "no_speech" : null,
+              // "mic_silent" is NOT a flavour of "no_speech": the microphone
+              // delivered nothing at all, so "try again" is bad advice. The
+              // backend distinguishes them; the wording lives in en.json.
+              voiceHint:
+                msg.reason === "no_speech" || msg.reason === "mic_silent" ? msg.reason : null,
             }
           : {}),
       });

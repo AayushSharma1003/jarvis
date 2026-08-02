@@ -80,40 +80,67 @@ jobs:
       # `codesign --verify --strict` failed on every artifact ever shipped, and
       # nothing noticed, because a build downloaded with `gh` carries no
       # quarantine and Gatekeeper is therefore never consulted. See gotcha 34.
-      - name: Verify the macOS bundle signature
+      # NOTE ON WHAT THIS INSPECTS, because the obvious version is broken:
+      # `--bundles dmg` DELETES target/release/bundle/macos/Jarvis.app once the
+      # dmg is built ("Cleaning ...Jarvis.app" in the log), so a gate pointed at
+      # that path fails with "No such file" on every real tag. It is also the
+      # wrong thing to check. Gotcha 34's lesson is to verify the artifact the
+      # user receives rather than a convenient proxy, so this mounts the dmg and
+      # checks the bundle that actually ships.
+      - name: Verify the macOS bundle signature and entitlements
         if: runner.os == 'macOS'
         run: |
-          APP=app/src-tauri/target/release/bundle/macos/Jarvis.app
-          # Fails loudly on a missing or inconsistent resource seal.
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          # And assert it is ad-hoc, so nobody "fixes" this gate by quietly
-          # requiring a paid identity the project has decided not to buy.
-          codesign -dv "$APP" 2>&1 | grep -q 'Signature=adhoc'
-          echo "bundle signature ok: consistent ad-hoc seal"
+          set -euo pipefail
+          DMG=$(find app/src-tauri/target/release/bundle/dmg -name '*.dmg' | head -1)
+          [ -n "$DMG" ] || { echo "::error::no dmg produced"; exit 1; }
+          MP=$(mktemp -d)
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MP" >/dev/null
+          trap 'hdiutil detach "$MP" >/dev/null 2>&1 || true' EXIT
+          APP="$MP/Jarvis.app"
 
-      # The other half of gotcha 34's fix, and the half that cost a day.
-      # Signing the bundle also turns ON the hardened runtime, which is what
-      # makes entitlements enforced instead of ignored — so the same commit
-      # that fixed Gatekeeper silently took the microphone away. A hardened
-      # process without `com.apple.security.device.audio-input` gets a stream
-      # that opens normally and returns exactly 0.0 forever, with NO permission
-      # prompt (the request is refused before TCC is consulted, which is why
-      # `tccutil reset` does nothing). Wake word and push-to-talk both die and
-      # every automated check stays green — `system.readiness` still reports
-      # `microphone: ok` because it only enumerates devices. See gotcha 36.
-      - name: Verify the macOS microphone entitlement
-        if: runner.os == 'macOS'
-        run: |
-          APP=app/src-tauri/target/release/bundle/macos/Jarvis.app
-          # Assert the hardened runtime really is on, so this gate cannot be
-          # "passed" by a future build that quietly stops signing.
-          codesign -dvvv "$APP" 2>&1 | grep -qE 'flags=.*runtime' \
-            || { echo "::error::hardened runtime missing — re-check signing"; exit 1; }
-          codesign -d --entitlements - --xml "$APP" 2>/dev/null \
-            | plutil -convert xml1 -o - - \
-            | grep -q 'com.apple.security.device.audio-input' \
-            || { echo "::error::mic entitlement missing — the app will be silently deaf (gotcha 36)"; exit 1; }
-          echo "microphone entitlement ok: hardened runtime + audio-input"
+          # Fails loudly on a missing or inconsistent resource seal. Every build
+          # before M6.2 failed here: Tauri was never told to sign the bundle, so
+          # CodeResources was absent while the code directory said resources
+          # must be sealed. Nothing noticed, because a build downloaded with
+          # `gh` carries no quarantine and Gatekeeper is never consulted.
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # Read once, match in-shell. NOT `codesign ... | grep -q`: grep -q
+          # exits at the first match, codesign takes SIGPIPE, and `pipefail`
+          # turns that into exit 141 — a gate that fails on a bundle that is
+          # perfectly fine. (Observed; this whole step is here because gates
+          # that have never been run are decoration.)
+          desc=$(codesign -dvvv "$APP" 2>&1)
+
+          # Assert it is ad-hoc, so nobody "fixes" this gate by quietly
+          # requiring a paid identity the project has decided not to buy.
+          case "$desc" in
+            *"Signature=adhoc"*) ;;
+            *) echo "::error::bundle is not ad-hoc signed"; exit 1 ;;
+          esac
+
+          # The other half, and the half that cost a day (gotcha 36). Signing
+          # the bundle also turns ON the hardened runtime, which is what makes
+          # entitlements ENFORCED instead of ignored — so M6.2's Gatekeeper fix
+          # silently took the microphone away. A hardened process without
+          # `com.apple.security.device.audio-input` gets a stream that opens
+          # normally and returns exactly 0.0 forever, with NO permission prompt
+          # (the request is refused before TCC is consulted, which is why
+          # `tccutil reset` does nothing). Wake word and push-to-talk both die
+          # and every automated check stays green.
+          case "$desc" in
+            *"flags="*"runtime"*) ;;
+            *) echo "::error::hardened runtime missing — re-check signing"; exit 1 ;;
+          esac
+
+          ent=$(codesign -d --entitlements - --xml "$APP" 2>/dev/null \
+                  | plutil -convert xml1 -o - - 2>/dev/null || true)
+          case "$ent" in
+            *"com.apple.security.device.audio-input"*) ;;
+            *) echo "::error::mic entitlement missing — the app ships silently deaf (gotcha 36)"; exit 1 ;;
+          esac
+
+          echo "shipped bundle ok: ad-hoc seal + hardened runtime + audio-input"
 
       - name: Collect artifacts
         shell: bash

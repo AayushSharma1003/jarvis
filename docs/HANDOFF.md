@@ -647,11 +647,92 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     *"Introduce yourself"* spoke its whole reply with the reply **confirmed to
     contain "JARVIS"**, and barge-in still cut an ordinary reply off with
     `reason="stopped"`.
-    **Still unproven and deliberately flagged:** the fix was applied to the
-    installed app with a direct `codesign`, which bypasses Tauri's bundler.
-    That Tauri actually applies `bundle.macOS.entitlements` during a real build
-    has not been observed yet — the gate exists to catch it, and needs one
-    build to run against.
+    **CONFIRMED through a real build (M6.3):** Tauri does apply
+    `bundle.macOS.entitlements`, and it survives the `--config
+    tauri.release.conf.json` layer, which only overrides `bundle.resources`.
+    Verified inside the shipped dmg, not on an intermediate.
+    **Two bugs in the gate itself, both found only by running it** — which is
+    the entire argument for running gates against real artifacts:
+    *(i)* `--bundles dmg` **deletes** `target/release/bundle/macos/Jarvis.app`
+    after building the dmg ("Cleaning …Jarvis.app" in the log), so a gate
+    pointed at that path fails with "No such file" on every real tag. The gate
+    now mounts the dmg and checks the bundle that actually ships, which is also
+    the more honest target. *(ii)* `codesign … | grep -q` exits 141: `grep -q`
+    stops at the first match, `codesign` takes SIGPIPE, and `set -o pipefail`
+    turns a perfectly good bundle into a failed build. Read once into a
+    variable and match with `case` instead.
+    **Mutation-proved:** removing `bundle.macOS.entitlements` and rebuilding
+    makes the gate exit 1 with the intended error — while
+    `codesign --verify --deep --strict` still reports "valid on disk, satisfies
+    its Designated Requirement". That is gotcha 36 in one line: the signature
+    gate passes on a bundle that ships deaf, which is exactly why the second
+    gate has to exist.
+
+37. **Nothing could tell "nobody spoke" from "the microphone is dead", and the
+    test suite had that blindness written into its fixtures** (M6.3,
+    `audio/silence.py`). Every symptom of gotcha 36 arrived as `no_speech`, and
+    the UI said *"Didn't catch anything — press the mic and try again"*, which
+    is advice that can never work. Worse on the wake path: with the toggle on
+    and the mic revoked the user gets **no feedback at all** — no state change,
+    no error, nothing — which is precisely what "Hey Jarvis isn't working" felt
+    like from the outside.
+    **The discriminator is exactness, not loudness.** A revoked or hardware-
+    muted microphone returns samples of *exactly* `0.0` forever; a live mic in a
+    soundproof room still returns room tone, self-noise and ADC dither. So the
+    test is `== 0.0` on every sample, never "RMS below epsilon" — an epsilon
+    would need tuning against real rooms and would start guessing.
+    **The fixture was the bug's best hiding place:** `test_voice_ws.py` defined
+    `SILENCE = np.zeros(...)` and used it everywhere to mean "a quiet room", so
+    a dead microphone and a quiet room were **byte for byte the same input**.
+    No test could have distinguished them. Quiet is now seeded low-amplitude
+    noise (`ROOM_TONE`) and `np.zeros` means the one thing it means on real
+    hardware (`DEAD_MIC`). Watch for this shape elsewhere: a fixture that
+    models an edge case as a perfect zero usually deletes the edge case.
+    Backend emits codes only: voice turns end `reason="mic_silent"` instead of
+    `"no_speech"`, and the wake service reports `MIC_SILENT` once per deaf
+    episode (latched, re-arming only after real audio returns — a warning every
+    three seconds forever is not help).
+    **One mutation came back NOT CAUGHT and that was the useful run.** The
+    "reported once, not per chunk" assertion was vacuous: returning `"silent"`
+    ends that listen session, the service opens a *fresh* capture, and the test
+    had queued its remaining chunks on the abandoned one. It passed against a
+    deliberately broken implementation. Feed the *current* capture.
+
+38. **Opening the microphone ran on the event loop, so a pending permission
+    prompt froze the entire backend** (M6.3, `server/voice.py`). Found by
+    accident while verifying gotcha 36's fix on a freshly installed build:
+    every `voice.start` wedged the sidecar. Not just voice — `/health` stopped
+    answering, the WebSocket stopped accepting connections, and existing
+    clients died with `keepalive ping timeout`. The process sat at 0% CPU
+    looking perfectly healthy in `ps`.
+    **`sample <pid>` named it in one shot**, which is the reusable lesson:
+
+        task_step_impl  (in _asyncio…)      <- inside a coroutine
+          Pa_OpenStream  (in libportaudio)
+            OpenAndSetupOneAudioUnit
+
+    `RealVoiceIO.open_capture()` did `MicCapture(); cap.start()`, and `start()`
+    is `Pa_OpenStream`. On macOS that call **blocks while TCC decides whether
+    the app may record** — and if the permission prompt has not been answered,
+    it blocks indefinitely. Reinstalling changes the code identity, macOS
+    re-asks, and the first ⌘M hangs the whole sidecar.
+    **Why it never showed before:** the block only lasts as long as the
+    decision. With a grant already in place `Pa_OpenStream` returns in
+    milliseconds, so a year of testing on an already-approved machine sees
+    nothing. It needs a *first run on a new identity*, which is exactly the
+    upgrade path no test covers.
+    Fixed by splitting construction from start: `MicCapture()` still needs the
+    running loop, so it is built on the loop and `await
+    asyncio.to_thread(capture.start)` opens it. The `Capture` protocol already
+    declared `start()`, so nothing else moved.
+    **The obvious test does not work, and passing it means nothing.** "Send
+    voice.start, then ping, assert the pong is fast" passes against the broken
+    code — the `loading` frame that tells the client the open has begun is
+    itself only flushed once the loop is free, so the measurement starts after
+    the block has ended (measured 0.000s against deliberately blocking code).
+    The test asserts **thread identity** instead: whichever thread calls
+    `start()` must not be the one that called `open_capture()`. That cannot be
+    faked by scheduling luck.
 
 ## Repo map
 
@@ -1451,12 +1532,12 @@ again on the packaged app** — see gotcha 36 for what was actually wrong.
    "JARVIS"), barge-in still `reason="stopped"`.
    Translocation was also real and is fixed — but by removing the quarantine
    attribute, **not** by Open Anyway (see the correction in gotcha 35b).
-2. **THE ENTITLEMENT FIX HAS NOT BEEN THROUGH A REAL BUILD.** It was applied to
-   the installed app with a direct `codesign`, which bypasses Tauri's bundler.
-   The next build must confirm Tauri honours `bundle.macOS.entitlements` — the
-   new gate will fail the release if it does not. Until then the installed
-   `/Applications/Jarvis.app` carries a hand-made signature, not the build's,
-   and should be replaced rather than trusted.
+2. ✅ **The entitlement fix IS confirmed through a real build.** Tauri honours
+   `bundle.macOS.entitlements` and it survives the `tauri.release.conf.json`
+   layer; verified inside the shipped dmg, and mutation-proved by removing the
+   key and watching the gate fail. Two bugs in the gate itself were found by
+   running it (a deleted `.app` and a SIGPIPE) — both fixed. See gotcha 36.
+   `/Applications/Jarvis.app` is now a real build, not the hand-signed one.
 3. **Tag `v0.1.0-rc5`** — rc1–rc4 are all unusable (gotcha 34). Release notes
    must cover **both** permission consequences: changing signing identity
    revokes every OS permission the app held (35a), and users of any earlier

@@ -53,16 +53,20 @@ class SyncQueueCapture:
 
 
 def make_service(**overrides) -> tuple[WakeService, dict]:
-    ctx: dict = {"captures": [], "wakes": 0, "persisted": []}
+    ctx: dict = {"captures": [], "wakes": 0, "persisted": [], "silent": 0}
 
     async def on_wake() -> bool:
         ctx["wakes"] += 1
         return True
 
+    async def on_silence() -> None:
+        ctx["silent"] += 1
+
     kwargs = dict(
         make_pipeline=FakePipeline,
         open_capture=lambda: SyncQueueCapture(ctx["captures"]),
         on_wake=on_wake,
+        on_silence=on_silence,
         persist=ctx["persisted"].append,
         enabled=True,
         threshold=0.5,
@@ -204,6 +208,62 @@ async def test_set_enabled_persists_and_stops_listening():
     assert ctx["persisted"] == [False]
     with pytest.raises(WakeError):
         make_service(available=False)[0].set_enabled(True)
+    await svc.stop()
+
+
+async def test_a_deaf_microphone_is_reported_once_and_rearms_on_recovery():
+    """The always-on path's version of gotcha 36, and the worse half of it.
+
+    With wake enabled and the microphone revoked, the user gets NO feedback of
+    any kind — no state change, no error, nothing. The service happily reads
+    zeros forever. This reports it once per episode (not per chunk, which would
+    be a firehose), and re-arms only after real audio returns, so a mic that
+    comes back and dies again is reported again.
+    """
+    svc, ctx = make_service(silence_chunks=3)
+    svc.ensure_started()
+    await until(lambda: ctx["captures"])
+
+    def feed(chunk, n=1):
+        # Always the CURRENT capture: returning "silent" ends that listen
+        # session and the service opens a fresh one, so anything queued on the
+        # old object is abandoned. Getting this wrong makes the "reported once"
+        # assertion below vacuous — it passed against a deliberately broken
+        # implementation until the mutation run caught it.
+        for _ in range(n):
+            ctx["captures"][-1].q.put_nowait(chunk)
+
+    async def drained():
+        await until(lambda: ctx["captures"][-1].q.empty())
+        await asyncio.sleep(0.05)
+
+    feed(np.array([0.0]), 8)  # well past the threshold
+    await until(lambda: ctx["silent"] == 1)
+
+    # Still dead, on the next listen session. Must NOT report again: the user
+    # does not need the same warning every three seconds forever.
+    await until(lambda: len(ctx["captures"]) >= 2)
+    feed(np.array([0.0]), 8)
+    await drained()
+    assert ctx["silent"] == 1, "re-reported without the microphone ever recovering"
+
+    feed(np.array([0.2]))  # the mic comes back (below the wake threshold)
+    await drained()
+    feed(np.array([0.0]), 8)  # and dies again — that IS news
+    await until(lambda: ctx["silent"] == 2)
+    await svc.stop()
+
+
+async def test_a_quiet_room_is_never_reported_as_a_deaf_microphone():
+    """Real room tone is never bit-exact zero; only a dead stream is."""
+    svc, ctx = make_service(silence_chunks=3)
+    svc.ensure_started()
+    await until(lambda: ctx["captures"])
+    for _ in range(20):
+        ctx["captures"][0].q.put_nowait(np.array([1e-7]))  # quiet, but not nothing
+    await until(lambda: ctx["captures"][0].q.empty())
+    await asyncio.sleep(0.05)
+    assert ctx["silent"] == 0
     await svc.stop()
 
 

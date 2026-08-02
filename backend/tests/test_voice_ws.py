@@ -23,7 +23,17 @@ from jarvis_backend.stt.endpointing import Endpointer
 from jarvis_backend.stt.vad import CHUNK_SAMPLES
 from tests.test_ws import TOKEN, FakeBackend, connect, curated  # noqa: F401 (fixture)
 
-SILENCE = np.zeros(CHUNK_SAMPLES, dtype=np.float32)
+# A real microphone in a silent room still returns *something*: room tone, the
+# mic's own self-noise, the ADC's dither. It is never exactly zero. Modelling
+# quiet as `np.zeros` is what made gotcha 36 untestable -- it made a revoked
+# microphone and a quiet room the same input -- so quiet is noise now, and
+# exact zeros mean the one thing they mean on a real machine: nothing is
+# reaching us. Seeded, so the suite stays deterministic.
+ROOM_TONE = (np.random.default_rng(20260730).standard_normal(CHUNK_SAMPLES) * 1e-4).astype(
+    np.float32
+)
+DEAD_MIC = np.zeros(CHUNK_SAMPLES, dtype=np.float32)
+SILENCE = ROOM_TONE  # back-compat for tests that just mean "not speech"
 SPEECH = np.full(CHUNK_SAMPLES, 0.8, dtype=np.float32)
 
 
@@ -245,7 +255,7 @@ def test_silent_load_does_not_spend_the_no_speech_budget(make_voice_client):
 
 
 def test_no_speech_times_out(make_voice_client):
-    io = FakeVoiceIO([SILENCE] * 200, max_wait_ms=320)
+    io = FakeVoiceIO([ROOM_TONE] * 200, max_wait_ms=320)
     client, _ = make_voice_client(io)
     with connect(client) as ws:
         ws.send_json({"type": "voice.start"})
@@ -254,6 +264,80 @@ def test_no_speech_times_out(make_voice_client):
     assert idle[-1]["reason"] == "no_speech"
     assert not any(m["type"] == "stt.text" for m in msgs)
     assert io.synthesized == []
+
+
+class ThreadRecordingVoiceIO(FakeVoiceIO):
+    """Records which thread constructed the capture and which one started it."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.constructed_on: int | None = None
+        self.started_on: int | None = None
+
+    def open_capture(self) -> FakeCapture:
+        self.constructed_on = threading.get_ident()
+        io = self
+
+        class RecordingCapture(FakeCapture):
+            def start(self) -> None:
+                io.started_on = threading.get_ident()
+
+        cap = RecordingCapture(self._script)
+        self.captures.append(cap)
+        return cap
+
+
+def test_opening_the_microphone_does_not_run_on_the_event_loop(make_voice_client):
+    """`MicCapture.start()` is `Pa_OpenStream`, and it must not block the loop.
+
+    On macOS that call BLOCKS while TCC decides whether this app may record —
+    indefinitely, if the permission prompt has not been answered. Run on the
+    event loop it takes the ENTIRE backend down with it: no /health, no
+    WebSocket, no chat, no UI updates, until the process is killed.
+
+    Observed on a freshly installed build, where the new code identity made
+    macOS re-ask: every voice.start wedged the sidecar, and `sample` showed the
+    main thread parked in `Pa_OpenStream` under `task_step_impl` — i.e. inside
+    a coroutine.
+
+    Asserting the thread rather than a timing window is deliberate: the
+    obvious timing test (ping during the open) passes against blocking code,
+    because the frame that tells the client the open has begun is itself only
+    flushed once the loop is free again. The thread identity cannot lie.
+    """
+    io = ThreadRecordingVoiceIO(utterance_script())
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws)
+
+    assert io.started_on is not None, "capture was never started"
+    assert io.started_on != io.constructed_on, (
+        "the microphone was opened on the event-loop thread; a permission "
+        "prompt would freeze the whole backend"
+    )
+
+
+def test_a_dead_microphone_is_not_reported_as_no_speech(make_voice_client):
+    """A denied or muted mic must not be described as "didn't catch that".
+
+    This is gotcha 36's whole lesson. A revoked microphone delivers samples of
+    exactly 0.0 forever -- the stream opens, callbacks fire on schedule, and
+    nothing errors -- so the turn ends in the same timeout a quiet room does.
+    The user is then told to try again, which can never work.
+
+    Note what this test needed in order to exist: until now the suite modelled
+    room tone as `np.zeros`, so "quiet room" and "dead microphone" were byte
+    for byte the same input and no test could have told them apart.
+    """
+    io = FakeVoiceIO([DEAD_MIC] * 200, max_wait_ms=320)
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        msgs = drain_voice(ws, until_reasons=("no_speech", "mic_silent", "error", "done"))
+    idle = [m for m in msgs if m["type"] == "voice.state" and m["state"] == "idle"]
+    assert idle[-1]["reason"] == "mic_silent"
+    assert not any(m["type"] == "stt.text" for m in msgs)
 
 
 def test_empty_transcription_goes_idle(make_voice_client):

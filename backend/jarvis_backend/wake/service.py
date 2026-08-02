@@ -45,11 +45,21 @@ import threading
 from collections.abc import Awaitable, Callable
 
 from ..audio.devices import AudioError
+from ..audio.silence import is_digital_silence
+from ..stt.vad import SAMPLE_RATE
 from .detector import WakeError
 
 COOLDOWN_S = 1.0  # after a trigger: debounce + time for the client to act
 _ERROR_RETRY_S = 5.0  # mic/model failure: don't hot-loop, retry calmly
 _POLL_S = 0.2  # worker's queue timeout = how fast it notices stop requests
+
+# How much unbroken digital silence means "this microphone is not working"
+# rather than "the room is quiet". A revoked or muted mic returns samples of
+# exactly 0.0 forever (audio/silence.py, gotcha 36); a live one never does.
+# Three seconds at SyncMicCapture's 1024-sample blocksize, so a momentary
+# device switch does not nag the user.
+SILENT_SECONDS = 3.0
+SILENT_CHUNKS = int(SILENT_SECONDS * SAMPLE_RATE / 1024)
 
 # The words that can trigger the shipped detector, for the self-speech check.
 #
@@ -89,10 +99,15 @@ class WakeService:
         enabled: bool,
         threshold: float,
         available: bool,
+        on_silence: Callable[[], Awaitable[None]] | None = None,
+        silence_chunks: int = SILENT_CHUNKS,
     ) -> None:
         self._make_pipeline = make_pipeline
         self._open_capture = open_capture
         self._on_wake = on_wake
+        self._on_silence = on_silence
+        self._silence_chunks = silence_chunks
+        self._deaf = False  # latched: one report per episode, not per chunk
         self._persist = persist
         self._threshold = threshold
         self.available = available
@@ -154,7 +169,7 @@ class WakeService:
             stop = threading.Event()
             self._stop_worker = stop
             try:
-                triggered = await asyncio.to_thread(self._listen_blocking, stop)
+                outcome = await asyncio.to_thread(self._listen_blocking, stop)
             except (AudioError, WakeError):
                 # Mic vanished or a model failed mid-stream. The toggle stays
                 # on (a USB mic may come back); just don't spin.
@@ -162,16 +177,24 @@ class WakeService:
                 continue
             finally:
                 stop.set()  # if WE were cancelled, the thread must exit too
-            if triggered:
+            if outcome == "silent":
+                # Reported once per deaf episode; `_deaf` stays latched so the
+                # worker keeps listening (for a recovery) without re-reporting.
+                if self._on_silence is not None:
+                    with contextlib.suppress(Exception):
+                        await self._on_silence()
+                continue
+            if outcome == "wake":
                 handled = False
                 with contextlib.suppress(Exception):
                     handled = await self._on_wake()
                 if handled:
                     await asyncio.sleep(COOLDOWN_S)
 
-    def _listen_blocking(self, stop: threading.Event) -> bool:
+    def _listen_blocking(self, stop: threading.Event) -> str:
         """One capture session, run in the worker thread: open mic, run the
-        gated pipeline until a trigger (True) or a stop request (False).
+        gated pipeline until a trigger ("wake"), a run of digital silence long
+        enough to mean the mic is dead ("silent"), or a stop request ("stop").
         The capture is closed HERE, before returning — so a trigger hands
         the voice exchange a free mic."""
         if self._pipeline is None:
@@ -179,15 +202,27 @@ class WakeService:
         pipeline = self._pipeline
         pipeline.reset()
         capture = self._open_capture()
+        silent_run = 0
         try:
             while not stop.is_set():
                 try:
                     chunk = capture.get(timeout=_POLL_S)
                 except queue.Empty:
                     continue
+                # Nothing at all reaching us? Say so once, then keep listening:
+                # a USB mic can be re-plugged and a permission can be granted
+                # without restarting the app.
+                if is_digital_silence(chunk):
+                    silent_run += 1
+                    if silent_run >= self._silence_chunks and not self._deaf:
+                        self._deaf = True
+                        return "silent"
+                else:
+                    silent_run = 0
+                    self._deaf = False  # re-arm: a mic that dies again is news
                 score = pipeline.process(chunk)
                 if score is not None and score >= self._threshold:
-                    return True
-            return False
+                    return "wake"
+            return "stop"
         finally:
             capture.close()

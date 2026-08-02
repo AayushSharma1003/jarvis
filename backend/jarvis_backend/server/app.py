@@ -173,6 +173,20 @@ async def handle_wake(state: AppState) -> bool:
     return heard
 
 
+async def handle_mic_silence(state: AppState) -> None:
+    """The always-on mic has been delivering nothing but exact zeros.
+
+    Broadcast, for the same reason wake.detected is (see handle_wake). This is
+    the only feedback the wake path can give: with the microphone revoked or
+    muted there is no trigger, no state change and no error — the user says
+    "Hey Jarvis" into a void and nothing at all happens. Codes only; the
+    frontend owns the wording. See gotcha 36.
+    """
+    for conn in list(state.connections):
+        with contextlib.suppress(Exception):
+            await conn.send(protocol.error("MIC_SILENT"))
+
+
 def create_app(state: AppState) -> FastAPI:
     app = FastAPI(title="jarvis-backend", version=__version__)
 

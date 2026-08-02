@@ -43,7 +43,7 @@ from .security.confirm import ConfirmBroker
 from .security.permissions import PermissionGate
 from .security.sandbox import Sandbox
 from .security.taint import TaintTracker
-from .server.app import AppState, create_app, handle_wake
+from .server.app import AppState, create_app, handle_mic_silence, handle_wake
 from .server.auth import make_token
 from .server.voice import RealVoiceIO
 from .storage import db
@@ -223,6 +223,7 @@ def _make_wake_service(state: AppState, config: Config) -> WakeService:
         make_pipeline=make_pipeline,
         open_capture=open_capture,
         on_wake=lambda: handle_wake(state),
+        on_silence=lambda: handle_mic_silence(state),
         persist=save_wake_enabled,
         enabled=load_wake_enabled(),
         threshold=config.wake_threshold,

@@ -22,6 +22,7 @@ import numpy as np
 
 from ..agent.loop import run_exchange
 from ..audio.devices import AudioError
+from ..audio.silence import SilenceWatch
 from ..llm.tiering import pick_model
 from ..stt.endpointing import Endpointer, Event, State
 from ..stt.transcriber import STTError
@@ -127,11 +128,16 @@ class RealVoiceIO:
         return self._tts
 
     def open_capture(self) -> Capture:
+        """Construct only — the caller starts it off the event loop.
+
+        Starting here would put Pa_OpenStream on the loop, and a pending
+        microphone permission prompt would then freeze the entire backend.
+        MicCapture's constructor needs the running loop, so the split is
+        deliberate rather than cosmetic: build here, `start()` in a thread.
+        """
         from ..audio.capture import MicCapture
 
-        cap = MicCapture()
-        cap.start()
-        return cap
+        return MicCapture()
 
     def player(self) -> Playback:
         if self._player is None:
@@ -281,7 +287,14 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
             wake.suppress()
             wake_held = True
         try:
+            # Construct on the loop (MicCapture needs the running loop for its
+            # threadsafe hand-off), but START off it: start() is Pa_OpenStream,
+            # which blocks while macOS decides whether we may record — forever,
+            # if the permission prompt has not been answered. On the loop that
+            # freezes the whole backend, not just voice: no /health, no chat,
+            # no UI. See gotcha 38.
             capture = io.open_capture()
+            await asyncio.to_thread(capture.start)
         except AudioError as e:
             await send(protocol.error(e.code, e.detail))
             await send(protocol.voice_state("idle", reason="error"))
@@ -305,10 +318,15 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
         endpointer = io.make_endpointer()
         utterance = None
         last_level = 0.0
+        # Watches for a microphone that is delivering nothing at all, so the
+        # timeout below can say "I cannot hear you" instead of "say it again".
+        # See audio/silence.py and gotcha 36.
+        silence = SilenceWatch()
         # Replay the load window first. No level updates for it: it is history,
         # and the sphere would get a burst of stale RMS in a single tick.
         backlog = capture.backlog()
         for chunk in backlog:
+            silence.feed(chunk)
             if endpointer.feed(chunk, io.vad_prob(chunk)) == Event.SPEECH_END:
                 utterance = endpointer.utterance()
                 break
@@ -319,6 +337,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
             endpointer.reset()
         if utterance is None:  # the whole utterance can land inside the load window
             async for chunk in capture.chunks():
+                silence.feed(chunk)
                 event = endpointer.feed(chunk, io.vad_prob(chunk))
                 now = time.monotonic()
                 if now - last_level >= LEVEL_INTERVAL_S:
@@ -326,7 +345,10 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
                     rms = float(np.sqrt(np.mean(chunk * chunk)))
                     await send(protocol.voice_level(min(1.0, rms * _LISTEN_LEVEL_GAIN)))
                 if event == Event.TIMEOUT:
-                    await send(protocol.voice_state("idle", reason="no_speech"))
+                    # A window that heard literally nothing is a broken mic, not
+                    # a quiet user — telling them to try again cannot help.
+                    reason = "mic_silent" if silence.is_dead else "no_speech"
+                    await send(protocol.voice_state("idle", reason=reason))
                     return
                 if event == Event.SPEECH_END:
                     utterance = endpointer.utterance()
