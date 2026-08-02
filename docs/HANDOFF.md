@@ -1592,22 +1592,36 @@ copies were lost mid-session, which is why they are checked in now.
    key and watching the gate fail. Two bugs in the gate itself were found by
    running it (a deleted `.app` and a SIGPIPE) — both fixed. See gotcha 36.
    `/Applications/Jarvis.app` is now a real build, not the hand-signed one.
-3. **Tag `v0.1.0-rc5`** — rc1–rc4 are all unusable (gotcha 34). Release notes
-   must cover **both** permission consequences: changing signing identity
-   revokes every OS permission the app held (35a), and users of any earlier
-   build will be prompted for the microphone afresh (36).
-   **This tag is also the first CI run of the new macOS gates and the first
-   Windows/Linux build since M6.2.** The gates pass locally against a real dmg
-   and are mutation-proved, but `hdiutil attach` on a GitHub runner has never
-   been exercised — expect the gate, not the app, to be the thing that breaks.
-   Nothing in M6.3 is platform-specific beyond `bundle.macOS.entitlements`
-   (macOS-scoped) and cross-platform Python covered by the suite.
+3. ✅ **`v0.1.0-rc5` is CUT and the Release run was GREEN on all four jobs**
+   (run `30747979798`, on `6355145`). macOS dmg, Windows msi+nsis, Linux deb,
+   then `publish` — a **draft** release with four bundles and `SHA256SUMS.txt`.
+   **The new macOS gate ran on the runner and passed**, which was the one
+   genuinely unexercised thing: `hdiutil attach` works there, and the log says
+   `shipped bundle ok: ad-hoc seal + hardened runtime + audio-input`. Confirmed
+   it *executed* rather than skipping — a skipped gate would be worse than a
+   failing one.
+   **The CI artifact was then verified independently**, because a local build
+   proves nothing about CI's: all four checksums verify, and the workflow's own
+   gate text — extracted from the YAML and run verbatim against the
+   **downloaded** dmg — passes, with `Identifier=app.jarvis-assistant.desktop`,
+   `flags=0x10002(adhoc,runtime)` and `audio-input` present.
+   The release body now carries the microphone re-grant warning and a note that
+   rc1–rc4 are not installable; it is baked in at publish time, so it had to
+   land *before* the tag.
+   **rc4's draft release is deleted** (its artifacts fail Gatekeeper with "is
+   damaged"); the `v0.1.0-rc4` git tag is kept as history.
    ✅ **The readiness microphone gap is CLOSED** — see gotcha 39.
-4. **Finish the Gatekeeper walkthrough — needs a FRESH download.** `spctl -a -t
-   exec` on the fixed build returns a plain `rejected`, which is the recoverable
-   "cannot be verified" path, so gotcha 34's fix is confirmed. But this machine
-   has already approved the app, and approval is sticky, so the two screenshots
-   can only come from a newly downloaded rc5.
+4. **Finish the Gatekeeper walkthrough — needs a FRESH BROWSER download.**
+   `spctl -a -t exec` on the fixed build returns a plain `rejected`, the
+   recoverable "cannot be verified" path, so gotcha 34's fix is confirmed. Two
+   things still block the screenshots and both are structural, not laziness:
+   *(a)* a `gh release download` carries **no `com.apple.quarantine`** —
+   re-confirmed on the rc5 artifact — so Gatekeeper is never consulted, which
+   is exactly how gotcha 34 hid for four candidates; the download must come
+   from a browser. *(b)* This machine has already approved the app and
+   approval is **sticky** (gotcha 35b), so it cannot produce a first-run dialog
+   at all. Needs a browser download, ideally on another Mac or a fresh user
+   account.
 5. **The two tray menu items** have still never been clicked (computer-use cannot
    reach Control Centre). Thirty seconds.
 6. **A5** — Windows/Linux file tools by hand + the `qwen3:8b` probe on the A6000.
