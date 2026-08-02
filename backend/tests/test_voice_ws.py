@@ -8,7 +8,9 @@ and chunker. No microphone, speaker, or model files involved.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
+import types
 
 import numpy as np
 import pytest
@@ -340,7 +342,26 @@ def test_a_dead_microphone_is_not_reported_as_no_speech(make_voice_client):
     assert not any(m["type"] == "stt.text" for m in msgs)
 
 
-def test_readiness_reports_a_microphone_that_only_ever_delivered_silence(make_voice_client):
+@pytest.fixture
+def one_input_device(monkeypatch):
+    """Pin the hardware layer so the *logic* below is testable anywhere.
+
+    `_mic_check` asks the OS for devices before it consults the observed
+    verdict, and that order is right — no audio runtime at all is a more
+    fundamental answer than "the mic delivered silence". But it means a machine
+    without PortAudio (every CI runner) answers AUDIO_RUNTIME_MISSING and the
+    branch under test is never reached. Faking the device makes these tests
+    say the same thing on a dev Mac and in CI.
+    """
+    fake = types.ModuleType("sounddevice")
+    fake.query_devices = lambda: [{"name": "fake mic", "max_input_channels": 1}]
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+    return fake
+
+
+def test_readiness_reports_a_microphone_that_only_ever_delivered_silence(
+    make_voice_client, one_input_device
+):
     """The gate that called a completely deaf machine `ready: true`.
 
     Throughout the gotcha-36 outage `system.readiness` reported
@@ -362,7 +383,9 @@ def test_readiness_reports_a_microphone_that_only_ever_delivered_silence(make_vo
     assert mic["code"] == "MIC_SILENT"
 
 
-def test_readiness_stops_warning_once_the_microphone_is_heard(make_voice_client):
+def test_readiness_stops_warning_once_the_microphone_is_heard(
+    make_voice_client, one_input_device
+):
     """A mic that works must not be reported as broken — and the verdict has to
     be able to recover, or a granted permission would look permanently bad."""
     io = FakeVoiceIO(utterance_script())
