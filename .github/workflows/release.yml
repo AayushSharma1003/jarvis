@@ -170,10 +170,35 @@ jobs:
       - name: Generate SHA-256 checksums
         working-directory: all
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # The permission note is not boilerplate. v0.1.0-rc5 changed the app's
+      # signing identity (gotcha 34's fix), and macOS keys EVERY permission to
+      # code identity — so anyone upgrading silently loses the microphone and
+      # gets no explanation from the OS. Someone who does not know that will
+      # conclude the app is broken, because from the outside it is: wake word
+      # and push-to-talk both go dead at once. See gotchas 35a and 36.
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
           files: all/*
           body: |
-            Unsigned release — verify your download against SHA256SUMS.txt.
-            Install instructions per OS: see docs/unsigned-install.md.
+            Unsigned release — verify your download against `SHA256SUMS.txt`.
+            Install instructions per OS: see `docs/unsigned-install.md`.
+
+            ### Upgrading? macOS will ask for the microphone again
+
+            This release changed the app's code signing identity, and macOS
+            ties every permission to that identity — so a microphone grant you
+            gave an earlier build **no longer applies**. Approve the prompt when
+            it appears. If it never appears, remove Jarvis from
+            **System Settings → Privacy & Security → Microphone** and relaunch.
+
+            Until you do, "Hey Jarvis" and ⌘M will both do nothing: the
+            microphone returns silence rather than an error, so the app looks
+            like it is ignoring you.
+
+            ### Earlier release candidates were not installable
+
+            `v0.1.0-rc1` through `rc4` shipped a broken macOS bundle seal and
+            fail with *"Jarvis is damaged"*, which **Open Anyway cannot fix**.
+            Delete them rather than trying to work around it; this build is the
+            first one that installs.
