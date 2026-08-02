@@ -1518,8 +1518,18 @@ explicit goal now, and it raises the bar on README/docs quality.
 
 ## OPEN AT END OF M6.3 — start here next session
 
-The baseline is **green** (722 backend, ruff, tsc, cargo) and voice is **working
-again on the packaged app** — see gotcha 36 for what was actually wrong.
+The baseline is **green** (726 backend, ruff, tsc+vite, 2 Rust) and voice is
+**fully working on the installed build**, re-verified after the microphone was
+granted: control fired on an idle app, mic **54/55** non-zero (max 0.473), a
+complete turn ran `loading→listening→transcribing→thinking→speaking→idle(done)`,
+*"Introduce yourself"* spoke its whole reply with the reply confirmed to contain
+"JARVIS", and barge-in still ended `reason="stopped"`. Committed as `ea569d2`.
+
+**The live probes now live in the repo**: `backend/tests/manual/probe_voice_live.py`
+(`control` / `mic` / `acoustic`), auto-discovering the running sidecar's port and
+token. Run `control` FIRST, always — it is what stops a "pass" from a
+switched-off detector (gotcha 33). They found gotchas 36 and 38; the scratch
+copies were lost mid-session, which is why they are checked in now.
 
 1. ✅ **Voice is FIXED, and gotcha 35 was only half the story.** The mic was not
    recoverable by granting anything: signing turned on the hardened runtime and
@@ -1542,6 +1552,19 @@ again on the packaged app** — see gotcha 36 for what was actually wrong.
    must cover **both** permission consequences: changing signing identity
    revokes every OS permission the app held (35a), and users of any earlier
    build will be prompted for the microphone afresh (36).
+   **This tag is also the first CI run of the new macOS gates and the first
+   Windows/Linux build since M6.2.** The gates pass locally against a real dmg
+   and are mutation-proved, but `hdiutil attach` on a GitHub runner has never
+   been exercised — expect the gate, not the app, to be the thing that breaks.
+   Nothing in M6.3 is platform-specific beyond `bundle.macOS.entitlements`
+   (macOS-scoped) and cross-platform Python covered by the suite.
+   **Known gap, deliberately not closed:** `system.readiness` still reports
+   `microphone: ok` on a dead mic — it only enumerates devices, and its own
+   docstring says so. It matters much less now that both real paths report
+   `mic_silent`/`MIC_SILENT`, but a first-run user is still shown a green
+   microphone row on a machine that cannot hear. Fixing it properly means
+   opening a stream during readiness, which contends with the wake service for
+   the device; that tradeoff has not been thought through.
 4. **Finish the Gatekeeper walkthrough — needs a FRESH download.** `spctl -a -t
    exec` on the fixed build returns a plain `rejected`, which is the recoverable
    "cannot be verified" path, so gotcha 34's fix is confirmed. But this machine
