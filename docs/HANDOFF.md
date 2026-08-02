@@ -761,6 +761,22 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     case. A flag that is only ever asserted true is not a flag.
     Never fatal, unchanged: a broken mic costs voice, not conversation — the
     same reasoning that keeps missing voice models a warning.
+    **It broke CI on the first push, and the reason generalises.** `_mic_check`
+    asks the OS for input devices *before* it consults the verdict — correct
+    ordering, because "no audio runtime at all" is a more fundamental answer
+    than "the mic delivered silence" — but it means a runner with no PortAudio
+    answers `AUDIO_RUNTIME_MISSING` and never reaches the branch under test.
+    The tests asserted against real hardware and passed only because this Mac
+    has a microphone. Fixed by pinning the device layer with a fake
+    `sounddevice` module, so they assert the same thing everywhere.
+    **The reusable bit: to test a layered check, pin the layers underneath it.**
+    And `tests/test_readiness.py` already said so in a comment — *"present on a
+    dev Mac, absent in CI"* — which is why the pre-existing mic test asserts
+    `status in ("ok", "warn")`. The warning was there and got walked past.
+    A CI runner can be simulated locally in about five lines (force
+    `import sounddevice` to raise, run the suite); doing that turns a
+    push-and-wait cycle into seconds and is worth it for anything hardware-
+    adjacent.
 
 ## Repo map
 
