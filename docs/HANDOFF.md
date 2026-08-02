@@ -734,6 +734,34 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     `start()` must not be the one that called `open_capture()`. That cannot be
     faked by scheduling luck.
 
+39. **The readiness gate answered "is there a microphone?" and printed it as
+    "is the microphone working?"** (M6.3, `server/readiness.py`). Through the
+    entire gotcha-36 outage the first-run gate reported
+    `ready: true, microphone: ok, count: 2` on a machine that was completely
+    deaf. It was not lying by accident — `_mic_check` enumerated devices, and a
+    *denied* device enumerates perfectly. The row simply answered a different
+    question from the one the user reads it as.
+    **The fix is not to probe.** Opening a stream inside readiness looks
+    obvious and is wrong three ways: `Pa_OpenStream` blocks on an unanswered
+    permission prompt, so readiness would hang exactly when it matters
+    (gotcha 38); it contends with the always-on wake service for the device;
+    and it drags the OS permission prompt in front of a user who may only ever
+    type, out of the context that would explain it.
+    **So nothing probes — the components that already hold the microphone
+    report what they saw.** `MicHealth` (audio/silence.py) is written by the
+    voice exchange (from its `SilenceWatch`), by `handle_wake` (a trigger is
+    proof of real audio — nothing scores against zeros) and by
+    `handle_mic_silence`. Readiness reads the verdict. Cost: nothing.
+    **`UNKNOWN` is a first-class answer and the row now says so.** A text-only
+    user who never triggers voice has told us nothing about their microphone,
+    so the row reports `verified: false` — "there is a device, nobody has
+    tried". Collapsing that into `ok` is precisely the original bug, and the
+    mutation run proved the point: making `verified` return `True`
+    unconditionally was **NOT CAUGHT** until a test was added for the untested
+    case. A flag that is only ever asserted true is not a flag.
+    Never fatal, unchanged: a broken mic costs voice, not conversation — the
+    same reasoning that keeps missing voice models a warning.
+
 ## Repo map
 
 ```
@@ -1558,13 +1586,7 @@ copies were lost mid-session, which is why they are checked in now.
    been exercised — expect the gate, not the app, to be the thing that breaks.
    Nothing in M6.3 is platform-specific beyond `bundle.macOS.entitlements`
    (macOS-scoped) and cross-platform Python covered by the suite.
-   **Known gap, deliberately not closed:** `system.readiness` still reports
-   `microphone: ok` on a dead mic — it only enumerates devices, and its own
-   docstring says so. It matters much less now that both real paths report
-   `mic_silent`/`MIC_SILENT`, but a first-run user is still shown a green
-   microphone row on a machine that cannot hear. Fixing it properly means
-   opening a stream during readiness, which contends with the wake service for
-   the device; that tradeoff has not been thought through.
+   ✅ **The readiness microphone gap is CLOSED** — see gotcha 39.
 4. **Finish the Gatekeeper walkthrough — needs a FRESH download.** `spctl -a -t
    exec` on the fixed build returns a plain `rejected`, which is the recoverable
    "cannot be verified" path, so gotcha 34's fix is confirmed. But this machine

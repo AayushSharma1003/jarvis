@@ -33,7 +33,12 @@ def _check(id_: str, status: str, code: str = "", **data: Any) -> dict[str, Any]
 
 async def collect(state) -> list[dict[str, Any]]:
     """Run every gate check. Never raises: a broken check is a failing check."""
-    checks = [*await _llm_checks(state), _voice_check(), _wake_check(), _mic_check()]
+    checks = [
+        *await _llm_checks(state),
+        _voice_check(),
+        _wake_check(),
+        _mic_check(getattr(state, "mic_health", None)),
+    ]
     return checks
 
 
@@ -109,14 +114,24 @@ def _wake_check() -> dict[str, Any]:
     return _check("wake_models", OK)
 
 
-def _mic_check() -> dict[str, Any]:
-    """Is there an input device we could open?
+def _mic_check(health=None) -> dict[str, Any]:
+    """Is there an input device, and has it ever actually been heard?
 
-    Note what this canNOT tell you: on macOS a *denied* microphone permission
-    still enumerates devices and still opens a stream — it just delivers
-    silence forever. Detecting that properly needs AVFoundation, so the UI
-    pairs this row with copy pointing at Privacy settings when Jarvis never
-    hears anything.
+    Device enumeration alone is not an answer, and believing it was is what let
+    gotcha 36 run for a day: a *denied* microphone still enumerates, still
+    opens, and still delivers a stream — of exact zeros, forever. This row said
+    `ok, count: 2` on a machine that was completely deaf.
+
+    So the count is only half of it; the other half is `health`, which the
+    voice exchange and the wake path write from what they actually observed
+    (audio/silence.py). Deliberately NOT probed here: opening a stream would
+    block on an unanswered permission prompt (gotcha 38), contend with the
+    always-on wake service for the device, and pull the OS prompt in front of a
+    user who may only ever type.
+
+    `verified` distinguishes "we have heard this microphone work" from "there
+    is a device and nobody has tried yet". Never a failure: a broken mic costs
+    voice, not conversation — same reasoning as missing voice models.
     """
     try:
         import sounddevice as sd
@@ -128,7 +143,9 @@ def _mic_check() -> dict[str, Any]:
         return _check("microphone", WARN, "AUDIO_RUNTIME_MISSING", detail=str(e)[:200])
     if not inputs:
         return _check("microphone", WARN, "NO_INPUT_DEVICE")
-    return _check("microphone", OK, count=inputs)
+    if health is not None and health.is_silent:
+        return _check("microphone", WARN, "MIC_SILENT", count=inputs)
+    return _check("microphone", OK, count=inputs, verified=bool(health and health.verified))
 
 
 async def payload(state) -> dict[str, Any]:

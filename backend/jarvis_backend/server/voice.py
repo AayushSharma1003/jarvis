@@ -44,6 +44,22 @@ class VoiceUnavailable(Exception):
         super().__init__(f"{code}: {detail}")
 
 
+def _record_mic_health(state, silence: SilenceWatch) -> None:
+    """Tell `system.readiness` what this listening window observed.
+
+    Only ever from evidence: a window that read no chunks at all (an immediate
+    stop) proves nothing and leaves the verdict alone. See audio/silence.py for
+    why readiness cannot just open a stream and look.
+    """
+    health = getattr(state, "mic_health", None)
+    if health is None:
+        return
+    if silence.heard_something:
+        health.heard_audio()
+    elif silence.is_dead:
+        health.heard_only_silence()
+
+
 class Capture(Protocol):
     def start(self) -> None: ...
     def backlog(self) -> list[np.ndarray]: ...  # audio buffered before we started reading
@@ -347,6 +363,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
                 if event == Event.TIMEOUT:
                     # A window that heard literally nothing is a broken mic, not
                     # a quiet user — telling them to try again cannot help.
+                    _record_mic_health(state, silence)
                     reason = "mic_silent" if silence.is_dead else "no_speech"
                     await send(protocol.voice_state("idle", reason=reason))
                     return
@@ -355,6 +372,7 @@ async def run_voice_exchange(state, send, msg: dict[str, Any], conn=None) -> Non
                     break
         capture.close()
         capture = None
+        _record_mic_health(state, silence)
         _release_wake()
         if utterance is None or utterance.size == 0:
             await send(protocol.voice_state("idle", reason="no_speech"))

@@ -17,6 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .. import __version__
 from ..agent.loop import run_exchange
+from ..audio.silence import MicHealth
 from ..config import Config
 from ..llm import capabilities
 from ..llm.base import ChatBackend, LLMError
@@ -132,6 +133,11 @@ class AppState:
     # windows answering one broadcast, so a per-connection memo would catch
     # nothing. Ordered so the oldest can be evicted; the value is unused.
     spoken_notifications: OrderedDict[str, None] = field(default_factory=OrderedDict)
+    # What the microphone has been observed to do, so `system.readiness` can
+    # answer with evidence instead of device enumeration — which reported a
+    # green microphone row through the whole gotcha-36 outage. Written by the
+    # voice exchange and the wake path; never probed. See audio/silence.py.
+    mic_health: MicHealth = field(default_factory=MicHealth)
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -162,6 +168,9 @@ async def handle_wake(state: AppState) -> bool:
     because webview reloads leave stale zombie connections behind and a
     diagnostic client must not steal the wake from the real window; dead pages
     simply never answer. Returns False if nobody is connected to hear it."""
+    # A trigger is proof the microphone delivered real audio — nothing scores
+    # against a stream of zeros.
+    state.mic_health.heard_audio()
     heard = False
     for conn in list(state.connections):
         await conn.cancel_generation()
@@ -182,6 +191,7 @@ async def handle_mic_silence(state: AppState) -> None:
     "Hey Jarvis" into a void and nothing at all happens. Codes only; the
     frontend owns the wording. See gotcha 36.
     """
+    state.mic_health.heard_only_silence()
     for conn in list(state.connections):
         with contextlib.suppress(Exception):
             await conn.send(protocol.error("MIC_SILENT"))

@@ -99,6 +99,20 @@ def test_microphone_check_is_never_fatal(make_client):  # noqa: F811
     assert _by_id(_ask(client))["microphone"]["status"] in ("ok", "warn")
 
 
+def test_an_untested_microphone_is_not_claimed_to_be_verified(make_client):  # noqa: F811
+    """"There is a device" must never be dressed up as "we know it works".
+
+    This is the distinction the row lacked for the whole gotcha-36 outage. On a
+    fresh process nobody has held the microphone yet, so the only honest answer
+    is that the device exists and has not been heard. Claiming otherwise is how
+    a completely deaf machine reported `ready: true, microphone: ok`.
+    """
+    client, _ = make_client()
+    mic = _by_id(_ask(client))["microphone"]
+    if mic["status"] == "ok":  # CI has no input device at all; that path warns
+        assert mic["data"]["verified"] is False
+
+
 def test_models_list_carries_the_ram_tier(make_client):  # noqa: F811
     client, _ = make_client(BigModelBackend())
     with connect(client) as ws:

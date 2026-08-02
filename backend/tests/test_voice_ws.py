@@ -340,6 +340,44 @@ def test_a_dead_microphone_is_not_reported_as_no_speech(make_voice_client):
     assert not any(m["type"] == "stt.text" for m in msgs)
 
 
+def test_readiness_reports_a_microphone_that_only_ever_delivered_silence(make_voice_client):
+    """The gate that called a completely deaf machine `ready: true`.
+
+    Throughout the gotcha-36 outage `system.readiness` reported
+    `microphone: ok, count: 2` — it enumerates devices, and a denied mic
+    enumerates perfectly. Readiness cannot fix that by opening a stream (that
+    blocks on an unanswered prompt, and fights the wake service for the
+    device), so it reports what the components that DO hold the mic observed.
+    """
+    io = FakeVoiceIO([DEAD_MIC] * 200, max_wait_ms=320)
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws, until_reasons=("mic_silent", "no_speech", "error", "done"))
+        ws.send_json({"type": "system.readiness"})
+        while (msg := ws.receive_json())["type"] != "readiness":
+            pass
+    mic = next(c for c in msg["checks"] if c["id"] == "microphone")
+    assert mic["status"] == "warn"
+    assert mic["code"] == "MIC_SILENT"
+
+
+def test_readiness_stops_warning_once_the_microphone_is_heard(make_voice_client):
+    """A mic that works must not be reported as broken — and the verdict has to
+    be able to recover, or a granted permission would look permanently bad."""
+    io = FakeVoiceIO(utterance_script())
+    client, _ = make_voice_client(io)
+    with connect(client) as ws:
+        ws.send_json({"type": "voice.start"})
+        drain_voice(ws)
+        ws.send_json({"type": "system.readiness"})
+        while (msg := ws.receive_json())["type"] != "readiness":
+            pass
+    mic = next(c for c in msg["checks"] if c["id"] == "microphone")
+    assert mic["status"] == "ok"
+    assert mic["data"]["verified"] is True
+
+
 def test_empty_transcription_goes_idle(make_voice_client):
     io = FakeVoiceIO(utterance_script(), transcript="")
     client, _ = make_voice_client(io)

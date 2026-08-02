@@ -60,3 +60,46 @@ class SilenceWatch:
         the microphone and must not be reported as broken.
         """
         return self._chunks > 0 and not self._heard
+
+
+class MicHealth:
+    """What the microphone has actually been observed to do, process-wide.
+
+    `system.readiness` used to answer "is there a microphone?" by enumerating
+    devices, and reported `microphone: ok` for the entire gotcha-36 outage on a
+    machine that could not hear at all. A denied device still enumerates.
+
+    It cannot fix that by opening a stream itself, and the reasons are worth
+    keeping: `Pa_OpenStream` blocks on an unanswered permission prompt and
+    would hang the readiness call (gotcha 38); it would contend with the
+    always-on wake service for the device; and probing at startup would drag
+    the OS permission prompt out of the context that explains it, in front of a
+    user who may only ever type.
+
+    So nothing probes. The components that legitimately hold the microphone --
+    the voice exchange and the wake service -- report what they saw, and
+    readiness reads the verdict. UNKNOWN is honest and common: a text-only user
+    who never triggers voice has told us nothing about their microphone, and
+    guessing would be how this bug started.
+    """
+
+    UNKNOWN, LIVE, SILENT = "unknown", "live", "silent"
+
+    __slots__ = ("state",)
+
+    def __init__(self) -> None:
+        self.state = self.UNKNOWN
+
+    def heard_audio(self) -> None:
+        self.state = self.LIVE
+
+    def heard_only_silence(self) -> None:
+        self.state = self.SILENT
+
+    @property
+    def is_silent(self) -> bool:
+        return self.state == self.SILENT
+
+    @property
+    def verified(self) -> bool:
+        return self.state == self.LIVE
