@@ -1744,14 +1744,26 @@ leaked a git clone there (47's sibling).
    assistant.desktop`), and the shipped sidecar booted on the malformed
    config that made rc6 exit rc=1. All four assets return HTTP 200
    anonymously. Published as a **pre-release**, consistent with rc6.
-   **Two consequences worth knowing.** `/releases/latest` skips pre-releases,
-   so the README button lands on the releases *list* (HTTP 200, rc7 at the
-   top) rather than straight on rc7 — promoting it to a full release, or
-   tagging a plain `v0.1.0`, is what would make it land directly.
-   And **rc6 is still published**: it makes voice unreachable, so it is a trap
-   sitting next to rc7 in the same list. The precedent set by rc4 and rc5 is
-   to delete the release and keep the git tag. Owner's call, one command:
-   `gh release delete v0.1.0-rc6 --yes`.
+   ✅ **rc6's release is DELETED** (git tag kept, per the rc4/rc5 precedent) —
+   it made voice unreachable and was a trap sitting next to rc7 in the list.
+   ✅ **The README downloads are now DIRECT and tag-free.** A button that
+   opened the releases list and asked a stranger to choose between rc7, rc6
+   and four filenames is not a download button; a per-OS link that pins a tag
+   404s on the next release. `/releases/latest/download/<name>` does both, but
+   it resolves an EXACT asset name and Tauri's filenames carry the version —
+   so `release.yml` publishes three stable-named **copies**
+   (`Jarvis-macOS-AppleSilicon.dmg`, `Jarvis-Windows-x64-setup.exe`,
+   `Jarvis-Linux-x86_64.deb`) beside the versioned ones, made *before*
+   SHA256SUMS is generated so both verify. rc7 was taken out of pre-release,
+   because **`/releases/latest` skips pre-releases** and the links would
+   otherwise 404 — that is the one thing that will silently break them again,
+   along with renaming an asset. The CI gate now requires a direct link for
+   each name AND that `release.yml` publishes it, proven in both directions.
+   All three verified anonymously: HTTP 200, right sizes, and a real download
+   checked against the published SHA256SUMS.
+   **Also fixed:** `shasum -c` printed six `FAILED open or read` lines beside
+   the one `OK` for a perfectly good single download, so both docs now say
+   `--ignore-missing`.
 2. **The two tray menu items** have still never been clicked (macOS hosts
    menu-bar extras in Control Centre, which computer-use cannot be granted).
    Thirty seconds, owner's.
