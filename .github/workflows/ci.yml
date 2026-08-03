@@ -80,13 +80,22 @@ jobs:
       # silently, on the first page a stranger sees, with nobody watching. The
       # tag-free /releases/latest form cannot rot, so the only thing needed is a
       # check that it does not get "helpfully" pinned again.
-      - name: README download links must not be pinned to a tag
+      - name: README download links must be direct, and must not be pinned to a tag
         run: |
           set -euo pipefail
           if grep -nE 'releases/download/v[0-9]' README.md; then
-            echo "::error file=README.md::download link pinned to a tag — it will 404 after the next release. Use /releases/latest."
+            echo "::error file=README.md::download link pinned to a tag — it will 404 after the next release. Use /releases/latest/download/<stable-name>."
             exit 1
           fi
-          grep -q 'releases/latest' README.md || {
-            echo "::error file=README.md::no download link found"; exit 1; }
-          echo "README download links ok"
+          # A button that lands on a page is not a download button. These are
+          # the three names release.yml publishes as stable copies; if one is
+          # renamed there and not here, the link 404s silently.
+          for asset in Jarvis-macOS-AppleSilicon.dmg \
+                       Jarvis-Windows-x64-setup.exe \
+                       Jarvis-Linux-x86_64.deb; do
+            grep -q "releases/latest/download/$asset" README.md || {
+              echo "::error file=README.md::no direct download link for $asset"; exit 1; }
+            grep -q "$asset" .github/workflows/release.yml || {
+              echo "::error file=release.yml::README links to $asset but the release does not publish it"; exit 1; }
+          done
+          echo "README download links ok: direct, tag-free, and published by release.yml"

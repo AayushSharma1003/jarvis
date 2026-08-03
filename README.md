@@ -9,19 +9,25 @@ no subscription, and nothing sent to anyone's server. Ever.
 
 <br/>
 
-<!-- This link MUST stay tag-free. Pinned per-OS links (v0.1.0-rc6/Jarvis_…dmg)
-     404 the day the next tag is pushed, and the README is the first thing a
-     stranger sees.
-     `/releases/latest` resolves to the newest NON-prerelease, and while every
-     release is still a pre-release GitHub redirects it to the releases list
-     instead — checked, HTTP 200, not a 404. So it is correct now and gets
-     better, rather than the other way round.
-     Enforced by the "README download links" gate in .github/workflows/ci.yml. -->
+<!-- These are DIRECT downloads that never need touching again, and both halves
+     of that matter:
+       * /releases/latest/download/<name> — GitHub resolves this to the newest
+         release at click time, so no tag appears here and nothing 404s when the
+         next one ships. A tag-pinned link (v0.1.0-rc6/Jarvis_…dmg) breaks the
+         day after it is written, on the first page a stranger sees.
+       * the file names carry NO version, which is what makes the above possible
+         — the URL needs an exact asset name. release.yml publishes these stable
+         copies alongside the versioned ones, and SHA256SUMS.txt covers both.
+     Two things will silently break this: renaming an asset, or marking a
+     release as a pre-release (/latest skips those). Enforced as far as a
+     grep can by the "README download links" gate in .github/workflows/ci.yml. -->
 
-### **[⬇︎ Download Jarvis](https://github.com/AayushSharma1003/jarvis/releases/latest)**
+**[⬇︎ macOS](https://github.com/AayushSharma1003/jarvis/releases/latest/download/Jarvis-macOS-AppleSilicon.dmg)** &nbsp;·&nbsp;
+**[⬇︎ Windows](https://github.com/AayushSharma1003/jarvis/releases/latest/download/Jarvis-Windows-x64-setup.exe)** &nbsp;·&nbsp;
+**[⬇︎ Linux](https://github.com/AayushSharma1003/jarvis/releases/latest/download/Jarvis-Linux-x86_64.deb)**
 
-<sub>**macOS** `.dmg` (12+, Apple Silicon) · **Windows** `.exe` (10/11, 64-bit) · **Linux** `.deb` (Ubuntu/Debian, 64-bit)<br/>
-Free and open source · every build checksummed in `SHA256SUMS.txt`</sub>
+<sub>macOS 12+ (Apple Silicon) · Windows 10/11 (64-bit) · Ubuntu/Debian (64-bit)<br/>
+Free and open source · [all downloads &amp; checksums](https://github.com/AayushSharma1003/jarvis/releases/latest)</sub>
 
 <br/>
 
@@ -127,7 +133,7 @@ first time you open it.** Nothing is wrong — here's exactly what you'll see.
 <br/>
 
 ```bash
-sudo apt install ./Jarvis_0.1.0_amd64.deb
+sudo apt install ./Jarvis-Linux-x86_64.deb
 ```
 
 Then launch Jarvis from your applications menu.

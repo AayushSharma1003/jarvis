@@ -60,7 +60,7 @@ If you launch a quarantined `Jarvis.app` from `Downloads` or from inside the mou
 No gatekeeping — install the `.deb` normally:
 
 ```sh
-sudo apt install ./Jarvis_*_amd64.deb
+sudo apt install ./Jarvis*.deb
 ```
 
 Built on Ubuntu 22.04, so the glibc floor is 2.35. There is **no AppImage**: the
@@ -72,8 +72,8 @@ than spending more release cycles on it.
 Every release publishes SHA-256 checksums. Compare before running:
 
 ```sh
-shasum -a 256 Jarvis_*.dmg   # macOS
-sha256sum Jarvis_*.deb       # Linux
+shasum -a 256 Jarvis*.dmg   # macOS
+sha256sum Jarvis*.deb       # Linux
 Get-FileHash Jarvis_*.msi    # Windows PowerShell
 ```
 

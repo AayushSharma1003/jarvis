@@ -167,6 +167,26 @@ jobs:
         with:
           path: all
           merge-multiple: true
+      # The README's download buttons need an asset name that does not change
+      # between releases, because /releases/latest/download/<name> resolves an
+      # EXACT name — that endpoint is the only way to have a link that both
+      # downloads directly and survives the next tag. Tauri's own filenames
+      # carry the version, so they can never be that name.
+      #
+      # Copies, not renames: the versioned filenames are what someone with three
+      # downloads in their Downloads folder needs to tell them apart, and they
+      # are what docs/unsigned-install.md names. Both are checksummed below —
+      # the copy is made BEFORE SHA256SUMS is generated, deliberately, so a
+      # stable-named download can be verified like any other.
+      - name: Stable-named copies for the README download buttons
+        working-directory: all
+        run: |
+          set -euo pipefail
+          cp Jarvis_*_aarch64.dmg    Jarvis-macOS-AppleSilicon.dmg
+          cp Jarvis_*_x64-setup.exe  Jarvis-Windows-x64-setup.exe
+          cp Jarvis_*_amd64.deb      Jarvis-Linux-x86_64.deb
+          ls -la
+
       - name: Generate SHA-256 checksums
         working-directory: all
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
