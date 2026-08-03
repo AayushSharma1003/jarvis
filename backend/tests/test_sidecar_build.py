@@ -23,6 +23,7 @@ the spec is a thin caller of `collect_package_libraries` + `drop_libraries`.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -130,7 +131,11 @@ class TestCollectPackageLibraries:
 
         found = collect_package_libraries(pkg, "espeakng_loader")
 
-        assert found == [(str(pkg / "nested" / "libhelper.so"), "espeakng_loader/nested")]
+        # os.path.join, not a literal "/": PyInstaller takes a native
+        # destination and this is the separator it gets on Windows. Asserting a
+        # forward slash was asserting the host's separator, not the behaviour.
+        expected = os.path.join("espeakng_loader", "nested")
+        assert found == [(str(pkg / "nested" / "libhelper.so"), expected)]
 
     def test_data_files_are_not_collected_as_libraries(self, tmp_path):
         pkg = tmp_path / "espeakng_loader"

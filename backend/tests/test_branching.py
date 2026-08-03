@@ -157,16 +157,27 @@ def test_switching_branches_does_not_reorder_the_sidebar(store):
     assert store.get_conversation(cid).active_leaf_turn_id == t1
 
 
-def test_setting_the_leaf_still_touches_by_default(store):
-    """The default keeps the old contract for any other caller."""
+def test_setting_the_leaf_still_touches_by_default(store, monkeypatch):
+    """The default keeps the old contract for any other caller.
+
+    The clock is pinned rather than trusted to advance: `_now()` is
+    `datetime.now()`, and on Windows two consecutive calls routinely land in
+    the same tick — so asserting the value *changed* was testing the host's
+    timer resolution, not the touch. Move it deliberately instead.
+    """
+    from jarvis_backend.storage import conversations as c
+
     cid = store.create_conversation()
     t1 = _turn(store, cid, "one", "1")
     _turn(store, cid, "two", "2")
     before = store.get_conversation(cid).updated_at
 
+    monkeypatch.setattr(c, "_now", lambda: "2099-01-01T00:00:00+00:00")
     store.set_active_leaf(cid, t1)
 
-    assert store.get_conversation(cid).updated_at != before
+    after = store.get_conversation(cid).updated_at
+    assert after != before
+    assert after == "2099-01-01T00:00:00+00:00"
 
 
 def test_active_leaf_reports_the_current_tip(store):

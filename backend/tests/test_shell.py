@@ -94,6 +94,7 @@ async def test_an_empty_command_is_refused_before_spawning():
 # -- the parts a shell makes load-bearing -----------------------------------
 
 
+@posix_only
 async def test_a_command_that_never_exits_times_out(monkeypatch):
     monkeypatch.setenv("JARVIS_SHELL_TIMEOUT_S", "0.3")
     start = time.monotonic()
@@ -145,6 +146,7 @@ async def test_cancellation_kills_the_command(tmp_path):
 # -- the execution context (owner decisions) --------------------------------
 
 
+@posix_only
 async def test_the_jarvis_namespace_is_scrubbed_from_the_child(monkeypatch):
     """The WebSocket auth token has no business in a subprocess; the user's own
     PATH does, or the shell can't find their tools."""
@@ -156,6 +158,7 @@ async def test_the_jarvis_namespace_is_scrubbed_from_the_child(monkeypatch):
     assert "path=[]" not in result.content  # the real PATH survived
 
 
+@posix_only
 async def test_the_shell_starts_in_the_home_directory():
     result = await _run("pwd")
     assert result.ok
