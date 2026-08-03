@@ -198,16 +198,23 @@ jobs:
 
             ### Voice needs a one-time download
 
-            Open Jarvis and press **Download voice models** on the setup panel
-            (~500 MB, kept on your machine). Nothing downloads until you do.
+            Open Jarvis and press **Download voice models** (~500 MB, kept on
+            your machine). Nothing downloads until you do. Jarvis stays usable
+            while it runs, and quitting part-way is safe — it resumes.
 
-            ### Earlier builds
+            ### Earlier builds — all of them have a reason not to use them
 
-            `v0.1.0-rc1` through `rc4` shipped a broken macOS bundle seal and
-            fail with *"Jarvis is damaged"*, which **Open Anyway cannot fix**.
+            `v0.1.0-rc1` … `rc4` ship a broken macOS bundle seal and fail with
+            *"Jarvis is damaged"*, which **Open Anyway cannot fix**.
 
-            `v0.1.0-rc5` installs, but has **no way to obtain the voice
-            models** — the button above did not exist, so the wake word and
-            speech were unreachable. Text chat worked.
+            `v0.1.0-rc5` installs but has **no way to obtain the voice models**
+            at all. Text chat worked.
 
-            Delete either rather than working around them.
+            `v0.1.0-rc6` added the download button — but only rendered it when
+            some *other* part of your setup was broken. If you had installed
+            Ollama correctly, the button was never on screen, so voice could
+            not be turned on. It also left "Hey Jarvis" switched off even after
+            the models downloaded, and a typo in `config.toml` stopped the app
+            starting at all, permanently.
+
+            Delete any of them rather than working around it.
