@@ -158,7 +158,16 @@ def download(asset: Asset, on_progress=None, opener=None) -> None:
     atomically — so an interrupted download is never mistaken for a model, and
     a changed upstream file is refused rather than loaded into onnxruntime as a
     mystery crash later.
+
+    **The size is a ceiling during the read, not just a check after it.** The
+    sha256 is pinned because upstream is not trusted to serve the right bytes,
+    and that distrust has to cover *how many* bytes: verifying afterwards means
+    a server that never stops sending has already filled the disk by the time
+    anything looks. Same reasoning as `tools/shell.py`'s incremental output cap
+    and `tools/web.py`'s read cap — this is the one path in the app that writes
+    a large file, on an 8 GB laptop, with no cancel button in front of it.
     """
+    import shutil
     import urllib.error
     import urllib.request
 
@@ -175,6 +184,20 @@ def download(asset: Asset, on_progress=None, opener=None) -> None:
         offset = 0
         part.unlink()
 
+    # Ask before writing. A nearly-full disk is an ordinary state on a laptop,
+    # and ENOSPC 200 MB into a 325 MB file reports a generic "download failed"
+    # while leaving behind the partial bytes that helped fill it. The margin
+    # covers the atomic rename, which needs both copies briefly.
+    try:
+        free = shutil.disk_usage(dest.parent).free
+    except OSError:  # pragma: no cover - unreadable mount; let the write decide
+        free = None
+    if free is not None and free < (asset.size_bytes - offset) + (1 << 24):
+        raise AssetError(
+            "ASSET_NO_SPACE", f"{asset.name}: needs {asset.size_bytes} bytes, {free} free"
+        )
+
+    overrun = False
     req = urllib.request.Request(asset.url, headers=headers)
     try:
         with opener(req, timeout=60) as resp:
@@ -184,6 +207,9 @@ def download(asset: Asset, on_progress=None, opener=None) -> None:
                 while chunk := resp.read(CHUNK):
                     f.write(chunk)
                     done += len(chunk)
+                    if done > asset.size_bytes:
+                        overrun = True
+                        break
                     if on_progress is not None:
                         on_progress(asset.name, done, asset.size_bytes)
     except (urllib.error.URLError, OSError) as e:
@@ -191,6 +217,10 @@ def download(asset: Asset, on_progress=None, opener=None) -> None:
 
     actual = part.stat().st_size
     if actual != asset.size_bytes:
+        if overrun:
+            # Too long can only ever fail again, and resume would append to it
+            # forever. Same reasoning as the checksum branch below.
+            part.unlink(missing_ok=True)
         raise AssetError(
             "ASSET_SIZE_MISMATCH", f"{asset.name}: got {actual}, want {asset.size_bytes}"
         )

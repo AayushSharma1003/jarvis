@@ -176,8 +176,15 @@ function ExtensionList({
                 {t(`extension.status.${e.status}`)}
               </span>
             </div>
+            {/* With no defaultValue i18next renders the key itself, so a code
+                with no entry showed the literal string
+                "extension.code.EXTENSION_TOO_LARGE" in the panel. Every code
+                discover() can produce has words today; this is the guard for
+                the next one that doesn't. */}
             {e.code && (
-              <p className="mt-1 text-xs text-zinc-500">{t(`extension.code.${e.code}`)}</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                {t(`extension.code.${e.code}`, { defaultValue: t("extension.code.UNKNOWN") })}
+              </p>
             )}
             {note && <p className="mt-1 text-xs text-amber-400/80">{note}</p>}
             {confirmingRevoke === e.name ? (

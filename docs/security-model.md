@@ -136,6 +136,22 @@ Implemented in M4.3. How it actually works, and the parts worth knowing:
 
 - Backend binds `127.0.0.1` only. WebSocket requires a per-session token *and* a strict `Origin` check (defeats browser drive-bys against localhost).
 
+### What the token actually defends against — the trust boundary, stated (M6.4)
+
+`server/auth.py` used to say the token "blocks" other local processes. **It does not, and the docstring has been corrected.** The token is handed to the sidecar in its environment (`JARVIS_WS_TOKEN`), and an environment is readable by any process running as the same user — `ps eww <pid>` prints it on macOS, `/proc/<pid>/environ` on Linux. Verified on the packaged app, not reasoned about.
+
+The consequence is worth spelling out rather than leaving as an exercise, because it reaches further than "an extra client can connect". Confirmations are **broadcast to every connection and settled by the first answer** (§1, and `confirm.py` says so deliberately — a reload leaves authenticated zombie connections behind, and a stale page must not be able to swallow a dialog). Nothing binds a `confirm.respond` to the connection whose call raised it. So a same-user process holding the token can answer every permission dialog Jarvis raises, including `run_command`'s, before the user's window has drawn it.
+
+**That is inside the trust boundary, and the boundary is the user account.** A process running as you can already read your files and run your shell; routing it through Jarvis grants it nothing it did not have, and the alternative — binding a confirmation to one connection — would break the property §1 actually needs, which is that a reloaded window can still answer.
+
+What follows from saying it plainly:
+
+- **The token is not an authorisation boundary between local processes.** It is a handshake that keeps *unrelated* software from stumbling into the port, and — with the `Origin` check, which a browser cannot forge — it is what stops a web page you have open from driving your assistant. Those are the two things it does.
+- **Multi-user machines are covered, single-user ones are not extended.** Another *user* cannot read the environment or the port; another process of *yours* can.
+- **This does not weaken §1 for the threat §1 is for.** The permission engine defends against a manipulated *model*, reached through content it reads. It has never claimed to defend against arbitrary code already running as the user, and this section now says so instead of implying otherwise.
+- **Not moving the token out of the environment for v1**, and the reason is that it buys very little: handing it over the sidecar's stdin would defeat `ps` and not a debugger, while touching the startup handshake — historically the most fragile part of this app (gotcha 1) — immediately before a release. Recorded as a cheap post-v1 hardening, not a fix, because there is no boundary here to restore.
+- **The one thing that would change this** is a same-user process that is *itself* confined — a sandboxed app with no file access — using Jarvis as an unconfined proxy. That is a real escalation shape and it is not closed. It is also not reachable by anything this project ships.
+
 ### `web_fetch` and the SSRF guard (M4.5)
 
 Implemented in `backend/jarvis_backend/tools/web.py` (the fetch) and
@@ -348,6 +364,21 @@ un-approve itself the first time it saved anything.
 - **A symlink anywhere in the tree refuses the extension** (`EXTENSION_UNSAFE_TREE`).
   Skipping symlinks would be a digest bypass — a symlinked `extension.py` gets imported
   while its real bytes live outside the folder, free to change after approval.
+
+## 5a. Release integrity — what the checksums are for, and what they are not (M6.4)
+
+Every release ships `SHA256SUMS.txt`, generated in CI (`release.yml`'s `publish` job) and never locally. `docs/unsigned-install.md` tells users to verify against it. Both are worth keeping. Neither is a signature, and the difference matters enough to state:
+
+**The checksums travel with the binaries.** They are uploaded to the same GitHub release, by the same job, over the same channel. Anyone able to alter a release asset can alter the checksum file next to it, so `SHA256SUMS.txt` is **not** independent verification of authenticity — it verifies *integrity in transit*, which is a real and different property: a truncated download, a corrupted mirror, or a proxy that mangled the file are all caught. A compromised GitHub account or release is not.
+
+Making it independent needs a signature over the checksums with a key that is not in the release — minisign or GPG, published out of band. That is not a budget problem (both are free), it is a **key-custody** problem: a signing key that lives on the developer's laptop and is never rotated, with no revocation story and no second party, mostly moves the trust rather than adding any. It is recorded here as the honest next step for whoever decides this project's provenance is worth that ceremony.
+
+What actually carries authenticity today is the same thing that carries it for most unsigned open-source software: the release came from a repository the user chose to trust, over TLS, and the source that built it is public. The v1 posture is to say that, not to let a checksum file imply more.
+
+Two related notes so nothing overstates itself:
+
+- **macOS ad-hoc signing is not authentication either.** `Signature=adhoc` means the bundle is internally consistent and its resources are sealed — it says nothing about who built it. What it buys is the difference between *"cannot be verified"* (recoverable with Open Anyway) and *"is damaged"* (not recoverable), which is a usability property. See gotcha 34; every build before M6.2 was the second kind.
+- **No auto-update, and this is one of the reasons.** An updater is a channel that fetches and executes code without the user choosing it, and this project has nothing to authenticate that channel with. Auto-update stays blocked on signing rather than shipping unauthenticated.
 
 ## 6. Credentials, screen, telemetry
 

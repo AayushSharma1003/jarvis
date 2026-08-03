@@ -48,3 +48,24 @@ jobs:
           workspaces: app/src-tauri
       - run: cargo check --manifest-path app/src-tauri/Cargo.toml
       - run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The README's download button pointed at a specific tag
+      # (releases/download/v0.1.0-rc6/Jarvis_0.1.0_aarch64.dmg), so every one of
+      # those links would have 404'd the moment the next tag was pushed —
+      # silently, on the first page a stranger sees, with nobody watching. The
+      # tag-free /releases/latest form cannot rot, so the only thing needed is a
+      # check that it does not get "helpfully" pinned again.
+      - name: README download links must not be pinned to a tag
+        run: |
+          set -euo pipefail
+          if grep -nE 'releases/download/v[0-9]' README.md; then
+            echo "::error file=README.md::download link pinned to a tag — it will 404 after the next release. Use /releases/latest."
+            exit 1
+          fi
+          grep -q 'releases/latest' README.md || {
+            echo "::error file=README.md::no download link found"; exit 1; }
+          echo "README download links ok"

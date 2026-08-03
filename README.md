@@ -9,12 +9,19 @@ no subscription, and nothing sent to anyone's server. Ever.
 
 <br/>
 
-**[⬇︎ Download for macOS](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_aarch64.dmg)** &nbsp;·&nbsp;
-**[⬇︎ Download for Windows](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_x64-setup.exe)** &nbsp;·&nbsp;
-**[⬇︎ Download for Linux](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_amd64.deb)**
+<!-- This link MUST stay tag-free. Pinned per-OS links (v0.1.0-rc6/Jarvis_…dmg)
+     404 the day the next tag is pushed, and the README is the first thing a
+     stranger sees.
+     `/releases/latest` resolves to the newest NON-prerelease, and while every
+     release is still a pre-release GitHub redirects it to the releases list
+     instead — checked, HTTP 200, not a 404. So it is correct now and gets
+     better, rather than the other way round.
+     Enforced by the "README download links" gate in .github/workflows/ci.yml. -->
 
-<sub>macOS 12+ (Apple Silicon) · Windows 10/11 (64-bit) · Ubuntu/Debian (64-bit)<br/>
-Free and open source · [All downloads &amp; checksums](https://github.com/AayushSharma1003/jarvis/releases)</sub>
+### **[⬇︎ Download Jarvis](https://github.com/AayushSharma1003/jarvis/releases/latest)**
+
+<sub>**macOS** `.dmg` (12+, Apple Silicon) · **Windows** `.exe` (10/11, 64-bit) · **Linux** `.deb` (Ubuntu/Debian, 64-bit)<br/>
+Free and open source · every build checksummed in `SHA256SUMS.txt`</sub>
 
 <br/>
 

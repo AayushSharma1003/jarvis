@@ -147,3 +147,118 @@ def test_fetch_reports_failure_without_crashing_the_connection(make_client, one_
                 assert msg["type"] == "readiness"
     finally:
         app_mod._ASSET_OPENER = None
+
+
+# -- what a hostile or broken server can do to the disk -----------------------
+#
+# The sha256 is pinned precisely because upstream is not trusted to serve the
+# right bytes. That distrust has to extend to *how many* bytes: the checksum is
+# only ever consulted after the body is on disk, so a server that never stops
+# sending fills the user's disk long before anything verifies it. There is no
+# cancel button, the models dir is ~500 MB of expected traffic, and the target
+# machine is an 8 GB laptop. The size ceiling is the same argument as
+# `tools/shell.py`'s output cap and `tools/web.py`'s 512 KB read cap, applied to
+# the one path in the app that writes a large file.
+
+
+def test_a_server_that_overruns_the_expected_size_is_cut_off(one_asset, tmp_path):
+    """A body that keeps coming is stopped at the declared size, not swallowed
+    whole and measured afterwards."""
+    # Comfortably more than one CHUNK, or the read loop finishes in a single
+    # pass and the assertion below passes without any ceiling existing.
+    flood = b"x" * (assets.CHUNK * 16)
+    assert len(flood) > len(PAYLOAD) + assets.CHUNK, "the flood must outrun one chunk"
+    with pytest.raises(assets.AssetError) as e:
+        assets.download(one_asset, opener=lambda req, timeout=0: FakeResponse(flood))
+    assert e.value.code == "ASSET_SIZE_MISMATCH"
+    written = sum(p.stat().st_size for p in assets.models_dir().glob("*"))
+    assert written <= len(PAYLOAD) + assets.CHUNK, (
+        f"wrote {written} bytes for a {len(PAYLOAD)}-byte asset — "
+        "an endless body is a disk-filling DoS with no cancel button"
+    )
+
+
+def test_an_overrun_leaves_no_partial_to_resume_from(one_asset):
+    """The oversized bytes are deleted, not left for the next attempt to append
+    to — a `.part` that is already too long can only ever fail again."""
+    flood = b"x" * (assets.CHUNK * 16)
+    with pytest.raises(assets.AssetError):
+        assets.download(one_asset, opener=lambda req, timeout=0: FakeResponse(flood))
+    assert list(assets.models_dir().glob("*.part")) == []
+
+
+def test_no_space_is_reported_as_its_own_code_before_anything_is_written(one_asset, monkeypatch):
+    """A nearly-full disk is an ordinary first-run state, and ENOSPC halfway
+    through a 300 MB file reports "download failed" while silently keeping the
+    partial bytes that helped fill the disk. Check first, say so plainly."""
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(100, 90, 10)
+    )
+    with pytest.raises(assets.AssetError) as e:
+        assets.download(one_asset, opener=lambda req, timeout=0: FakeResponse(PAYLOAD))
+    assert e.value.code == "ASSET_NO_SPACE"
+    assert list(assets.models_dir().glob("*")) == [], "nothing should have been written"
+
+
+# -- invariants over the asset table itself -----------------------------------
+#
+# Derived from ASSETS rather than restated as a list, for gotcha 30's reason: a
+# hardcoded expectation is written once by someone looking at today's table and
+# then silently stops covering whatever is added next.
+
+
+def test_every_shipped_asset_pins_a_sha256():
+    """`download` verifies the digest only `if asset.sha256` — an unpinned asset
+    silently degrades to a size check, which any 147 MB file passes."""
+    unpinned = [a.name for a in assets.ASSETS.values() if len(a.sha256) != 64]
+    assert unpinned == [], f"assets with no pinned sha256: {unpinned}"
+
+
+def test_every_shipped_asset_writes_a_bare_filename():
+    """`download` joins `filename` onto the models dir. Nothing user-supplied
+    reaches it today — the table is a frozen constant — but the next person to
+    add an entry is the threat model, and `../../` in that field is a write
+    anywhere the sidecar can reach."""
+    import os
+    from pathlib import Path
+
+    for a in assets.ASSETS.values():
+        assert a.filename == Path(a.filename).name, f"{a.name}: not a bare filename"
+        assert not os.path.isabs(a.filename), f"{a.name}: absolute path"
+        assert ".." not in a.filename and "\x00" not in a.filename, f"{a.name}: traversal"
+
+
+def test_every_shipped_asset_is_fetched_over_https():
+    """The digest makes plain http survivable, not acceptable: it would leak
+    which models a user is downloading and hand a network attacker a free
+    disk-filling retry loop."""
+    bad = [a.name for a in assets.ASSETS.values() if not a.url.startswith("https://")]
+    assert bad == [], f"assets not fetched over https: {bad}"
+
+
+def test_the_test_seam_cannot_be_reached_from_outside_the_test_suite():
+    """`_ASSET_OPENER` is a module global that replaces urlopen, so anything
+    able to set it at runtime would choose where 500 MB is fetched from — and
+    the sha256 pin is the only thing standing behind that.
+
+    Nothing can: it is assigned once, to None, and otherwise only by tests. The
+    check is derived from the source so it survives someone later deciding to
+    make it configurable "for debugging", which is exactly the change that
+    would turn a test seam into a download-source override.
+    """
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "jarvis_backend"
+    writes = [
+        f"{p.relative_to(pkg)}:{i}"
+        for p in pkg.rglob("*.py")
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if "_ASSET_OPENER" in line and "=" in line.split("_ASSET_OPENER", 1)[1][:3]
+    ]
+    assert writes == ["server/app.py:38"], f"unexpected writes to the seam: {writes}"
+
+    import jarvis_backend.server.app as app_mod
+
+    assert app_mod._ASSET_OPENER is None, "the seam is set outside a test"

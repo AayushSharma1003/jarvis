@@ -130,7 +130,8 @@
       "EXTENSION_CODE_MISSING": "there's no extension.py to load",
       "EXTENSION_IMPORT_FAILED": "its code didn't load",
       "EXTENSION_TOOL_MISSING": "a tool it promised isn't in its code",
-      "EXTENSION_TOOL_CONFLICT": "a tool name is already taken"
+      "EXTENSION_TOOL_CONFLICT": "a tool name is already taken",
+      "UNKNOWN": "it couldn't be read"
     }
   },
   "notification": {
@@ -186,7 +187,8 @@
       "TOOLS_UNSUPPORTED": "This model can't use tools. Chat works normally.",
       "TOOLS_DISABLED": "Tools are switched off in this build.",
       "CONFIG_PARSE_ERROR": "Jarvis couldn't read your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis.",
-      "CONFIG_INVALID_VALUE": "There's a setting Jarvis didn't understand in your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis."
+      "CONFIG_INVALID_VALUE": "There's a setting Jarvis didn't understand in your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis.",
+      "UNKNOWN": "Something on this machine isn't set up the way Jarvis expects."
     },
     "run": "Run this:",
     "copy": "Copy",
@@ -258,6 +260,11 @@
     "ASSETS_BUSY": "Already downloading the models — one at a time.",
     "ASSET_DOWNLOAD_FAILED": "A model download failed. Check your connection and try again.",
     "ASSET_CHECKSUM_MISMATCH": "A downloaded model didn't match its checksum, so it was discarded.",
-    "ASSET_SIZE_MISMATCH": "A model download ended early and was discarded."
+    "ASSET_SIZE_MISMATCH": "A model download ended early and was discarded.",
+    "ASSET_NO_SPACE": "There isn't enough free disk space for the voice models. They need about 500 MB.",
+    "TURN_NOT_FOUND": "That message isn't there any more — the conversation may have been deleted in another window. Reopen it from the sidebar.",
+    "PARENT_TURN_MISMATCH": "That message belongs to a different conversation. Reopen this chat from the sidebar and try again.",
+    "TREE_CYCLE": "This conversation's history is damaged and can't be read. Starting a new chat will work; the old one may need deleting.",
+    "EMPTY_TURN": "There was nothing to send."
   }
 }

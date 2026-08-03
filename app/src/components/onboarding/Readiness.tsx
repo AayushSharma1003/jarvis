@@ -132,8 +132,12 @@ function Row({ check }: { check: ReadinessCheck }) {
         }`}
       />
       <div className="min-w-0 flex-1">
+        {/* The fallback used to be `check.code`, which put a bare
+            SCREAMING_SNAKE identifier in the most prominent surface a new user
+            ever sees. A code with no words is our bug, not something to hand
+            the reader — say the honest thing instead. */}
         <p className={failed ? "text-zinc-200" : "text-zinc-400"}>
-          {t(key, { ...check.data, defaultValue: check.code ?? "" })}
+          {t(key, { ...check.data, defaultValue: t("readiness.code.UNKNOWN") })}
         </p>
         {command && <FixCommand command={command} />}
         {check.id === "microphone" && (
