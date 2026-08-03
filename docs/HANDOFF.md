@@ -1737,7 +1737,22 @@ leaked a git clone there (47's sibling).
 
 **What is NOT done, and is owner-gated:**
 
-1. ✅ **`v0.1.0-rc7` is PUBLISHED and is the build to hand people.** All four
+0. ✅ **`v0.1.0-rc8` is PUBLISHED and is the build to hand people.** Adds the
+   onboarding fixes: the readiness `tools` row now names the models that would
+   turn tools on (read from the catalog, not hardcoded), because
+   `llama3.2:3b` — the model the README told everyone to pull — is not in the
+   catalog, so files/shell/web were off for it with nothing saying why or what
+   to do. All four Release jobs green; the **stable-named copy step ran for the
+   first time and worked** (7 files, sizes matching). Verified after
+   publishing: the README's buttons resolve to rc8 and return HTTP 200, a real
+   download checks out against `SHA256SUMS.txt` (which covers both the stable
+   and versioned names with identical hashes), the signature gate passes on the
+   downloaded dmg, and the **shipped sidecar** returns
+   `alternatives: ["qwen3:4b"]` on its tools row.
+   `v0.1.0-rc7` is left published — it works, it is just superseded, and
+   `/releases/latest` points at rc8 so the README buttons never reach it.
+
+1. ✅ **`v0.1.0-rc7` was PUBLISHED and verified.** All four
    Release jobs green; artifacts verified independently after publishing — 4/4
    checksums, the workflow's own gate run verbatim on the **downloaded** dmg
    (ad-hoc seal + hardened runtime + audio-input, `Identifier=app.jarvis-
