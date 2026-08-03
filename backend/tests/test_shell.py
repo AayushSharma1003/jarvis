@@ -26,8 +26,16 @@ from jarvis_backend.security.permissions import DANGEROUS, Decision, PermissionG
 from jarvis_backend.tools import shell
 from jarvis_backend.tools.registry import Registry
 
+# Windows runs these through cmd.exe, where the command strings below mean
+# something else entirely (`echo nope; exit 3` and `yes` are POSIX shell, not
+# cmd) — so on Windows they test the harness, not the tool. Marking them is
+# honest; what is NOT honest is leaving the impression that run_command's
+# bounds are verified there. They are not: the output cap, the timeout and the
+# kill have never been exercised on Windows, and security-model.md now says so
+# in as many words rather than claiming CI covers it. Writing cmd-native
+# equivalents is real work and a v1.x item.
 posix_only = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX process-group semantics"
+    sys.platform == "win32", reason="POSIX shell/process-group semantics"
 )
 
 
@@ -62,6 +70,7 @@ async def test_stderr_is_captured_too():
     assert "oops" in result.content
 
 
+@posix_only
 async def test_a_nonzero_exit_is_a_result_not_a_failure():
     # The model must see the output AND the code to react — a failed span would
     # send it only the code (agent/loop.py sends result.content only when ok).
@@ -106,6 +115,7 @@ async def test_timeout_kills_the_whole_process_group(tmp_path, monkeypatch):
     assert not sentinel.exists()
 
 
+@posix_only
 async def test_runaway_output_is_capped_not_read_to_exhaustion(monkeypatch):
     """`yes` never ends. A communicate()-style read would balloon RAM until the
     timeout fired; the incremental cap must stop it long before that."""

@@ -246,3 +246,70 @@ def test_delete_empty_conversation(store):
     cid = store.create_conversation()
     store.delete_conversation(cid)
     assert store.list_conversations() == []
+
+
+# -- ties in created_at, and the random tie-break that lost to them ----------
+#
+# Found by putting the suite on a Windows runner for the first time, where
+# three of these tests failed. `created_at` is `datetime.now(UTC).isoformat()`
+# and Windows resolves that far more coarsely than macOS or Linux, so two turns
+# appended back to back share a timestamp. Ordering then fell to `id` — a
+# `uuid4().hex`, i.e. **random** — and the branch alternatives came back in an
+# arbitrary order.
+#
+# Not a test artifact. `siblings()` backs the `‹ 2/3 ›` control, so on Windows
+# the alternatives could be numbered in the wrong order; `tip()` picks the
+# "most recently created child", so switching to a branch could land on the
+# wrong one, which is the exact failure `Store.tip()` was added in M5.5 to
+# prevent. The tree is the product's memory and it was ordering by coin flip.
+#
+# The fix is SQLite's implicit `rowid`: monotonic insertion order, present on
+# every ordinary table, and available on databases that already exist — which
+# matters because schema.sql is `CREATE TABLE IF NOT EXISTS` with no migration
+# framework, so a new column could never reach them.
+#
+# These reproduce it on any platform by removing the clock from the question
+# entirely: every turn gets the same timestamp, and the ids are forced to sort
+# *against* insertion order.
+
+
+@pytest.fixture
+def tied_clock(monkeypatch):
+    """Every turn created in the same instant, with ids that sort backwards."""
+    from jarvis_backend.storage import conversations as c
+
+    monkeypatch.setattr(c, "_now", lambda: "2026-08-03T00:00:00+00:00")
+    ids = iter([f"{n:02d}" for n in range(99, 0, -1)])
+    monkeypatch.setattr(c, "_new_id", lambda: next(ids))
+
+
+def test_siblings_keep_insertion_order_when_timestamps_tie(store, tied_clock):
+    cid = store.create_conversation()
+    first = _turn(store, cid, "a", "1")
+    second = _turn(store, cid, "a-edited", "1b", parent=None)
+    third = _turn(store, cid, "a-again", "1c", parent=None)
+
+    assert store.siblings(first) == [first, second, third], (
+        "branch alternatives came back in id order, not the order they were made"
+    )
+
+
+def test_child_siblings_keep_insertion_order_when_timestamps_tie(store, tied_clock):
+    cid = store.create_conversation()
+    root = _turn(store, cid, "a", "1")
+    b1 = _turn(store, cid, "b", "2", parent=root)
+    b2 = _turn(store, cid, "b-edited", "2b", parent=root)
+
+    assert store.siblings(b1) == [b1, b2]
+
+
+def test_tip_picks_the_newest_branch_when_timestamps_tie(store, tied_clock):
+    """`tip()` means "where you left off on that branch". With a tie it was
+    picking whichever uuid happened to sort highest, so switching branches
+    could drop the user onto one they had never continued."""
+    cid = store.create_conversation()
+    root = _turn(store, cid, "a", "1")
+    _turn(store, cid, "b", "2", parent=root)
+    newest = _turn(store, cid, "b-edited", "2b", parent=root)
+
+    assert store.tip(root) == newest

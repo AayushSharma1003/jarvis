@@ -121,7 +121,10 @@ class Store:
     def list_conversations(self) -> list[ConversationSummary]:
         rows = self._conn.execute(
             "SELECT id, title, created_at, updated_at, active_leaf_turn_id"
-            " FROM conversations ORDER BY updated_at DESC"
+            # rowid breaks a tie here too: two conversations created in the
+            # same instant would otherwise sort by random uuid, so the sidebar
+            # order would change between launches.
+            " FROM conversations ORDER BY updated_at DESC, rowid DESC"
         ).fetchall()
         return [ConversationSummary(**r) for r in rows]
 
@@ -266,8 +269,13 @@ class Store:
         seen = {cursor}
         while True:
             row = self._conn.execute(
-                "SELECT id FROM turns WHERE parent_turn_id = ? ORDER BY created_at DESC, id DESC"
-                " LIMIT 1",
+                # rowid, not id, as the tie-break: `id` is a random uuid4, so
+                # two turns sharing a `created_at` — routine on Windows, whose
+                # clock is far coarser than macOS's — picked a branch by coin
+                # flip. rowid is insertion order and needs no schema change,
+                # which matters because schema.sql has no migration path.
+                "SELECT id FROM turns WHERE parent_turn_id = ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (cursor,),
             ).fetchone()
             if row is None:
@@ -313,12 +321,12 @@ class Store:
         if row["parent_turn_id"] is None:
             rows = self._conn.execute(
                 "SELECT id FROM turns WHERE conversation_id = ? AND parent_turn_id IS NULL"
-                " ORDER BY created_at, id",
+                " ORDER BY created_at, rowid",
                 (row["conversation_id"],),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT id FROM turns WHERE parent_turn_id = ? ORDER BY created_at, id",
+                "SELECT id FROM turns WHERE parent_turn_id = ? ORDER BY created_at, rowid",
                 (row["parent_turn_id"],),
             ).fetchall()
         return [r["id"] for r in rows]

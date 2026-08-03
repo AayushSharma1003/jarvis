@@ -8,6 +8,7 @@ after `..` and symlinks have had their say.
 
 from __future__ import annotations
 
+import sys
 import unicodedata
 
 import pytest
@@ -188,6 +189,10 @@ def test_the_exclusion_survives_a_unicode_respelling(root):
     assert _code(e) == "PATH_OUTSIDE_SANDBOX"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows resolve() canonicalises case, so the two spellings ARE one path",
+)
 def test_a_root_is_still_matched_case_sensitively(tmp_path):
     """The other half of the asymmetry, pinned so nobody "makes it consistent".
 
@@ -196,6 +201,16 @@ def test_a_root_is_still_matched_case_sensitively(tmp_path):
     filesystem `~/documents` and `~/Documents` are two different directories,
     and folding this comparison would hand the sandbox a directory the user
     never configured.
+
+    **Skipped on Windows, and the reason is the interesting part** (found the
+    first time this suite ran on a Windows runner). `Path.resolve()` there
+    canonicalises to the on-disk spelling, so `workspace` comes back as
+    `Workspace` and the exact comparison matches — correctly, because on that
+    filesystem they really are one directory. macOS is the odd one out: it is
+    case-INsensitive but `resolve()` does not canonicalise, so the same request
+    is refused. Fail-safe either way, never wider than configured, but the
+    asymmetry this file pins is a POSIX property and asserting it on Windows
+    would be asserting something false.
     """
     real = tmp_path / "Workspace"
     real.mkdir()
