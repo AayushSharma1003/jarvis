@@ -69,20 +69,23 @@ than spending more release cycles on it.
 
 ## Verifying what you downloaded
 
-Every release publishes SHA-256 checksums. Compare before running:
-
-```sh
-shasum -a 256 Jarvis*.dmg   # macOS
-sha256sum Jarvis*.deb       # Linux
-Get-FileHash Jarvis_*.msi    # Windows PowerShell
-```
-
-Compare the output against the matching line in `SHA256SUMS.txt`, or check the
-whole file at once:
+Every release publishes SHA-256 checksums. Download `SHA256SUMS.txt` next to
+the installer and check it before running anything:
 
 ```sh
 shasum -a 256 --ignore-missing -c SHA256SUMS.txt
 ```
+
+```powershell
+# Windows PowerShell
+(Get-FileHash .\Jarvis-Windows-x64-setup.exe -Algorithm SHA256).Hash.ToLower()
+# ...then find that hash in SHA256SUMS.txt
+```
+
+`--ignore-missing` is not optional advice: `SHA256SUMS.txt` lists every artifact
+of the release, so without it someone who downloaded a single installer gets a
+screen of `FAILED open or read` next to their one `OK`, which reads like the
+download is broken when it is fine.
 
 ## What has and hasn't been checked
 

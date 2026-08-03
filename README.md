@@ -142,7 +142,10 @@ Then launch Jarvis from your applications menu.
 
 <sub>Every download is checksummed — verify against `SHA256SUMS.txt` on the
 [releases page](https://github.com/AayushSharma1003/jarvis/releases) with
-`shasum -a 256 -c SHA256SUMS.txt` on macOS/Linux, or `Get-FileHash` on Windows.</sub>
+`shasum -a 256 --ignore-missing -c SHA256SUMS.txt` on macOS/Linux, or `Get-FileHash` on
+Windows. <!-- --ignore-missing matters: SHA256SUMS lists every artifact, so without it
+someone who downloaded one file sees six lines of FAILED and one OK. -->
+</sub>
 
 ### 3. Turn on voice
 
