@@ -98,13 +98,22 @@ ollama pull llama3.2:3b
 thinking. On macOS it lives in the menu bar and starts with your Mac; if you quit it,
 Jarvis will say it can't reach Ollama.</sub>
 
+> [!IMPORTANT]
+> **That model talks fast, but it can't touch your files.** Reading files, running
+> commands and fetching web pages are **off** for `llama3.2:3b`. They need a model
+> Jarvis has measured as able to *decline* a tool, and today that is `qwen3:4b`:
+>
+> ```bash
+> ollama pull qwen3:4b     # +2.5 GB — files, commands and web, but ~20s before it speaks
+> ```
+>
+> Install both and switch in the app whenever you like. Jarvis says which mode
+> you're in above the message box.
+
 <details>
-<summary><b>Which model should I pull?</b> — it decides whether Jarvis can touch your files</summary>
+<summary><b>Why is it like that, and which should I actually use?</b></summary>
 
 <br/>
-
-This is the one choice worth understanding, because it silently decides which half of the
-feature list you get.
 
 | | `llama3.2:3b` | `qwen3:4b` |
 |---|---|---|
@@ -121,9 +130,8 @@ one. So tools stay off for it, and there is no override.
 `qwen3:4b` is the only model that currently ships with tools on. It's genuinely better at
 them — and it thinks before it answers, which voice can't afford.
 
-**Pick by what you want:** `llama3.2:3b` for a fast talking assistant, `qwen3:4b` for one
-that can do things on your computer. Pull both and switch in the model picker if you like —
-Jarvis tells you which mode you're in above the message box.
+**So:** `llama3.2:3b` if you mostly want to talk to it, `qwen3:4b` if you want it to do
+things on your computer. Most people should pull both.
 
 **More than 8 GB of RAM?** Pull something bigger (`ollama pull qwen2.5:7b` at 16 GB, `14b`
 at 32 GB). Jarvis picks the best of what you have *installed* — it can't suggest a model
