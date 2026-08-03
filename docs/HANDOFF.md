@@ -1737,10 +1737,21 @@ leaked a git clone there (47's sibling).
 
 **What is NOT done, and is owner-gated:**
 
-1. **A release has NOT been cut.** Everything is on `main` and green; the tag
-   is the owner's call. rc6 is still the published build and it carries 41,
-   42, 43 and 44 — a friend installing it today gets working text chat and no
-   reachable way to turn voice on. **Cut rc7 before handing the link out.**
+1. ✅ **`v0.1.0-rc7` is PUBLISHED and is the build to hand people.** All four
+   Release jobs green; artifacts verified independently after publishing — 4/4
+   checksums, the workflow's own gate run verbatim on the **downloaded** dmg
+   (ad-hoc seal + hardened runtime + audio-input, `Identifier=app.jarvis-
+   assistant.desktop`), and the shipped sidecar booted on the malformed
+   config that made rc6 exit rc=1. All four assets return HTTP 200
+   anonymously. Published as a **pre-release**, consistent with rc6.
+   **Two consequences worth knowing.** `/releases/latest` skips pre-releases,
+   so the README button lands on the releases *list* (HTTP 200, rc7 at the
+   top) rather than straight on rc7 — promoting it to a full release, or
+   tagging a plain `v0.1.0`, is what would make it land directly.
+   And **rc6 is still published**: it makes voice unreachable, so it is a trap
+   sitting next to rc7 in the same list. The precedent set by rc4 and rc5 is
+   to delete the release and keep the git tag. Owner's call, one command:
+   `gh release delete v0.1.0-rc6 --yes`.
 2. **The two tray menu items** have still never been clicked (macOS hosts
    menu-bar extras in Control Centre, which computer-use cannot be granted).
    Thirty seconds, owner's.
