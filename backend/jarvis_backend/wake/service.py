@@ -111,6 +111,12 @@ class WakeService:
         self._persist = persist
         self._threshold = threshold
         self.available = available
+        # The user's stored answer, kept apart from what is currently possible.
+        # `enabled` is the effective state and degrades when the models are
+        # absent; `_wanted` is what they actually asked for and is never
+        # rewritten by us — so when the models arrive their choice comes back
+        # rather than needing a second trip to a toggle nobody would revisit.
+        self._wanted = enabled
         self.enabled = enabled and available
         self._suppressed = 0
         self._wakeup = asyncio.Event()  # pokes the async loop on state changes
@@ -132,8 +138,29 @@ class WakeService:
         """Flip the persistent toggle. Raises WakeError if unavailable."""
         if enabled and not self.available:
             raise WakeError("WAKE_UNAVAILABLE", "wake models missing")
+        self._wanted = enabled
         self.enabled = enabled
         self._persist(enabled)
+        self._poke()
+
+    def set_available(self, available: bool) -> None:
+        """The wake models appeared (or went away) while we were running.
+
+        Availability was decided once at startup, which was correct until the
+        downloader moved into the app: the models now arrive *during* a session,
+        so the sequence a new user actually performs — install, press "Download
+        voice models", turn on "Hey Jarvis" — ended with readiness reporting
+        `wake_models: ok` and this service still refusing the toggle with "wake
+        models missing". Two panels of the same app disagreeing, with the
+        headline feature on the losing side.
+
+        Never touches the persisted preference: losing the models is not the
+        user changing their mind, so `_wanted` decides what comes back.
+        """
+        if available == self.available:
+            return
+        self.available = available
+        self.enabled = self._wanted and available
         self._poke()
 
     def suppress(self) -> None:

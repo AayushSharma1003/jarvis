@@ -598,3 +598,52 @@ async def test_a_standalone_announcement_that_says_the_wake_word_silences_wake()
     wake.calls.clear()
     await speak_line(state, "Your ten minutes are up.")
     assert wake.calls == []  # nothing to protect against, wake stays live
+
+
+# --- wake models arriving while the app is running --------------------------
+#
+# `available` was computed once, at startup, from the presence of the model
+# files. The in-app downloader (M6.3) puts those files there *while the app is
+# running*, so the sequence a new user actually performs — install, press
+# "Download voice models", turn on "Hey Jarvis" — ended with readiness showing
+# `wake_models: ok` and the toggle refusing with "wake models missing", one
+# panel above the other. The headline feature of the product, dead after a
+# successful 500 MB download, contradicted by the app's own status.
+#
+# Nothing could see it: M6.3 verified the download by watching readiness flip
+# to ok, which is true and is not the same question as whether wake works.
+
+
+def test_wake_becomes_available_when_its_models_arrive():
+    service, _ = make_service(enabled=False, available=False)
+    with pytest.raises(WakeError):
+        service.set_enabled(True)
+
+    service.set_available(True)  # the download finished
+
+    service.set_enabled(True)
+    assert service.enabled is True
+
+
+def test_a_toggle_left_on_comes_back_when_the_models_return():
+    """The upgrade path. Someone who had "Hey Jarvis" on, and whose models are
+    missing on this launch, has their preference degraded in memory — but the
+    preference itself survives on disk (state.toml), so the moment the models
+    are back it is the *stored* answer that should win, not a second trip to
+    the toggle nobody would think to make."""
+    service, ctx = make_service(enabled=True, available=False)
+    assert service.enabled is False, "unavailable wake must not report as on"
+    assert ctx["persisted"] == [], "degrading in memory must not rewrite the user's choice"
+
+    service.set_available(True)
+
+    assert service.enabled is True
+
+
+def test_losing_the_models_does_not_silently_rewrite_the_users_choice():
+    service, ctx = make_service(enabled=True, available=True)
+    service.set_available(False)
+    assert service.enabled is False
+    assert ctx["persisted"] == []
+    service.set_available(True)
+    assert service.enabled is True

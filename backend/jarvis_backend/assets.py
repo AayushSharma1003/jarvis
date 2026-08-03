@@ -119,6 +119,18 @@ def is_present(name: str) -> bool:
     return p.is_file() and p.stat().st_size == asset.size_bytes
 
 
+def wake_models_ready() -> bool:
+    """Everything the always-on wake path needs on disk.
+
+    Not just the `wake` group: the VAD gate is part of that pipeline
+    (wake/pipeline.py — the expensive embedding model sleeps in silence behind
+    silero), and silero ships in the `voice` group. One definition, because the
+    startup composition and the post-download refresh both ask it and two copies
+    of this expression would drift into disagreeing about whether wake works.
+    """
+    return not missing("wake") and is_present("silero-vad")
+
+
 def missing(group: str | None = None) -> list[Asset]:
     return [
         a

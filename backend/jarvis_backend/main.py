@@ -228,8 +228,6 @@ def _make_wake_service(state: AppState, config: Config) -> WakeService:
         cap.start()
         return cap
 
-    # The VAD gate makes silero part of the wake path too.
-    available = not assets.missing("wake") and assets.is_present("silero-vad")
     return WakeService(
         make_pipeline=make_pipeline,
         open_capture=open_capture,
@@ -238,7 +236,7 @@ def _make_wake_service(state: AppState, config: Config) -> WakeService:
         persist=save_wake_enabled,
         enabled=load_wake_enabled(),
         threshold=config.wake_threshold,
-        available=available,
+        available=assets.wake_models_ready(),
     )
 
 

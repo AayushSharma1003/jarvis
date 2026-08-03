@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -32,6 +33,8 @@ from ..wake.service import WakeService
 from . import protocol, readiness
 from .auth import origin_allowed, token_valid
 from .voice import VoiceIO, run_voice_exchange, speak_line
+
+log = logging.getLogger(__name__)
 
 # Test seam: swapped for a fake urlopen so the suite never touches the
 # network or 500 MB of real models. None means "use the real one".
@@ -146,6 +149,11 @@ class AppState:
     # One model download at a time, process-wide: two concurrent fetches
     # would race on the same .part files.
     fetching_assets: bool = False
+    # A strong reference to the in-flight download task. asyncio keeps only a
+    # weak one, so without this the garbage collector may cancel a background
+    # task mid-download — the documented footgun of `ensure_future` with no
+    # owner. Never awaited; the guard above is what serialises fetches.
+    asset_fetch: asyncio.Task | None = None
     # Set when config.toml could not be read and defaults are in force with
     # file access and dangerous tools switched off (config.load_or_default).
     # Readiness reports it: the user edited that file by hand and is the only
@@ -302,6 +310,61 @@ def _conversations_payload(state: AppState) -> dict[str, Any]:
             for c in state.store.list_conversations()
         ],
     }
+
+
+async def _fetch_assets(state: AppState) -> None:
+    """Download the missing voice models, reporting to every open window.
+
+    **Broadcast, never back to the connection that asked** — the rule
+    `wake.detected` and notifications already follow, and for the same reason: a
+    webview reload replaces the connection, and progress addressed to the old
+    one would leave the new window watching a frozen bar while 500 MB quietly
+    arrived behind it. A second window gets the progress too, which is right;
+    the download is a property of the machine, not of a tab.
+    """
+    loop = asyncio.get_running_loop()
+    last = 0.0
+
+    async def broadcast(msg: dict[str, Any]) -> None:
+        for c in list(state.connections):
+            with contextlib.suppress(Exception):
+                await c.send(msg)
+
+    def on_progress(name: str, done: int, total: int) -> None:
+        # Throttled to 10 Hz: the byte loop runs thousands of times a second and
+        # a frame per chunk would drown the socket. Called from the download
+        # thread, hence run_coroutine_threadsafe.
+        nonlocal last
+        now = time.monotonic()
+        if now - last < 0.1 and done < total:
+            return
+        last = now
+        asyncio.run_coroutine_threadsafe(
+            broadcast(protocol.assets_progress(name, done, total)), loop
+        )
+
+    try:
+        failed = await asyncio.to_thread(assets.fetch_missing, None, on_progress, _ASSET_OPENER)
+        await broadcast(protocol.assets_done(failed))
+        # The wake service decided whether it was possible at startup, and the
+        # models have just arrived. Without this, readiness reports
+        # `wake_models: ok` while the toggle still answers WAKE_UNAVAILABLE —
+        # the app disagreeing with itself, with "Hey Jarvis" on the losing side.
+        if state.wake is not None:
+            state.wake.set_available(assets.wake_models_ready())
+            state.wake.ensure_started()
+            await broadcast(protocol.wake_status(state.wake.enabled, state.wake.available))
+        # Voice may have just become available; let every window's gate refresh
+        # without the user having to hunt for a button.
+        await broadcast(await readiness.payload(state))
+    except Exception:  # noqa: BLE001 - a background task that dies silently leaves
+        # the frontend's progress bar spinning forever with no way to retry,
+        # because `fetchAssets` refuses to start a second one.
+        log.exception("asset download failed")
+        with contextlib.suppress(Exception):
+            await broadcast(protocol.assets_done(["*"]))
+    finally:
+        state.fetching_assets = False
 
 
 async def _broadcast_conversations(state: AppState) -> None:
@@ -574,41 +637,17 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
             # `scripts/` in the bundle and no CLI in the frozen sidecar. Still
             # explicit user action — nothing downloads until this message,
             # which is a button press — so the zero-phone-home principle holds.
+            #
+            # Started as a task, NOT awaited here. Awaited inline it parked this
+            # connection's receive loop for the length of a 500 MB download, so
+            # the app accepted typing, ⌘M and sidebar clicks and acted on none
+            # of them for minutes — with no cancel button to escape with. The
+            # single-flight guard is released by the task, not by this handler.
             if state.fetching_assets:
                 await send(protocol.error("ASSETS_BUSY"))
                 return
             state.fetching_assets = True
-            try:
-                loop = asyncio.get_running_loop()
-                last = 0.0
-
-                def on_progress(name: str, done: int, total: int) -> None:
-                    # Throttled to 10 Hz: the byte loop runs thousands of times
-                    # a second and a frame per chunk would drown the socket.
-                    nonlocal last
-                    now = time.monotonic()
-                    if now - last < 0.1 and done < total:
-                        return
-                    last = now
-                    asyncio.run_coroutine_threadsafe(
-                        send(protocol.assets_progress(name, done, total)), loop
-                    )
-
-                failed = await asyncio.to_thread(
-                    assets.fetch_missing,
-                    None,
-                    on_progress,
-                    _ASSET_OPENER,
-                )
-                await send(protocol.assets_done(failed))
-                # Voice may have just become available; let every window's gate
-                # refresh without the user having to hunt for a button.
-                fresh = await readiness.payload(state)
-                for c in list(state.connections):
-                    with contextlib.suppress(Exception):
-                        await c.send(fresh)
-            finally:
-                state.fetching_assets = False
+            state.asset_fetch = asyncio.ensure_future(_fetch_assets(state))
 
         elif mtype == "conversations.list":
             await send(_conversations_payload(state))

@@ -251,14 +251,135 @@ def test_the_test_seam_cannot_be_reached_from_outside_the_test_suite():
     from pathlib import Path
 
     pkg = Path(__file__).resolve().parent.parent / "jarvis_backend"
+    # The statement, not a line number: pinning the line makes this fail on any
+    # edit above it, which is noise rather than a finding.
     writes = [
-        f"{p.relative_to(pkg)}:{i}"
+        (p.relative_to(pkg).as_posix(), line.strip())
         for p in pkg.rglob("*.py")
-        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        for line in p.read_text(encoding="utf-8").splitlines()
         if "_ASSET_OPENER" in line and "=" in line.split("_ASSET_OPENER", 1)[1][:3]
     ]
-    assert writes == ["server/app.py:38"], f"unexpected writes to the seam: {writes}"
+    assert writes == [("server/app.py", "_ASSET_OPENER = None")], (
+        f"unexpected writes to the seam: {writes}"
+    )
 
     import jarvis_backend.server.app as app_mod
 
     assert app_mod._ASSET_OPENER is None, "the seam is set outside a test"
+
+
+def test_the_app_stays_usable_while_the_download_runs(make_client, one_asset):  # noqa: F811
+    """A 500 MB download takes minutes and there is no cancel button, so if it
+    holds the connection the user has no way out of a frozen app.
+
+    It did. `assets.fetch` was awaited inline in the receive loop, so that
+    connection read no further messages until the last byte landed: measured
+    with a slow opener, a `ping` sent immediately after the first progress
+    frame was answered only after `assets.done`. From the outside the app
+    accepts typing, accepts ⌘M, accepts a click on another conversation, and
+    does none of them — for the length of the download.
+    """
+    import time
+
+    client, _ = make_client()
+    import jarvis_backend.server.app as app_mod
+
+    class Slow:
+        def __init__(self):
+            self.pos = 0
+
+        def read(self, n):
+            if self.pos >= len(PAYLOAD):
+                return b""
+            time.sleep(0.05)
+            chunk = PAYLOAD[self.pos : self.pos + 256]
+            self.pos += len(chunk)
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    app_mod._ASSET_OPENER = lambda req, timeout=0: Slow()
+    try:
+        with connect(client) as ws:
+            ws.send_json({"type": "assets.fetch"})
+            assert ws.receive_json()["type"] == "assets.progress"  # it has begun
+            ws.send_json({"type": "ping"})
+            seen = []
+            while (msg := ws.receive_json())["type"] != "pong":
+                seen.append(msg["type"])
+            assert "assets.done" not in seen, (
+                "the ping was only answered after the download finished — the "
+                "connection is blocked for the whole download"
+            )
+            # And it still finishes, on its own, without being waited on.
+            while (msg := ws.receive_json())["type"] != "assets.done":
+                pass
+            assert msg["ok"] is True
+    finally:
+        app_mod._ASSET_OPENER = None
+
+
+def test_download_progress_reaches_every_window(make_client, one_asset):  # noqa: F811
+    """Broadcast, not sent back to the asker — the same rule wake.status and
+    notifications follow, for the same reason: a webview reload replaces the
+    connection, and a download that reports only to the one that started it
+    would leave the new window showing a dead progress bar for two minutes."""
+    client, _ = make_client()
+    import jarvis_backend.server.app as app_mod
+
+    app_mod._ASSET_OPENER = lambda req, timeout=0: FakeResponse(PAYLOAD)
+    try:
+        with connect(client) as asker, connect(client) as bystander:
+            asker.send_json({"type": "assets.fetch"})
+            while asker.receive_json()["type"] != "assets.done":
+                pass
+            # Specifically PROGRESS. An `or "assets.done"` here passed against
+            # an implementation that sent progress to the asker alone, because
+            # the completion frame was broadcast either way — the weaker
+            # assertion tested the wrong half.
+            seen = []
+            while len(seen) < 3:
+                seen.append(bystander.receive_json()["type"])
+            assert "assets.progress" in seen, (
+                f"a second window saw no download progress: {seen}"
+            )
+    finally:
+        app_mod._ASSET_OPENER = None
+
+
+def test_a_failed_download_can_be_retried(make_client, one_asset):  # noqa: F811
+    """The single-flight guard has to be released by the task, not by the
+    handler that started it — and a failed download is an ordinary state (a
+    dropped connection produces one). A leaked guard answers ASSETS_BUSY
+    forever, so the one thing the user would obviously try next, pressing the
+    button again, is the one thing that can never work.
+    """
+    client, _ = make_client()
+    import jarvis_backend.server.app as app_mod
+
+    def offline(req, timeout=0):
+        raise OSError("network unreachable")
+
+    app_mod._ASSET_OPENER = offline
+    try:
+        with connect(client) as ws:
+            ws.send_json({"type": "assets.fetch"})
+            while (msg := ws.receive_json())["type"] != "assets.done":
+                pass
+            assert msg["ok"] is False
+
+            # Now the network is back and the user presses the button again.
+            app_mod._ASSET_OPENER = lambda req, timeout=0: FakeResponse(PAYLOAD)
+            ws.send_json({"type": "assets.fetch"})
+            seen = []
+            while (msg := ws.receive_json())["type"] != "assets.done":
+                seen.append(msg["type"])
+            assert "error" not in seen, f"the retry was refused: {seen}"
+            assert msg["ok"] is True
+            assert assets.is_present("tiny")
+    finally:
+        app_mod._ASSET_OPENER = None
