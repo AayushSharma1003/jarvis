@@ -116,7 +116,18 @@ class Sandbox:
 
         # strict=False: a write target need not exist yet. Existing ancestors
         # still get their symlinks followed, which is what the check needs.
-        resolved = path.resolve()
+        #
+        # A path the OS refuses to even look at — an embedded NUL is the one
+        # that reaches here — raises ValueError out of `resolve()`, straight
+        # past this function's promise of "SandboxError with a machine-readable
+        # code". The registry's catch-all did deny it, so the direction was
+        # already safe, but it surfaced as TOOL_FAILED carrying a raw
+        # "lstat: embedded null character in path". It is the same answer as any
+        # other unusable path, so it gets the same code.
+        try:
+            resolved = path.resolve()
+        except (ValueError, OSError) as e:
+            raise SandboxError("PATH_OUTSIDE_SANDBOX", str(raw)[:200]) from e
 
         # Folded, not `is_relative_to`: see _fold. A prefix match over the
         # component tuples covers both "is the excluded dir" and "is under it".

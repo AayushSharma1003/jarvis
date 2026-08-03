@@ -243,6 +243,16 @@ source: what this is, who wrote it, which commit, and what it says it needs.
   Only an extension whose current digest matches a recorded approval is ever imported.
   Pinned by `test_an_unapproved_extension_is_never_imported`, which fails if an
   unapproved module body ever runs.
+  **This was not quite true until M6.4, and the gap is instructive**: `discover()`
+  matched the digest and `_load_one` then imported the *path*, so the decision was
+  keyed on content while the import was keyed on a filename. Anything that rewrote
+  `extension.py` in the window between them got its bytes executed under an approval
+  record attesting to bytes that never ran — and the next startup re-hashed, saw
+  `changed`, and refused to load, so the swap ran exactly once and then tidied up
+  after itself. Reaching the window needs a process already running as the user
+  (inside §4's trust boundary), and it is closed anyway: `_load_one` re-hashes
+  immediately before importing. Tripwire:
+  `test_bytes_that_changed_after_the_check_are_not_imported`.
 - **Nothing can approve itself.** The record is `<data dir>/extensions.toml` and
   extensions live in `<data dir>/extensions`, both permanently outside the §2 sandbox
   (`main.py` excludes the whole data dir). A tool that could write either would install

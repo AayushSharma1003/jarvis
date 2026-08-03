@@ -250,3 +250,20 @@ def test_a_sibling_root_prefix_is_not_a_root(tmp_path):
     (sneaky / "creds").write_text("k")
     with pytest.raises(SandboxError):
         Sandbox([work]).resolve(str(sneaky / "creds"))
+
+
+def test_a_path_that_cannot_be_resolved_is_a_sandbox_refusal_not_a_raw_error(tmp_path):
+    """`resolve()` promises "SandboxError with a machine-readable code", and a
+    NUL byte broke that promise: `Path.resolve()` raises ValueError straight
+    through it. The direction is fail-safe — the registry's catch-all turns it
+    into a denied call — but it arrives as `TOOL_FAILED` carrying the raw
+    "lstat: embedded null character in path", where the honest answer is the
+    same PATH_OUTSIDE_SANDBOX every other unusable path gets. A guard whose
+    contract has exceptions is a guard whose callers start writing their own.
+    """
+    root = tmp_path / "docs"
+    root.mkdir()
+    sandbox = Sandbox(roots=[root], excluded=[])
+    with pytest.raises(SandboxError) as e:
+        sandbox.resolve(f"{root}/a\x00b")
+    assert e.value.code == "PATH_OUTSIDE_SANDBOX"

@@ -1462,3 +1462,43 @@ def test_a_change_reaches_every_open_window(installed, ws_client, action):
             first.send_json({"type": "extensions.revoke", "name": "timers"})
             first.receive_json()
             assert second.receive_json()["extensions"][0]["status"] == "pending"
+
+
+def test_bytes_that_changed_after_the_check_are_not_imported(tmp_path):
+    """The window between deciding and importing (M6.4 audit).
+
+    §5 says "only an extension whose current digest matches a recorded approval
+    is ever imported". `discover()` matched the digest and `_load_one` then
+    imported the *path* — so the decision was keyed on content and the import
+    was keyed on a filename, which is not the same claim. Anything able to
+    rewrite `extension.py` in between got its bytes executed under an approval
+    record attesting to bytes that never ran.
+
+    Reaching that window needs a process already running as the user, so it is
+    inside the trust boundary §4 now states — but the cost of closing it is one
+    re-hash of a folder that is a few kilobytes, at load time only, and an
+    approval record that cannot lie about what executed is worth more than that.
+
+    The sentinel is the same tripwire as
+    `test_an_unapproved_extension_is_never_imported`: it is written by the
+    module body, so its existence means the import happened.
+    """
+    root = tmp_path / "extensions"
+    sentinel = tmp_path / "ran.txt"
+    ext = _installed(root)
+    store = _store(tmp_path)
+    _approve(store, ext)
+
+    # Everything the loader was told is true at this instant.
+    entries = loader.discover(root, store)
+    assert [e.status for e in entries] == ["approved"]
+
+    # ...and now it isn't. This is the swap the window allows.
+    (ext / "extension.py").write_text(SENTINEL_CODE.format(sentinel=str(sentinel)))
+
+    registry = _registry()
+    results = loader.load_approved(registry, entries)
+
+    assert not sentinel.exists(), "bytes swapped after the digest check were imported"
+    assert len(registry) == 0
+    assert [(r.name, r.ok, r.code) for r in results] == [("timers", False, "EXTENSION_CHANGED")]

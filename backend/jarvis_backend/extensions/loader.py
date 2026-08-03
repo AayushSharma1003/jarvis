@@ -180,6 +180,21 @@ def load_approved(registry: Registry, discovered: Iterable[Discovered]) -> list[
 
 
 def _load_one(registry: Registry, entry: Discovered, manifest: Manifest) -> LoadResult:
+    # Re-hash immediately before importing, closing the window between the
+    # digest `discover()` computed and this import (M6.4 audit). Without it the
+    # *decision* was keyed on content while the *import* was keyed on a path,
+    # which is not the claim §5 makes — anything that rewrote extension.py in
+    # between had its bytes executed under an approval record attesting to bytes
+    # that never ran. The window needs a process already running as the user, so
+    # it sits inside §4's trust boundary; it is closed anyway because the cost is
+    # one hash of a few-kilobyte folder at load time, and an approval record that
+    # cannot lie about what executed is worth more than that.
+    try:
+        if tree_digest(entry.path) != entry.digest:
+            return LoadResult(manifest.name, False, code="EXTENSION_CHANGED")
+    except ApprovalError as e:
+        return LoadResult(manifest.name, False, code=e.code)
+
     code_path = entry.path / CODE_FILENAME
     if not code_path.is_file():
         return LoadResult(manifest.name, False, code="EXTENSION_CODE_MISSING")
