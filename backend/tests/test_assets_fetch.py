@@ -337,13 +337,17 @@ def test_download_progress_reaches_every_window(make_client, one_asset):  # noqa
             asker.send_json({"type": "assets.fetch"})
             while asker.receive_json()["type"] != "assets.done":
                 pass
-            # Specifically PROGRESS. An `or "assets.done"` here passed against
-            # an implementation that sent progress to the asker alone, because
-            # the completion frame was broadcast either way — the weaker
-            # assertion tested the wrong half.
+            # Read to a frame that is *guaranteed* to arrive rather than to a
+            # fixed count: counting frames blocks forever when one fewer shows
+            # up, which is a hang on a slow runner rather than a failure. (It
+            # was: this test timed out on CI while passing locally.)
             seen = []
-            while len(seen) < 3:
-                seen.append(bystander.receive_json()["type"])
+            while (kind := bystander.receive_json()["type"]) != "assets.done":
+                seen.append(kind)
+            # Specifically PROGRESS. An `or "assets.done"` here passed against an
+            # implementation that sent progress to the asker alone, because the
+            # completion frame was broadcast either way — the weaker assertion
+            # tested the wrong half.
             assert "assets.progress" in seen, (
                 f"a second window saw no download progress: {seen}"
             )

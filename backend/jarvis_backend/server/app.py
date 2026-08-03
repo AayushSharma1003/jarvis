@@ -339,9 +339,14 @@ async def _fetch_assets(state: AppState) -> None:
         if now - last < 0.1 and done < total:
             return
         last = now
-        asyncio.run_coroutine_threadsafe(
-            broadcast(protocol.assets_progress(name, done, total)), loop
-        )
+        # Best-effort, and it must stay that way: this runs on the download
+        # thread, so anything raised here propagates into the middle of a 500 MB
+        # transfer and aborts it. A progress bar is not worth a failed download,
+        # and a loop that has gone away (shutdown) is exactly when it would.
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(
+                broadcast(protocol.assets_progress(name, done, total)), loop
+            )
 
     try:
         failed = await asyncio.to_thread(assets.fetch_missing, None, on_progress, _ASSET_OPENER)
