@@ -7,7 +7,21 @@ on:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    # THREE platforms, not one. security-model.md's known-limitations section
+    # said Windows and Linux path handling — drive letters, UNC paths, 8.3 short
+    # names, `\\?\` prefixes, per-volume case rules — was "covered by CI's test
+    # run and nothing else". This job ran on ubuntu-latest only, so for Windows
+    # that sentence resolved to: covered by nothing. The filesystem sandbox is a
+    # security boundary and it had never executed on a platform the project
+    # ships an installer for.
+    #
+    # Runners are the cheapest Windows hardware available, and the suite is 18
+    # seconds. Lint stays on one platform — ruff has no opinions that vary by OS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: backend
@@ -15,7 +29,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
-      - run: uv run ruff check .
+      - if: matrix.os == 'ubuntu-latest'
+        run: uv run ruff check .
       - run: uv run pytest -q
 
   frontend:
