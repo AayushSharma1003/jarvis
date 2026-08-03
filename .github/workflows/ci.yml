@@ -31,7 +31,13 @@ jobs:
       - run: uv sync
       - if: matrix.os == 'ubuntu-latest'
         run: uv run ruff check .
-      - run: uv run pytest -q
+      # -v and a fixed order on Windows: the first run there ended in a session
+      # hang after ".F..Fs", and dots name nothing. -v prints each test id
+      # BEFORE running it, so the one that hangs is identified by the last line.
+      - if: matrix.os == 'windows-latest'
+        run: uv run pytest -v -p no:randomly
+      - if: matrix.os != 'windows-latest'
+        run: uv run pytest -q
 
   frontend:
     runs-on: ubuntu-latest
