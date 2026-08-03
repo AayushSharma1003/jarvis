@@ -248,7 +248,13 @@ export function ChatView() {
         />
 
         {blocked ? (
-          <Readiness checks={s.readiness ?? []} onRecheck={s.recheckReadiness} />
+          <Readiness
+            checks={s.readiness ?? []}
+            onRecheck={s.recheckReadiness}
+            assetFetch={s.assetFetch}
+            assetFetchFailed={s.assetFetchFailed}
+            onFetch={s.fetchAssets}
+          />
         ) : (
           <MessageList
             messages={s.messages}

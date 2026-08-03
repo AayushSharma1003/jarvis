@@ -125,3 +125,94 @@ def missing(group: str | None = None) -> list[Asset]:
         for a in ASSETS.values()
         if (group is None or a.group == group) and not is_present(a.name)
     ]
+
+
+class AssetError(Exception):
+    """Machine-readable failure — the frontend owns the wording (i18n)."""
+
+    def __init__(self, code: str, detail: str = ""):
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code}: {detail}")
+
+
+CHUNK = 1 << 18  # 256 KiB
+
+
+def _urlopen(req, timeout: int = 60):
+    import urllib.request
+
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def download(asset: Asset, on_progress=None, opener=None) -> None:
+    """Fetch one asset into the models dir. Blocking — call it off the loop.
+
+    This lives in the backend rather than in `scripts/` because the packaged
+    app has neither: no `scripts/` directory in the bundle and no CLI in the
+    frozen sidecar (its entrypoint is the server). A user who installed from a
+    release therefore had NO way to obtain the voice models, while the app told
+    them to run a script from a repo they never cloned.
+
+    Resumes a partial `.part`, verifies size and pinned sha256, and renames
+    atomically — so an interrupted download is never mistaken for a model, and
+    a changed upstream file is refused rather than loaded into onnxruntime as a
+    mystery crash later.
+    """
+    import urllib.error
+    import urllib.request
+
+    opener = opener or _urlopen
+    dest = models_dir() / asset.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+
+    offset = part.stat().st_size if part.exists() else 0
+    headers = {"User-Agent": "jarvis"}
+    if 0 < offset < asset.size_bytes:
+        headers["Range"] = f"bytes={offset}-"
+    elif offset >= asset.size_bytes:
+        offset = 0
+        part.unlink()
+
+    req = urllib.request.Request(asset.url, headers=headers)
+    try:
+        with opener(req, timeout=60) as resp:
+            resuming = getattr(resp, "status", 200) == 206
+            done = offset if resuming else 0
+            with part.open("ab" if resuming else "wb") as f:
+                while chunk := resp.read(CHUNK):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if on_progress is not None:
+                        on_progress(asset.name, done, asset.size_bytes)
+    except (urllib.error.URLError, OSError) as e:
+        raise AssetError("ASSET_DOWNLOAD_FAILED", f"{asset.name}: {e}") from e
+
+    actual = part.stat().st_size
+    if actual != asset.size_bytes:
+        raise AssetError(
+            "ASSET_SIZE_MISMATCH", f"{asset.name}: got {actual}, want {asset.size_bytes}"
+        )
+    if asset.sha256 and file_sha256(part) != asset.sha256:
+        # Delete it: a wrong file that survives on disk gets retried forever
+        # and looks present to `is_present`, which only checks size.
+        part.unlink()
+        raise AssetError("ASSET_CHECKSUM_MISMATCH", asset.name)
+    part.replace(dest)
+
+
+def fetch_missing(group: str | None = None, on_progress=None, opener=None) -> list[str]:
+    """Download everything not already present. Returns the names that FAILED.
+
+    Keeps going after a failure on purpose: the wake models are tiny and the
+    voice models are large, so one flaky 300 MB download should not also cost
+    the user the three small files that would have succeeded.
+    """
+    failed: list[str] = []
+    for asset in missing(group):
+        try:
+            download(asset, on_progress=on_progress, opener=opener)
+        except AssetError:
+            failed.append(asset.name)
+    return failed

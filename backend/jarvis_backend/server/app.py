@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from .. import __version__
+from .. import __version__, assets
 from ..agent.loop import run_exchange
 from ..audio.silence import MicHealth
 from ..config import Config
@@ -31,6 +32,10 @@ from ..wake.service import WakeService
 from . import protocol, readiness
 from .auth import origin_allowed, token_valid
 from .voice import VoiceIO, run_voice_exchange, speak_line
+
+# Test seam: swapped for a fake urlopen so the suite never touches the
+# network or 500 MB of real models. None means "use the real one".
+_ASSET_OPENER = None
 
 AUTH_TIMEOUT_S = 5.0
 WS_POLICY_VIOLATION = 1008
@@ -138,6 +143,9 @@ class AppState:
     # green microphone row through the whole gotcha-36 outage. Written by the
     # voice exchange and the wake path; never probed. See audio/silence.py.
     mic_health: MicHealth = field(default_factory=MicHealth)
+    # One model download at a time, process-wide: two concurrent fetches
+    # would race on the same .part files.
+    fetching_assets: bool = False
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []
@@ -554,6 +562,47 @@ async def _dispatch(state: AppState, conn: Connection, msg: dict[str, Any]) -> N
 
         elif mtype == "system.readiness":
             await send(await readiness.payload(state))
+
+        elif mtype == "assets.fetch":
+            # The ONLY way a packaged user can get the voice models: there is no
+            # `scripts/` in the bundle and no CLI in the frozen sidecar. Still
+            # explicit user action — nothing downloads until this message,
+            # which is a button press — so the zero-phone-home principle holds.
+            if state.fetching_assets:
+                await send(protocol.error("ASSETS_BUSY"))
+                return
+            state.fetching_assets = True
+            try:
+                loop = asyncio.get_running_loop()
+                last = 0.0
+
+                def on_progress(name: str, done: int, total: int) -> None:
+                    # Throttled to 10 Hz: the byte loop runs thousands of times
+                    # a second and a frame per chunk would drown the socket.
+                    nonlocal last
+                    now = time.monotonic()
+                    if now - last < 0.1 and done < total:
+                        return
+                    last = now
+                    asyncio.run_coroutine_threadsafe(
+                        send(protocol.assets_progress(name, done, total)), loop
+                    )
+
+                failed = await asyncio.to_thread(
+                    assets.fetch_missing,
+                    None,
+                    on_progress,
+                    _ASSET_OPENER,
+                )
+                await send(protocol.assets_done(failed))
+                # Voice may have just become available; let every window's gate
+                # refresh without the user having to hunt for a button.
+                fresh = await readiness.payload(state)
+                for c in list(state.connections):
+                    with contextlib.suppress(Exception):
+                        await c.send(fresh)
+            finally:
+                state.fetching_assets = False
 
         elif mtype == "conversations.list":
             await send(_conversations_payload(state))

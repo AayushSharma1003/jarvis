@@ -177,8 +177,8 @@
       "BACKEND_UNAVAILABLE": "The language-model backend didn't answer.",
       "NO_MODELS": "Ollama is running but has no models. Pull one to get started.",
       "MODEL_NOT_FOUND": "The model in your config ({{model}}) isn't installed.",
-      "VOICE_MODELS_MISSING": "Voice models aren't downloaded, so speech is off. Typing still works.",
-      "WAKE_MODELS_MISSING": "Wake-word models aren't downloaded, so “Hey Jarvis” is off.",
+      "VOICE_MODELS_MISSING": "Voice models aren't downloaded yet, so speech is off. Typing still works.",
+      "WAKE_MODELS_MISSING": "Wake-word models aren't downloaded yet, so “Hey Jarvis” is off.",
       "NO_INPUT_DEVICE": "No microphone found. Typing still works.",
       "MIC_SILENT": "Your microphone is sending silence, so Jarvis can't hear you. Check that it isn't muted, and that Jarvis is allowed to use it in your system's privacy settings. Typing still works.",
       "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works.",
@@ -189,7 +189,11 @@
     "run": "Run this:",
     "copy": "Copy",
     "copied": "Copied",
-    "micPermissionNote": "If Jarvis never hears you, check System Settings → Privacy & Security → Microphone."
+    "micPermissionNote": "If Jarvis never hears you, check System Settings → Privacy & Security → Microphone.",
+    "download": "Download voice models",
+    "downloading": "Downloading…",
+    "downloadSize": "About 500 MB, once. Kept on this machine — nothing is uploaded.",
+    "downloadFailed": "Couldn't download: {{names}}. Check your connection and try again."
   },
   "wake": {
     "label": "“Hey Jarvis”",
@@ -248,6 +252,10 @@
     "EXTENSION_CODE_MISSING": "The extension has no code file to load.",
     "MANIFEST_PARSE_ERROR": "That extension's manifest isn't valid.",
     "MANIFEST_INVALID": "That extension's manifest is missing something it needs.",
-    "unknown": "Something went wrong ({{code}})."
+    "unknown": "Something went wrong ({{code}}).",
+    "ASSETS_BUSY": "Already downloading the models — one at a time.",
+    "ASSET_DOWNLOAD_FAILED": "A model download failed. Check your connection and try again.",
+    "ASSET_CHECKSUM_MISMATCH": "A downloaded model didn't match its checksum, so it was discarded.",
+    "ASSET_SIZE_MISMATCH": "A model download ended early and was discarded."
   }
 }

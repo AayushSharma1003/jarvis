@@ -150,6 +150,8 @@ export type VoiceState =
 export type ServerMessage =
   | { type: "ready"; version: string }
   | { type: "pong" }
+  | { type: "assets.progress"; name: string; done: number; total: number }
+  | { type: "assets.done"; ok: boolean; failed: string[] }
   | { type: "voice.state"; state: VoiceState; reason?: string }
   | { type: "stt.text"; text: string }
   | { type: "voice.level"; level: number }
@@ -213,4 +215,5 @@ export type ClientMessage =
   | { type: "voice.say"; text: string; notification_id?: string }
   | { type: "extensions.list" }
   | { type: "extensions.approve"; name: string; digest: string }
-  | { type: "extensions.revoke"; name: string };
+  | { type: "extensions.revoke"; name: string }
+  | { type: "assets.fetch" };

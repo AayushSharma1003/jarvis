@@ -241,5 +241,14 @@ def wake_status(enabled: bool, available: bool) -> dict[str, Any]:
     return {"type": "wake.status", "enabled": enabled, "available": available}
 
 
+def assets_progress(name: str, done: int, total: int) -> dict[str, Any]:
+    """Bytes, not English: the frontend formats and names the model group."""
+    return {"type": "assets.progress", "name": name, "done": done, "total": total}
+
+
+def assets_done(failed: list[str]) -> dict[str, Any]:
+    return {"type": "assets.done", "ok": not failed, "failed": failed}
+
+
 def wake_detected() -> dict[str, Any]:
     return {"type": "wake.detected"}

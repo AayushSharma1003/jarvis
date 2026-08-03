@@ -84,6 +84,10 @@ export interface ConversationState {
   modelSource: "configured" | "auto";
   tier: RamTier | null; // what this machine can run; null until models arrive
   readiness: ReadinessCheck[] | null; // null = not checked yet
+  // Model download (assets.fetch). null = idle. The packaged app has no
+  // terminal and no scripts/, so this is the only way to get the voice models.
+  assetFetch: { name: string; done: number; total: number } | null;
+  assetFetchFailed: string[] | null; // names that failed; [] = last run was clean
   ready: boolean; // false only once a check has actually failed
   conversations: ConversationSummary[];
   conversationId: string | null; // the conversation on screen; null = new chat
@@ -125,6 +129,7 @@ export interface ConversationState {
   setWakeEnabled: (enabled: boolean) => void;
   setModel: (model: string) => void;
   recheckReadiness: () => void;
+  fetchAssets: () => void;
   newChat: () => void;
   switchTo: (conversationId: string) => void;
   rename: (conversationId: string, title: string) => void;
@@ -243,6 +248,8 @@ export const useConversation = create<ConversationState>((set, get) => ({
   modelSource: "auto",
   tier: null,
   readiness: null,
+  assetFetch: null,
+  assetFetchFailed: null,
   ready: true, // optimistic: never flash the gate before we've asked
   conversations: [],
   conversationId: null,
@@ -373,6 +380,14 @@ export const useConversation = create<ConversationState>((set, get) => ({
     socket?.send({ type: "models.list" });
   },
 
+  // ~500MB over a slow link, so the progress frames matter: without them this
+  // looks like a button that did nothing for ten minutes.
+  fetchAssets: () => {
+    if (get().assetFetch !== null) return; // already running
+    set({ assetFetch: { name: "", done: 0, total: 0 }, assetFetchFailed: null });
+    socket?.send({ type: "assets.fetch" });
+  },
+
   newChat: () => {
     // Don't wipe the unsaved thread if it's mid-generation — its chat.start is
     // still coming, and that reply belongs to the conversation being created.
@@ -481,6 +496,17 @@ function startVoiceFromWake(set: SetState, get: () => ConversationState): void {
 
 function handleMessage(msg: ServerMessage, set: SetState, get: () => ConversationState): void {
   switch (msg.type) {
+    case "assets.progress":
+      set({ assetFetch: { name: msg.name, done: msg.done, total: msg.total } });
+      break;
+
+    case "assets.done":
+      // Keep the failed list: "download finished" and "voice works now" are
+      // different claims, and the readiness broadcast that follows decides the
+      // second one.
+      set({ assetFetch: null, assetFetchFailed: msg.failed });
+      break;
+
     case "voice.state":
       set({
         voiceState: msg.state,

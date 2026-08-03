@@ -3,20 +3,29 @@
 //
 // Deliberately not a modal: the sidebar and old conversations stay reachable,
 // because "Ollama isn't running" is no reason to lock someone out of their own
-// history. Deliberately not a downloader either — a developer with a terminal
-// open is better served by the exact command than by a progress bar we'd have
-// to build a cancel path for. Model download UI belongs with the installer.
+// history.
+//
+// It IS a downloader, and it had to become one. This file used to argue that
+// "a developer with a terminal open is better served by the exact command" —
+// true, and irrelevant to everyone who installs a release. Those users have no
+// terminal in the loop, no `scripts/` (it isn't in the bundle) and no CLI (the
+// frozen sidecar's entrypoint is the server), so the command shown here named
+// a repo they had never cloned. Voice was unreachable for every one of them.
+// The fetch still only ever happens on a click — see assets.py.
 
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ReadinessCheck } from "../../lib/types";
 
-/** The one command that fixes each code, or none if it isn't a command. */
+/** The one command that fixes each code, or none if it isn't a command.
+ *  Ollama stays a command: it's a separate program we deliberately don't
+ *  bundle or install on the user's behalf. */
 const FIX_COMMAND: Record<string, string> = {
   NO_MODELS: "ollama pull llama3.2:3b",
-  VOICE_MODELS_MISSING: "uv run python ../scripts/fetch_models.py",
-  WAKE_MODELS_MISSING: "uv run python ../scripts/fetch_models.py",
 };
+
+/** Codes the in-app downloader can actually fix. */
+const DOWNLOADABLE = new Set(["VOICE_MODELS_MISSING", "WAKE_MODELS_MISSING"]);
 
 function FixCommand({ command }: { command: string }) {
   const { t } = useTranslation();
@@ -60,11 +69,68 @@ function FixCommand({ command }: { command: string }) {
   );
 }
 
-function Row({ check }: { check: ReadinessCheck }) {
+function DownloadModels({
+  progress,
+  failed,
+  onFetch,
+}: {
+  progress: { name: string; done: number; total: number } | null;
+  failed: string[] | null;
+  onFetch: () => void;
+}) {
+  const { t } = useTranslation();
+  const running = progress !== null;
+  const pct =
+    progress && progress.total > 0 ? Math.round((100 * progress.done) / progress.total) : 0;
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={onFetch}
+        disabled={running}
+        className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sky-500 disabled:cursor-default disabled:bg-zinc-700 disabled:text-zinc-400"
+      >
+        {running ? t("readiness.downloading") : t("readiness.download")}
+      </button>
+      {running && (
+        <div className="mt-2">
+          <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className="h-full bg-sky-500 transition-[width] duration-200"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="mt-1 font-mono text-[11px] text-zinc-500">
+            {progress.name} · {pct}%
+          </p>
+        </div>
+      )}
+      {!running && failed && failed.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-amber-400">
+          {t("readiness.downloadFailed", { names: failed.join(", ") })}
+        </p>
+      )}
+      {!running && <p className="mt-1.5 text-[11px] text-zinc-500">{t("readiness.downloadSize")}</p>}
+    </div>
+  );
+}
+
+function Row({
+  check,
+  assetFetch,
+  assetFetchFailed,
+  onFetch,
+}: {
+  check: ReadinessCheck;
+  assetFetch: { name: string; done: number; total: number } | null;
+  assetFetchFailed: string[] | null;
+  onFetch: () => void;
+}) {
   const { t } = useTranslation();
   const failed = check.status === "fail";
   const key = `readiness.code.${check.code}`;
   const command = check.code ? FIX_COMMAND[check.code] : undefined;
+  const downloadable = check.code ? DOWNLOADABLE.has(check.code) : false;
   return (
     <li className="flex gap-3">
       <span
@@ -78,6 +144,13 @@ function Row({ check }: { check: ReadinessCheck }) {
           {t(key, { ...check.data, defaultValue: check.code ?? "" })}
         </p>
         {command && <FixCommand command={command} />}
+        {downloadable && (
+          <DownloadModels
+            progress={assetFetch}
+            failed={assetFetchFailed}
+            onFetch={onFetch}
+          />
+        )}
         {check.id === "microphone" && (
           <p className="mt-1 text-[11px] text-zinc-500">{t("readiness.micPermissionNote")}</p>
         )}
@@ -89,9 +162,15 @@ function Row({ check }: { check: ReadinessCheck }) {
 export function Readiness({
   checks,
   onRecheck,
+  assetFetch = null,
+  assetFetchFailed = null,
+  onFetch = () => {},
 }: {
   checks: ReadinessCheck[];
   onRecheck: () => void;
+  assetFetch?: { name: string; done: number; total: number } | null;
+  assetFetchFailed?: string[] | null;
+  onFetch?: () => void;
 }) {
   const { t } = useTranslation();
   // Failures first: they are what's actually blocking the app.
@@ -106,7 +185,13 @@ export function Readiness({
         <h2 className="text-sm font-medium text-zinc-100">{t("readiness.title")}</h2>
         <ul className="mt-3 space-y-3 text-xs leading-relaxed">
           {problems.map((c) => (
-            <Row key={c.id} check={c} />
+            <Row
+              key={c.id}
+              check={c}
+              assetFetch={assetFetch}
+              assetFetchFailed={assetFetchFailed}
+              onFetch={onFetch}
+            />
           ))}
         </ul>
         <button
