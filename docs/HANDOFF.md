@@ -1720,7 +1720,62 @@ explicit goal now, and it raises the bar on README/docs quality.
   auto-commit mislabelling only affected the earliest Phase-1 commit. Do NOT
   offer to rewrite history.
 
-## OPEN AT END OF M6.3 — start here next session
+## OPEN AT END OF M6.4 — start here next session
+
+**M6.4 was an audit, not a feature milestone**: find what is wrong, unsafe or
+embarrassing before the download link goes to friends. Baseline **763 backend
+tests, 8 frontend (vitest, new), ruff, tsc + vite, 2 Rust**, and CI now runs the
+backend suite on **Linux, Windows and macOS**.
+
+**Seven user-reachable defects found and fixed — gotchas 41-47.** The two that
+mattered most were both reachable by an ordinary person on a fresh machine:
+the "Download voice models" button was invisible to everyone whose setup was
+correct (41), and "Hey Jarvis" stayed dead after those models downloaded (42).
+A config typo bricked the app (43), the download froze its own window (44),
+branch order was random on Windows (45), and every failed `jarvis install`
+leaked a git clone there (47's sibling).
+
+**What is NOT done, and is owner-gated:**
+
+1. **A release has NOT been cut.** Everything is on `main` and green; the tag
+   is the owner's call. rc6 is still the published build and it carries 41,
+   42, 43 and 44 — a friend installing it today gets working text chat and no
+   reachable way to turn voice on. **Cut rc7 before handing the link out.**
+2. **The two tray menu items** have still never been clicked (macOS hosts
+   menu-bar extras in Control Centre, which computer-use cannot be granted).
+   Thirty seconds, owner's.
+3. **Gatekeeper screenshots** still need a FRESH BROWSER download on a machine
+   that has not already approved the app — `gh release download` sets no
+   quarantine, and approval is sticky (gotcha 35b).
+4. **`run_command` on Windows is unverified**: its output cap, timeout and
+   process kill. The tests drive a POSIX shell, so under `cmd.exe` they test
+   the harness, not the tool — they are `posix_only` and security-model.md says
+   so plainly instead of claiming CI covers them. v1.x work.
+5. **No cancel button on the 500 MB download.** With 44 fixed the app stays
+   usable throughout and quitting mid-download resumes cleanly, so this is now
+   a nicety rather than a trap. Deliberately not added: it is a new feature
+   (message + UI + cooperative abort), and this was an audit.
+6. **A file tool has still never been driven by hand on Windows or Linux.**
+
+### What was checked and is FINE, with evidence
+
+Worth recording so nobody re-derives it: the sandbox was re-derived rather
+than trusted (dot-dot, absolute-outside, symlink-out, symlink-into-excluded,
+three spellings of the excluded dir, relative, empty, ~-expansion — all
+denied, and the deny-folded/allow-exact asymmetry holds); the SSRF guard was
+re-derived against 20 URLs (loopback, metadata, RFC1918, IPv6, IPv4-mapped,
+decimal/hex/octal, `127.1`, file/gopher/ftp — all refused, example.com
+allowed); download failure states all behave (resume after a quit, a poisoned
+partial refused and deleted, a dropped connection resuming, no network
+reported as a code with nothing written); first run with no Ollama, second
+run, and a wake toggle left on with the models absent all degrade correctly;
+the ten most obvious first utterances on the **packaged** app all answered
+sensibly at 0.24 s TTFT with no leaked `<think>`, no printed tool calls and
+correct restraint on the arithmetic bait; and the espeak fallback finally
+fired **under a real App Translocation-length path** (206 chars → 121 files
+copied to 138 → sidecar survived and spoke), which had never been exercised.
+
+## OPEN AT END OF M6.3
 
 The baseline is **green** (726 backend, ruff, tsc+vite, 2 Rust) and voice is
 **fully working on the installed build**, re-verified after the microphone was
