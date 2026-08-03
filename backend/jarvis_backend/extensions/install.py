@@ -46,8 +46,12 @@ no special case at all — the content-keyed approval already is the mechanism.
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +61,8 @@ from ..tools.shell import child_env
 from .approvals import ApprovalError, tree_digest
 from .manifest import Manifest, ManifestError
 from .manifest import load as load_manifest
+
+log = logging.getLogger(__name__)
 
 # The only transports an extension URL may use. An allowlist rather than a
 # denylist because the thing being excluded (`ext::`, which runs a command) is a
@@ -164,12 +170,55 @@ def _install_from(url: str, root: Path, *, ref: str = "", force: bool = False) -
         if destination.exists():
             if not force:
                 raise InstallError("EXTENSION_ALREADY_INSTALLED", manifest.name)
-            shutil.rmtree(destination)
+            _rmtree(destination)
         shutil.move(str(clone), str(destination))
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        _rmtree(staging)
 
     return Installed(path=destination, manifest=manifest, digest=digest, commit=commit)
+
+
+
+def _rmtree(path: Path) -> None:
+    """`shutil.rmtree`, but it survives what `git` leaves behind.
+
+    git writes its object files **read-only**, and on Windows `rmtree` cannot
+    delete a read-only file — it raises PermissionError. The staging cleanup
+    used `ignore_errors=True`, which swallowed exactly that and left the whole
+    cloned repository in the data directory after every refused install; the
+    `--force` path, which has no ignore_errors, raised instead, so replacing an
+    installed extension could not work on Windows at all. One cause, and
+    invisible on macOS and Linux, where a read-only file in a writable
+    directory deletes fine.
+
+    So: clear the bit and retry, rather than ignoring the error. Failing to
+    clean up is worth a log line, never an exception — the install itself has
+    already succeeded or failed by the time this runs, and leaked scratch must
+    not change that answer.
+    """
+    import stat
+
+    writable = stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC
+
+    def _clear_readonly(func, target, _exc):
+        # Both the entry AND its directory. Windows blocks on the file's own
+        # read-only bit, which is what git sets; POSIX blocks on write
+        # permission for the *parent*, since that is what removing an entry
+        # needs. Clearing only one fixes only one platform.
+        try:
+            with contextlib.suppress(OSError):
+                os.chmod(os.path.dirname(target), writable)
+            os.chmod(target, writable)
+            func(target)
+        except OSError:
+            log.warning("could not remove %s while cleaning up", target)
+
+    # onexc is 3.12+, onerror is the deprecated spelling it replaced. The
+    # project floor is 3.11, so both have to be reachable.
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_clear_readonly)
+    else:  # pragma: no cover - exercised only on the 3.11 floor
+        shutil.rmtree(path, onerror=lambda f, t, e: _clear_readonly(f, t, e))
 
 
 def provenance(path: Path) -> tuple[str, str]:

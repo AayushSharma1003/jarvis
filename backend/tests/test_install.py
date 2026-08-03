@@ -654,3 +654,74 @@ def _declaration(output: str) -> str:
     start = next(i for i, line in enumerate(lines) if line.startswith("timers 0.1.0"))
     end = next(i for i, line in enumerate(lines) if "asks again" in line)
     return "\n".join(lines[start : end + 1])
+
+
+# -- cleanup that actually cleans up -----------------------------------------
+#
+# Found on a Windows runner the first time this suite ran there (M6.4). `git`
+# writes its object files **read-only**, and `shutil.rmtree` on Windows cannot
+# delete a read-only file — it raises PermissionError. The staging cleanup used
+# `ignore_errors=True`, so it swallowed that and left the entire cloned repo
+# behind, silently, in the data directory. Every refused install leaked one, and
+# they accumulate.
+#
+# It also broke `--force`, which rmtree's the destination without
+# ignore_errors: that path raised outright, so replacing an installed extension
+# could not work on Windows at all. One root cause, four failing tests.
+#
+# security-model.md §5 says a failed install "leaves nothing behind". This is
+# the test that makes that sentence true rather than aspirational.
+
+
+def _readonly_tree(path):
+    """A directory whose contents cannot be removed without clearing a bit —
+    read-only files on Windows, a read-only parent on POSIX. Different
+    mechanism, same question: does the cleanup clear it and retry?"""
+    import os
+    import stat
+
+    path.mkdir(parents=True)
+    (path / "object").write_text("x")
+    os.chmod(path / "object", stat.S_IRUSR)
+    os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+    return path
+
+
+def test_staging_cleanup_removes_a_tree_git_left_read_only(tmp_path):
+    """**Half of this is only provable on Windows, and that is worth stating.**
+
+    Mutating away the target's own chmod comes back NOT CAUGHT here, because on
+    POSIX removing an entry needs write permission on the *parent* and nothing
+    else — the file's own bit is irrelevant. On Windows it is the only thing
+    that matters. So the usual reading of a NOT CAUGHT ("this branch can never
+    decide, delete it") is wrong in this one case: it cannot decide *on this
+    machine*. The Windows runner in ci.yml is what proves the other half, which
+    is most of why that matrix was added.
+    """
+    from jarvis_backend.extensions.install import _rmtree
+
+    victim = _readonly_tree(tmp_path / "staging")
+    _rmtree(victim)
+    assert not victim.exists(), (
+        "cleanup left a read-only tree behind — on Windows that is every failed "
+        "install leaking a full git clone into the data directory"
+    )
+
+
+def test_a_refused_install_leaves_no_staging_behind(tmp_path, root):
+    """The property §5 claims, end to end: a rejected repo leaves the data
+    directory exactly as it found it."""
+    source = tmp_path / "hostile-repo"
+    source.mkdir()
+    (source / "manifest.toml").write_text(MANIFEST.replace('"timers"', '"../../../pwned"'))
+    (source / "extension.py").write_text(CODE)
+    _git("init", "-b", "main", cwd=source)
+    _git("add", ".", cwd=source)
+    _git("commit", "-m", "initial", cwd=source)
+    before = _tree(tmp_path)
+
+    with pytest.raises(installer.InstallError):
+        _install_local(source, root)
+
+    leftovers = sorted(p for p in _tree(tmp_path) - before)
+    assert leftovers == [], f"staging survived a refused install: {leftovers}"

@@ -808,6 +808,136 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     progress frames, readiness flipping to `voice_models: ok` / `wake_models:
     ok`, then a spoken question answered — 266/267 non-zero mic levels.
 
+41. **The button that fixed gotcha 40 was invisible to everyone whose setup was
+    correct** (M6.4, `ChatView.tsx`, `lib/readiness.ts`). M6.3 moved the voice-model
+    download into the app because no packaged user could obtain the models. The
+    button it added lived inside the readiness gate — and the gate renders only
+    when a check **fails**. Missing voice models are a **warning**, because text
+    chat genuinely works without them, so:
+
+        Ollama installed, model pulled  → ready:true → no gate → NO BUTTON
+        Ollama missing                  → ready:false → gate  → button visible
+
+    A user who followed the README exactly got working text chat and no way to
+    turn voice on, ever. The button was reachable only by users whose setup was
+    broken in some *other* way. Confirmed against the shipped rc6 sidecar on an
+    empty data dir: `ready: true`, `voice_models: warn`, `wake_models: warn`.
+    **Why nothing saw it:** the backend was right (a warning IS the correct
+    status), the button was correctly wired to `assets.fetch`, and M6.3's
+    verification drove the fetch and watched readiness flip to `ok`. Every part
+    was correct; only the *pairing* of "the affordance" with "the state that
+    needs it" was wrong, and that pairing lived in one boolean in a render tree
+    with **no frontend tests in the project at all**. That gap is why vitest and
+    `lib/readiness.ts` now exist: the rule is a function with tests instead of a
+    condition buried in JSX.
+    Fixed with a non-blocking advisory strip above the composer, reusing the same
+    `Row`/`DownloadModels` components so the two surfaces cannot drift.
+
+42. **"Hey Jarvis" stayed dead after its own models finished downloading**
+    (M6.4, `wake/service.py`). Availability was computed **once, at startup**,
+    from the presence of the model files — correct until M6.3 made those files
+    arrive *during* a session. So the sequence a new user actually performs ends
+    like this: press Download, 500 MB lands, readiness reports `wake_models: ok`,
+    flip the toggle → **`WAKE_UNAVAILABLE` "wake models missing"**. Two panels of
+    the same app, one above the other, disagreeing — with the headline feature of
+    the product on the losing side.
+    Worse, it is *asymmetric*: `RealVoiceIO` resolves its paths lazily, so
+    push-to-talk works immediately. ⌘M speaks, "Hey Jarvis" does nothing, and
+    nothing explains the difference.
+    **The verification trap is the reusable part.** M6.3 proved the download by
+    watching readiness flip to `ok`. That was true, and it is a *different
+    question* from whether wake works. When a milestone makes a capability
+    possible, the check is to **use the capability**, not to observe the status
+    line that describes it.
+    `set_available()` re-decides, called after a successful fetch with a fresh
+    `wake.status` broadcast. The user's stored preference is kept apart from what
+    is currently possible (`_wanted` vs `enabled`), so an upgrade that
+    temporarily loses the models does not silently rewrite their choice.
+
+43. **A typo in the one file the README calls the only way to configure Jarvis
+    bricked the app** (M6.4, `config.py`, `main.py`). `config.load()` raised out
+    of `main.run()`, so one unclosed bracket exited the sidecar rc=1 with no
+    ready line — "Backend didn't start in time", permanently, from an app with no
+    UI left in which to explain itself and no settings screen to fix it from.
+    Reproduced on the shipped rc6 binary, not theorised.
+    **The fallback direction is the whole design, and the obvious one is wrong.**
+    Falling back to the *defaults* would silently widen a `roots = ["~/safe"]`
+    sandbox to Documents + Downloads + Desktop because of a typo three lines
+    later. A file that cannot be read cannot authorise access, so the settings
+    that bound what tools may do fail **closed** (no roots, no dangerous tools)
+    and only the inert ones take defaults. Surfaced as a readiness warning naming
+    the file. Same family as the corrupt-database fix in `storage/db.py`: boot,
+    keep the bad file, say so.
+
+44. **The 500 MB download held its own connection, and there is no cancel
+    button** (M6.4, `server/app.py`). `assets.fetch` was awaited inline in the
+    receive loop, so that connection read no further messages until the last byte
+    landed — measured with a slow opener, a `ping` sent right after the first
+    progress frame was answered only after `assets.done`. From the outside the app
+    accepts typing, ⌘M and sidebar clicks and acts on none of them, for minutes.
+    Now a tracked background task, with progress and completion **broadcast**
+    rather than returned to the asker (the `wake.detected` rule, same reason: a
+    webview reload replaces the connection, and progress addressed to the old one
+    leaves the new window watching a dead bar).
+    Two mutations came back **NOT CAUGHT** here and both were the useful kind: a
+    bystander assertion that passed on the wrong frame (`"progress" or "done"` —
+    the completion frame was broadcast either way), and **no coverage at all for
+    retrying a failed download**, so a leaked single-flight guard would answer
+    `ASSETS_BUSY` forever and the one thing a user would obviously try next —
+    pressing the button again — could never work.
+
+45. **Branch order was decided by a coin flip, and only Windows could see it**
+    (M6.4, `storage/conversations.py`). Found by putting the backend suite on a
+    Windows runner **for the first time**. `siblings()` and `tip()` ordered turns
+    `created_at, id` — and `id` is a `uuid4().hex`, i.e. random. Windows resolves
+    `datetime.now()` far more coarsely than macOS, so two turns appended back to
+    back share a timestamp and the tie broke at random: the `‹ 2/3 ›` control
+    numbers alternatives arbitrarily, and `tip()` can drop the user onto a branch
+    they never continued — the exact failure `Store.tip()` was added in M5.5 to
+    prevent. The message tree is the product's memory and it was sorting by
+    chance.
+    Fix is SQLite's implicit **`rowid`**: insertion order, no schema change, and
+    it reaches databases that already exist — which a new column could not,
+    since `schema.sql` is `CREATE TABLE IF NOT EXISTS` with no migration
+    framework. Reproduced on macOS by freezing the clock and forcing ids that
+    sort backwards, so the tests bite everywhere.
+    **The generalisable bit:** security-model.md said Windows path handling was
+    "covered by CI's test run and nothing else", and CI's backend job ran on
+    `ubuntu-latest` only — so that sentence resolved to *covered by nothing*, for
+    a platform this project ships an installer for. A runner is the cheapest
+    Windows hardware there is and the suite takes 18 seconds. It found a real bug
+    on the first run, and it was not a path bug.
+
+46. **`ps eww <pid>` prints the WebSocket token, and confirmations are
+    first-answer-wins** (M6.4, `server/auth.py`, §4). The docstring claimed the
+    token "blocks" other local processes. It does not: it is passed in the
+    sidecar's environment, which any same-user process can read (verified on the
+    packaged app). And since `confirm.request` is broadcast with nothing binding
+    a `confirm.respond` to the connection that raised it, a process holding the
+    token can approve every permission dialog — `run_command` included — before
+    the user's window has drawn it.
+    **Decided IN the trust boundary and written down either way**, which is what
+    was actually missing: a process running as you can already read your files
+    and run your shell, so routing it through Jarvis grants nothing new, and
+    binding a confirmation to one connection would break the property §1 needs
+    (a reloaded window must still be able to answer). Moving the token to stdin
+    is recorded as post-v1 hardening, not a fix — it would defeat `ps` and not a
+    debugger, while touching the startup handshake, historically the most fragile
+    part of this app.
+
+47. **The extension approve→import window: the decision was keyed on content,
+    the import on a filename** (M6.4, `extensions/loader.py`). §5 says "only an
+    extension whose current digest matches a recorded approval is ever imported".
+    `discover()` matched the digest and `_load_one` then imported
+    `entry.path / extension.py` — so anything rewriting that file in between had
+    its bytes executed under an approval record attesting to bytes that never
+    ran. And it *tidied up after itself*: the next startup re-hashed, saw
+    `changed`, and refused to load, so the swap ran exactly once and left no
+    trace. Demonstrated with the existing module-body sentinel, which fired.
+    Reaching the window needs a process already running as the user (gotcha 46's
+    boundary), and it is closed anyway: one re-hash of a few-kilobyte folder at
+    load time, against an approval record that can no longer lie about what ran.
+
 ## Repo map
 
 ```
