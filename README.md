@@ -63,12 +63,16 @@ commands, fetch a web page. Every one of those asks you first.
 |---|---|
 | 🎙️ **Talk, hands-free** | Say “Hey Jarvis” from across the room. It listens locally for about 2% of one CPU core — and you can cut it off mid-sentence, like you would a person. |
 | ⌨️ **Or just type** | A proper chat app: streaming replies, conversation history, rename and delete, and a model picker that knows what your RAM can actually handle. |
-| 📁 **Work with your files** | *“Summarise the notes in my Documents folder.”* Reading is free, writing asks, deleting asks loudly — and only inside folders you've allowed. |
-| 💻 **Run commands** | *“What's using port 3000?”* The full command is shown and runs only after you click Allow. No exceptions. |
-| 🌐 **Read the web** | Fetch a page and ask about it, behind a guard that stops a malicious link turning Jarvis into a probe of your home network. |
+| 📁 **Work with your files** † | *“Summarise the notes in my Documents folder.”* Reading is free, writing asks, deleting asks loudly — and only inside folders you've allowed. |
+| 💻 **Run commands** † | *“What's using port 3000?”* The full command is shown and runs only after you click Allow. No exceptions. |
+| 🌐 **Read the web** † | Fetch a page and ask about it, behind a guard that stops a malicious link turning Jarvis into a probe of your home network. |
 | 🌳 **Rewind and branch** | Edit any question or retry any answer. The old one isn't overwritten — it becomes a branch you flip back to with `‹ 2/3 ›`. |
 | ⏰ **Timers and reminders** | *“Remind me in 20 minutes.”* It says so out loud when the time comes, and survives a restart. |
 | 🧩 **Extend it** | Extensions are plain Python, declare what they need, and load only after you approve them. |
+
+<sub>† These three need a model Jarvis has measured as able to *decline* a tool — today
+that's `qwen3:4b`. With the faster `llama3.2:3b` they're switched off, and Jarvis says so
+above the message box. See “Which model should I pull?” below.</sub>
 
 ---
 
@@ -77,19 +81,55 @@ commands, fetch a web page. Every one of those asks you first.
 Jarvis runs a language model on your own computer, so there are two pieces: **Ollama**,
 which runs the model, and **Jarvis**, which is everything else.
 
-### 1. Install Ollama and pull a model
+### 1. Install Ollama, open it, and pull a model
 
 Jarvis deliberately doesn't bundle Ollama — it's a separate tool you may already use, and
 quietly installing a background service on your machine isn't our call to make.
 
-Get it from **[ollama.com/download](https://ollama.com/download)**, then run:
+Get it from **[ollama.com/download](https://ollama.com/download)**, then **open it once**.
+That's not a formality: opening it is what installs the `ollama` command and starts the
+local server, and without it the next line just says `command not found`.
 
 ```bash
 ollama pull llama3.2:3b
 ```
 
-<sub>That's the right first model for 8 GB of RAM. Jarvis will suggest a larger one if your
-machine can take it.</sub>
+<sub>~2 GB. **Leave Ollama running while you use Jarvis** — it's the thing doing the
+thinking. On macOS it lives in the menu bar and starts with your Mac; if you quit it,
+Jarvis will say it can't reach Ollama.</sub>
+
+<details>
+<summary><b>Which model should I pull?</b> — it decides whether Jarvis can touch your files</summary>
+
+<br/>
+
+This is the one choice worth understanding, because it silently decides which half of the
+feature list you get.
+
+| | `llama3.2:3b` | `qwen3:4b` |
+|---|---|---|
+| **Voice** | ~1.4 s to a spoken reply | ~20 s before it starts talking |
+| **Files, commands, web** | ❌ off | ✅ on |
+| **Size** | 2.0 GB | 2.5 GB |
+
+Jarvis only hands tools to models it has actually measured refusing them, and
+`llama3.2:3b` fails that test badly — asked *“what's 17 times 4?”* it answers by running a
+shell command. A model that reaches for tools it doesn't need buries you in permission
+prompts until you stop reading them, which is a security problem rather than an annoying
+one. So tools stay off for it, and there is no override.
+
+`qwen3:4b` is the only model that currently ships with tools on. It's genuinely better at
+them — and it thinks before it answers, which voice can't afford.
+
+**Pick by what you want:** `llama3.2:3b` for a fast talking assistant, `qwen3:4b` for one
+that can do things on your computer. Pull both and switch in the model picker if you like —
+Jarvis tells you which mode you're in above the message box.
+
+**More than 8 GB of RAM?** Pull something bigger (`ollama pull qwen2.5:7b` at 16 GB, `14b`
+at 32 GB). Jarvis picks the best of what you have *installed* — it can't suggest a model
+you never downloaded — and it shows the ceiling your RAM allows in the empty chat.
+
+</details>
 
 ### 2. Install Jarvis
 
@@ -162,7 +202,7 @@ Then click the microphone, or just say **“Hey Jarvis.”**
 | | Minimum | Comfortable |
 |---|---|---|
 | **RAM** | 8 GB | 16 GB or more |
-| **Disk** | ~1.5 GB — app, voice models and a small language model | |
+| **Disk** | ~3 GB — 0.2 app + 0.5 voice models + ~2 for the language model | more if you keep several models |
 | **macOS** | 12 Monterey, **Apple Silicon only** | M1 or newer |
 | **Windows** | 10 or 11, 64-bit | |
 | **Linux** | Debian/Ubuntu-based, 64-bit | |

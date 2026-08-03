@@ -8,7 +8,7 @@
 // which UI state each one lived in, and the UI had no tests.
 
 import { describe, expect, it } from "vitest";
-import { advisoryChecks, isBlocked, offersDownload } from "./readiness";
+import { advisoryChecks, isBlocked, offersDownload, toolAlternatives } from "./readiness";
 import type { ReadinessCheck } from "./types";
 
 /** What a fresh install with Ollama installed and a model pulled reports —
@@ -94,5 +94,49 @@ describe("what earns a banner, and what does not", () => {
 
   it("ignores rows that are merely ok", () => {
     expect(advisoryChecks(ALL_GOOD, true)).toEqual([]);
+  });
+});
+
+describe("what to do about tools being off", () => {
+  it("hands back the models that would turn tools on", () => {
+    // The empty chat explained WHY tools were off and stopped there. There is
+    // no per-model override in the backend, so the only remedy is running a
+    // model that has been measured — and not naming it left the user at a dead
+    // end in front of three advertised features.
+    const checks: ReadinessCheck[] = [
+      { id: "llm", status: "ok" },
+      {
+        id: "tools",
+        status: "warn",
+        code: "TOOLS_OPTIN",
+        data: { model: "llama3.2:3b", alternatives: ["qwen3:4b"] },
+      },
+    ];
+    expect(toolAlternatives(checks)).toEqual(["qwen3:4b"]);
+  });
+
+  it("is empty when tools are already on, so nothing is suggested", () => {
+    expect(toolAlternatives([{ id: "tools", status: "ok" }])).toEqual([]);
+  });
+
+  it("is empty before readiness has arrived, rather than throwing", () => {
+    expect(toolAlternatives(null)).toEqual([]);
+    expect(toolAlternatives([])).toEqual([]);
+  });
+
+  it("survives a tools row with no data at all", () => {
+    // TOOLS_DISABLED carries no alternatives — the build has tools switched
+    // off entirely, which no model change fixes.
+    expect(toolAlternatives([{ id: "tools", status: "warn", code: "TOOLS_DISABLED" }])).toEqual([]);
+  });
+
+  it("drops entries that are not strings", () => {
+    // The payload crosses a socket, and §4 of the security model is explicit
+    // that a same-user process can send anything on it. A non-string here
+    // would render as "[object Object]" in the model note.
+    const checks = [
+      { id: "tools", status: "warn", code: "TOOLS_OPTIN", data: { alternatives: ["ok:1b", 7, null] } },
+    ] as unknown as ReadinessCheck[];
+    expect(toolAlternatives(checks)).toEqual(["ok:1b"]);
   });
 });

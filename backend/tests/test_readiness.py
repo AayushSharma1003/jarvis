@@ -224,3 +224,87 @@ def test_a_readable_config_produces_no_config_row(make_client):  # noqa: F811
     the machines where it always is."""
     client, _ = make_client()
     assert "config" not in _by_id(_ask(client))
+
+
+# -- telling the user what to DO about tools being off ------------------------
+#
+# The row said "tools are off for this model" and stopped there, which is a
+# state rather than an action. There is no per-model override — `registry_for`
+# hands out the registry only for a curated `on` model — so the ONLY thing that
+# turns tools on is pulling a model somebody has measured. Not naming it left
+# the user at a dead end in front of three of the eight features the README
+# advertises.
+#
+# Derived from the catalog, never hardcoded: the point of catalog/models.toml is
+# that the curated set changes, and a sentence naming `qwen3:4b` in en.json
+# would be stale the moment it does.
+
+
+def test_tools_off_names_the_models_that_would_turn_them_on(make_client):  # noqa: F811
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    tools = _by_id(_ask(client))["tools"]
+    assert tools["status"] == "warn"
+    assert tools["data"].get("alternatives"), (
+        "the row says tools are off and offers no way to change that"
+    )
+    assert "fake:3b" not in tools["data"]["alternatives"], "must not suggest the current model"
+
+
+def test_the_suggestion_comes_from_the_catalog_not_a_hardcoded_string(make_client, monkeypatch):  # noqa: F811
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.server import readiness as r
+    from jarvis_backend.tools import default_registry
+
+    monkeypatch.setattr(r, "_tool_capable_ids", lambda: ["someother:9b"])
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    assert _by_id(_ask(client))["tools"]["data"]["alternatives"] == ["someother:9b"]
+
+
+def test_a_catalog_model_the_runtime_refuses_is_not_suggested_back(make_client, monkeypatch):  # noqa: F811
+    """The one case where filtering the current model out actually decides.
+
+    `classify` checks the RUNTIME before the catalog, so a model that is
+    catalog-tagged for tools but whose template no longer advertises them — an
+    Ollama upgrade, a re-quantised tag — lands on TOOLS_UNSUPPORTED with its own
+    id still in `tool_calling_ids()`. Without the filter the row would tell the
+    user to pull the very model that just failed them.
+    """
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.server import readiness as r
+    from jarvis_backend.tools import default_registry
+
+    class NoToolsBackend(FakeBackend):
+        async def model_capabilities(self, model):
+            return ["completion"]
+
+    monkeypatch.setattr(r, "_tool_capable_ids", lambda: ["fake:3b", "other:7b"])
+    client, _ = make_client(NoToolsBackend(), registry=default_registry(SafeOnlyGate()))
+    tools = _by_id(_ask(client))["tools"]
+    assert tools["code"] == "TOOLS_UNSUPPORTED"
+    assert tools["data"]["alternatives"] == ["other:7b"], (
+        "suggested the model the runtime just refused"
+    )
+
+
+def test_the_capable_ids_come_from_the_catalog_file(monkeypatch):
+    """The seam the tests above pin has to actually read the catalog, or they
+    prove only that the call site consults a function returning anything."""
+    from jarvis_backend.llm import catalog
+    from jarvis_backend.server import readiness as r
+
+    monkeypatch.setattr(catalog, "tool_calling_ids", lambda: frozenset({"z:1b", "a:2b"}))
+    assert r._tool_capable_ids() == ["a:2b", "z:1b"], "not read from the catalog, or not sorted"
+
+
+def test_a_model_that_already_has_tools_gets_no_suggestion(make_client, curated):  # noqa: F811
+    """A nudge next to a green row is noise."""
+    from jarvis_backend.security.permissions import SafeOnlyGate
+    from jarvis_backend.tools import default_registry
+
+    client, _ = make_client(registry=default_registry(SafeOnlyGate()))
+    tools = _by_id(_ask(client))["tools"]
+    assert tools["status"] == "ok"
+    assert "alternatives" not in tools.get("data", {})

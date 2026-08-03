@@ -66,3 +66,24 @@ export function offersDownload(readiness: ReadinessCheck[] | null, ready: boolea
   const rows = isBlocked(readiness, ready) ? (readiness ?? []) : advisoryChecks(readiness, ready);
   return rows.some((c) => c.code !== undefined && DOWNLOADABLE.has(c.code));
 }
+
+/**
+ * Models that would turn tools on, taken from the `tools` readiness row.
+ *
+ * The empty chat used to explain *why* tools were off and stop there. There is
+ * no per-model override in the backend — `AppState.registry_for` hands out the
+ * registry only for a curated model — so the single remedy is running one that
+ * has been measured, and a note that names the problem without naming that
+ * leaves the user stuck in front of the file, shell and web features the README
+ * advertises.
+ *
+ * Read from the payload rather than hardcoded here: the curated set lives in
+ * catalog/models.toml and is expected to change. Empty is the ordinary answer
+ * (tools already on, or `TOOLS_DISABLED`, which no model change fixes) and the
+ * caller renders nothing.
+ */
+export function toolAlternatives(readiness: ReadinessCheck[] | null): string[] {
+  const row = readiness?.find((c) => c.id === "tools");
+  const alternatives = row?.data?.alternatives;
+  return Array.isArray(alternatives) ? alternatives.filter((m): m is string => typeof m === "string") : [];
+}

@@ -95,14 +95,35 @@ async def _llm_checks(state) -> list[dict[str, Any]]:
     ]
 
 
+def _tool_capable_ids() -> list[str]:
+    """Models the catalog has measured as safe to hand tools to.
+
+    A seam as well as a helper: the tests pin it rather than the catalog file,
+    so they assert the *behaviour* (the suggestion comes from data) instead of
+    today's curated list, which is expected to change.
+    """
+    from ..llm.catalog import tool_calling_ids
+
+    return sorted(tool_calling_ids())
+
+
 async def _tools_check(state, model: str) -> dict[str, Any]:
     """Can the chosen model be trusted with tools?
 
     Never a failure: tools being off costs the user actions, not conversation,
     and the same reasoning that keeps missing voice models a warning applies.
-    The codes distinguish the two off states because they have different
-    answers — `optin` the user can turn on and be warned about, `unsupported`
-    means switching models is the only fix. See llm/capabilities.py.
+    The codes distinguish the two off states because a user reads them
+    differently — `optin` is "nobody has checked this model", `unsupported` is
+    "this one cannot, full stop". See llm/capabilities.py.
+
+    **Both carry `alternatives`, and that is the point.** There is no per-model
+    override — `AppState.registry_for` hands out the registry only for a
+    curated `on` model — so the single thing that turns tools on is running a
+    model somebody has measured. A row that reports the state without naming
+    the remedy leaves the user at a dead end in front of the file, shell and
+    web features the README advertises. Read from the catalog rather than
+    written into a sentence, because the curated set is expected to change and
+    a hardcoded model name in en.json would go stale silently.
     """
     if state.registry is None:
         return _check("tools", WARN, "TOOLS_DISABLED", model=model)
@@ -114,7 +135,9 @@ async def _tools_check(state, model: str) -> dict[str, Any]:
     if support == capabilities.ON:
         return _check("tools", OK, model=model)
     code = "TOOLS_OPTIN" if support == capabilities.OPTIN else "TOOLS_UNSUPPORTED"
-    return _check("tools", WARN, code, model=model)
+    # Never suggest the model that is already selected.
+    alternatives = [m for m in _tool_capable_ids() if m != model]
+    return _check("tools", WARN, code, model=model, alternatives=alternatives)
 
 
 def _voice_check() -> dict[str, Any]:

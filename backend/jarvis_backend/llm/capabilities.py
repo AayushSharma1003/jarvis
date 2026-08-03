@@ -9,7 +9,14 @@ Three states, and the reason there are three:
       somebody has actually measured it with
       tests/manual/probe_tool_calling.py. Numbers in docs/tool-calling.md.
   "optin"       — the template supports tools, but this model is unvetted.
-      OFF by default; the user may enable it per-model and is warned.
+      OFF, and **there is no per-model override** — `AppState.registry_for`
+      hands out the registry only for `on`. This docstring used to say "the
+      user may enable it per-model and is warned", which was never built; the
+      name survives from M4.0, where "the 8GB tier ships tools opt-in" meant
+      *the user opts in by choosing a measured model*, not by flipping a
+      switch. So the single remedy is running a model somebody has probed, and
+      `server/readiness.py` now names those models in the row rather than
+      reporting the state and stopping — see `_tools_check`.
 
 Why unvetted models default to OFF, which is the load-bearing decision here:
 

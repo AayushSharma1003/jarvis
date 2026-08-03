@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { isBusyElsewhere, useConversation } from "../../state/conversation";
-import { advisoryChecks, isBlocked } from "../../lib/readiness";
+import { advisoryChecks, isBlocked, toolAlternatives } from "../../lib/readiness";
 import { Readiness, ReadinessAdvisory } from "../onboarding/Readiness";
 import { ExtensionsPanel, pendingReviewCount } from "../settings/ExtensionsPanel";
 import { visualStateOf } from "../sphere/params";
@@ -132,12 +132,22 @@ export function ChatView() {
     return t(key, { id: m.id, params: m.params_b, ram: s.tier?.ram_gb ?? "?" });
   };
 
-  // Why tools are off for this model. An `optin` model is capable on paper but
-  // nobody has measured whether it can DECLINE a tool, which M4.0 established
-  // is a security property, not a quality one — see llm/capabilities.py.
+  // Why tools are off for this model — and what to do about it. An `optin`
+  // model is capable on paper but nobody has measured whether it can DECLINE a
+  // tool, which M4.0 established is a security property, not a quality one
+  // (llm/capabilities.py). Naming
+  // the remedy is what left a llama3.2:3b user stuck in front of three of the
+  // features the README advertises — there is no per-model override, so running
+  // a measured model is the only way to switch them on. See lib/readiness.ts.
   const current = s.models.find((m) => m.id === s.currentModel);
+  const alternatives = toolAlternatives(s.readiness);
   const toolNote =
-    current && current.tools !== "on" ? t(`model.tools.${current.tools}`) : undefined;
+    current && current.tools !== "on"
+      ? t(`model.tools.${current.tools}`, {
+          count: alternatives.length,
+          alternatives: alternatives.join(" or "),
+        })
+      : undefined;
 
   const afterSelect = () => {
     if (narrow) setSidebarOpen(false);

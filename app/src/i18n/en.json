@@ -166,8 +166,10 @@
     "whyAuto": "Auto-selected for this machine: {{ram}}GB RAM, so models up to about {{budget}}B parameters. Larger ones will run, slowly.",
     "whyConfigured": "Set in your config file. This machine has {{ram}}GB RAM, comfortable up to about {{budget}}B parameters.",
     "tools": {
-      "optin": "Tools are off for this model: nobody has measured whether it can decline one, and a model that runs tools it shouldn't is a security problem, not just a noisy one.",
-      "unsupported": "This model can't use tools at all — its chat template has no support for them."
+      "optin": "Tools are off for this model: nobody has measured whether it can decline one, and a model that runs tools it shouldn't is a security problem, not just a noisy one. Run `ollama pull {{alternatives}}` and pick it above to switch files, commands and web pages on.",
+      "optin_zero": "Tools are off for this model: nobody has measured whether it can decline one, and a model that runs tools it shouldn't is a security problem, not just a noisy one.",
+      "unsupported": "This model can't use tools at all — its chat template has no support for them. Run `ollama pull {{alternatives}}` and pick it above to switch files, commands and web pages on.",
+      "unsupported_zero": "This model can't use tools at all — its chat template has no support for them."
     }
   },
   "readiness": {
@@ -183,8 +185,8 @@
       "NO_INPUT_DEVICE": "No microphone found. Typing still works.",
       "MIC_SILENT": "Your microphone is sending silence, so Jarvis can't hear you. Check that it isn't muted, and that Jarvis is allowed to use it in your system's privacy settings. Typing still works.",
       "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works.",
-      "TOOLS_OPTIN": "Tools are off for this model — it hasn't been checked for whether it can decline one. Chat works normally.",
-      "TOOLS_UNSUPPORTED": "This model can't use tools. Chat works normally.",
+      "TOOLS_OPTIN": "Jarvis can't let {{model}} touch your files, run commands or fetch pages: nobody has measured whether it declines a tool it doesn't need, and a model that reaches for one anyway buries you in permission prompts. Chat and voice work normally. To switch those on, run `ollama pull {{alternatives}}` and pick it from the model menu.",
+      "TOOLS_UNSUPPORTED": "{{model}} can't use tools at all, so files, commands and web pages are off. Chat and voice work normally. To switch those on, run `ollama pull {{alternatives}}` and pick it from the model menu.",
       "TOOLS_DISABLED": "Tools are switched off in this build.",
       "CONFIG_PARSE_ERROR": "Jarvis couldn't read your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis.",
       "CONFIG_INVALID_VALUE": "There's a setting Jarvis didn't understand in your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis.",
