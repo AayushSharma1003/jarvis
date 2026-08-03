@@ -778,6 +778,36 @@ Working, installable text-chat app end-to-end on the 8GB Mac:
     push-and-wait cycle into seconds and is worth it for anything hardware-
     adjacent.
 
+40. **The voice models could not be obtained by anyone who installed a release,
+    and the app's own instructions named a repo they had never cloned** (M6.3,
+    `assets.py`, `Readiness.tsx`). Models are fetched by explicit user action
+    only — correct — but the only action that existed was
+    `scripts/fetch_models.py`, which is **not in the bundle**, invoked through a
+    CLI the frozen sidecar **does not have** (`sidecar_entry.py` runs
+    `main:run`, the server). So the readiness panel told every downloader to run
+    `uv run python ../scripts/fetch_models.py`, and the wake word, speech input
+    and spoken replies were unreachable for all of them. Text chat worked, which
+    is exactly why it looked fine.
+    **Nothing in the pipeline could have caught it.** The suite runs from a
+    source checkout where `scripts/` exists and `uv` is on PATH; CI does too.
+    The bug only exists in the artifact, for a user with no repo. Same family as
+    gotchas 30, 34 and 36: the dev machine has something the shipped product
+    does not, and every check runs on the dev machine.
+    Fixed by moving the download into the backend (`assets.download` /
+    `fetch_missing`, keeping resume + size + pinned sha256) behind an
+    `assets.fetch` WS message with throttled progress, and a **Download voice
+    models** button in the readiness panel. `scripts/fetch_models.py` now calls
+    the same implementation instead of owning a second copy. Still explicit user
+    action, so zero-phone-home holds.
+    **`Readiness.tsx` used to argue against exactly this**, in a comment: *"a
+    developer with a terminal open is better served by the exact command."* True
+    of developers, and the whole user base of a release is not developers. Worth
+    re-reading any comment that justifies a limitation by describing who the
+    user is.
+    Verified on the **packaged** app with an empty data dir: 500 MB over 524
+    progress frames, readiness flipping to `voice_models: ok` / `wake_models:
+    ok`, then a spoken question answered — 266/267 non-zero mic levels.
+
 ## Repo map
 
 ```
@@ -1592,7 +1622,17 @@ copies were lost mid-session, which is why they are checked in now.
    key and watching the gate fail. Two bugs in the gate itself were found by
    running it (a deleted `.app` and a SIGPIPE) — both fixed. See gotcha 36.
    `/Applications/Jarvis.app` is now a real build, not the hand-signed one.
-3. ✅ **`v0.1.0-rc5` is CUT and the Release run was GREEN on all four jobs**
+0. ✅ **`v0.1.0-rc6` is PUBLISHED and is the build to hand people.** Adds the
+   in-app voice-model download (gotcha 40) without which no downloader could
+   use voice at all. Release run green on all four jobs; artifact independently
+   verified (4/4 checksums, gate verbatim on the downloaded dmg). The README is
+   now a product page with per-OS download buttons pointing at rc6, and all
+   three return HTTP 200 anonymously. **rc4 and rc5 releases are deleted** —
+   rc5 installs but cannot fetch voice models. Their git tags are kept.
+   **Still true and unchanged: Windows and Linux have never been run by a
+   human.** They build, they checksum, nobody has opened them.
+
+1. ✅ **`v0.1.0-rc5` was CUT and the Release run was GREEN on all four jobs**
    (run `30747979798`, on `6355145`). macOS dmg, Windows msi+nsis, Linux deb,
    then `publish` — a **draft** release with four bundles and `SHA256SUMS.txt`.
    **The new macOS gate ran on the runner and passed**, which was the one
