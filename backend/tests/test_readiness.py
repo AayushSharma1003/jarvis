@@ -186,3 +186,41 @@ def test_tools_row_reports_a_hard_no_separately(make_client):  # noqa: F811
     row = _tools_row(client)
     assert row["status"] == "warn"
     assert row["code"] == "TOOLS_UNSUPPORTED"
+
+
+# -- an unreadable config.toml ----------------------------------------------
+#
+# `config.load_or_default` keeps the sidecar alive when the user's hand-edited
+# config won't parse, at the cost of switching file access and dangerous tools
+# off. That trade is only honest if the user is told: they wrote that file and
+# they are the only one who can fix it, and silently losing file access looks
+# exactly like Jarvis breaking for no reason.
+
+
+def test_an_unreadable_config_is_reported(make_client):  # noqa: F811
+    client, state = make_client()
+    state.config_error = "CONFIG_PARSE_ERROR"
+    checks = _by_id(_ask(client))
+    assert (checks["config"]["status"], checks["config"]["code"]) == (
+        "warn",
+        "CONFIG_PARSE_ERROR",
+    )
+
+
+def test_an_unreadable_config_does_not_block_chat(make_client):  # noqa: F811
+    """A warning, not a failure: text chat is unaffected, and locking someone
+    out of the app over a typo is the failure mode this whole change exists to
+    remove."""
+    client, state = make_client()
+    state.config_error = "CONFIG_INVALID_VALUE"
+    msg = _ask(client)
+    assert msg["ready"] is True
+    assert _by_id(msg)["config"]["code"] == "CONFIG_INVALID_VALUE"
+
+
+def test_a_readable_config_produces_no_config_row(make_client):  # noqa: F811
+    """No row at all, rather than an `ok` one: every other green check answers
+    a question the user might ask, and "your config file is fine" is noise on
+    the machines where it always is."""
+    client, _ = make_client()
+    assert "config" not in _by_id(_ask(client))

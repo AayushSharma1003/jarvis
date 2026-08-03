@@ -29,7 +29,7 @@ export interface RamTier {
 
 /** One row of the first-run gate. `code` is absent when status is "ok". */
 export interface ReadinessCheck {
-  id: "llm" | "model" | "tools" | "voice_models" | "wake_models" | "microphone";
+  id: "config" | "llm" | "model" | "tools" | "voice_models" | "wake_models" | "microphone";
   status: "ok" | "warn" | "fail";
   code?: string;
   data?: Record<string, unknown>;

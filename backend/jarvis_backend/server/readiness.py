@@ -34,12 +34,33 @@ def _check(id_: str, status: str, code: str = "", **data: Any) -> dict[str, Any]
 async def collect(state) -> list[dict[str, Any]]:
     """Run every gate check. Never raises: a broken check is a failing check."""
     checks = [
+        *_config_checks(state),
         *await _llm_checks(state),
         _voice_check(),
         _wake_check(),
         _mic_check(getattr(state, "mic_health", None)),
     ]
     return checks
+
+
+def _config_checks(state) -> list[dict[str, Any]]:
+    """Nothing at all when config.toml parsed, one warning when it did not.
+
+    The app boots either way (config.load_or_default), but an unreadable config
+    costs the user their filesystem roots and their dangerous tools — failing
+    closed, because a file we cannot read cannot authorise access. That is the
+    right trade only if it is visible: the user hand-edited that file, they are
+    the only one who can repair it, and from the inside the symptom is Jarvis
+    inexplicably refusing to touch files it touched yesterday.
+
+    A warning rather than a failure: text chat is untouched, and locking
+    someone out of the whole app over a stray bracket is the exact behaviour
+    this replaced.
+    """
+    code = getattr(state, "config_error", None)
+    if not code:
+        return []
+    return [_check("config", WARN, code, path=str(state.config.config_path))]
 
 
 async def _llm_checks(state) -> list[dict[str, Any]]:

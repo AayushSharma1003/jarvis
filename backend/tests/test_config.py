@@ -9,6 +9,8 @@ documents".
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from jarvis_backend.config import ConfigError, default_filesystem_roots, load
@@ -92,3 +94,103 @@ def test_a_non_boolean_allow_dangerous_is_rejected(config_file):
     with pytest.raises(ConfigError) as e:
         config_file("[tools]\nallow_dangerous = 'yes'\n")
     assert e.value.code == "CONFIG_INVALID_VALUE"
+
+
+# -- an unreadable config must not brick the app ----------------------------
+#
+# The README tells users their configuration IS this file ("No settings
+# screen"), so a typo in it is an ordinary user action, not an edge case.
+# Before `load_or_default` existed, one unclosed bracket raised out of
+# `main.run()` and the sidecar exited rc=1 with no ready line — which the user
+# sees only as "Backend didn't start in time", from an app that will now never
+# start again and has no UI left to explain why. Reproduced on the shipped
+# v0.1.0-rc6 binary, not theorised.
+#
+# The fallback direction is the whole design. Falling back to the *defaults*
+# would be a security regression: a user whose file is `roots = ["~/safe"]`
+# plus a typo three lines later would silently have their sandbox widened to
+# Documents + Downloads + Desktop. So the security-bearing settings fail
+# CLOSED — no roots, no dangerous tools — and only the harmless ones default.
+
+
+def test_a_malformed_config_returns_defaults_instead_of_raising(config_file, tmp_path):
+    from jarvis_backend.config import load_or_default
+
+    (tmp_path / "config" / "config.toml").write_text('[filesystem]\nroots = ["~/x"\n')
+    config, code = load_or_default()
+    assert code == "CONFIG_PARSE_ERROR"
+    assert config.ollama_url == "http://127.0.0.1:11434"
+
+
+def test_a_malformed_config_switches_file_access_OFF_not_to_the_defaults(config_file, tmp_path):
+    """The fail-safe direction. Widening the sandbox because we couldn't read
+    the file that narrows it is the one outcome worse than refusing to start."""
+    from jarvis_backend.config import load_or_default
+
+    (tmp_path / "config" / "config.toml").write_text('[filesystem]\nroots = ["~/safe"\n')
+    config, code = load_or_default()
+    assert code == "CONFIG_PARSE_ERROR"
+    assert config.filesystem_roots == (), "an unreadable config must not grant the defaults"
+    assert config.allow_dangerous_tools is False, "nor may it leave dangerous tools on"
+
+
+def test_an_invalid_value_is_reported_with_its_own_code(config_file, tmp_path):
+    from jarvis_backend.config import load_or_default
+
+    (tmp_path / "config" / "config.toml").write_text("[wake]\nthreshold = 9.0\n")
+    config, code = load_or_default()
+    assert code == "CONFIG_INVALID_VALUE"
+    assert config.filesystem_roots == ()
+
+
+def test_a_good_config_reports_no_error(config_file, tmp_path):
+    from jarvis_backend.config import load_or_default
+
+    (tmp_path / "config" / "config.toml").write_text("[tools]\nallow_dangerous = false\n")
+    config, code = load_or_default()
+    assert code is None
+    assert config.allow_dangerous_tools is False
+    assert config.filesystem_roots == default_filesystem_roots()
+
+
+def test_a_real_sidecar_boots_on_a_malformed_config(tmp_path):
+    """The test that would have caught the shipped bug, and the one the unit
+    tests above cannot be: they prove `load_or_default` works, not that
+    `main.run` calls it. That is gotcha 24's gap — "the function works" versus
+    "the function runs" — and here it is the whole defect. Reverting main.py to
+    a bare `load()` passes every other test in this file.
+
+    So: a real process, a real malformed config, and the one output that
+    matters — the ready line the Tauri shell waits for. Without it the user
+    gets "Backend didn't start in time" and an app that never starts again.
+    """
+    import json
+    import subprocess
+    import sys
+
+    cdir, ddir = tmp_path / "c", tmp_path / "d"
+    cdir.mkdir()
+    (cdir / "config.toml").write_text('[filesystem]\nroots = ["~/x"\n', encoding="utf-8")
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "from jarvis_backend.main import run; run()"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **os.environ,
+            "JARVIS_CONFIG_DIR": str(cdir),
+            "JARVIS_DATA_DIR": str(ddir),
+            "JARVIS_WS_TOKEN": "t",
+            "JARVIS_PORT": "0",
+        },
+    )
+    try:
+        line = proc.stdout.readline()
+        assert line, f"no ready line; the sidecar died: {proc.stderr.read()[-600:]}"
+        ready = json.loads(line)
+        assert ready["event"] == "ready"
+        assert ready["port"] > 0
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)

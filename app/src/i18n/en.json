@@ -184,7 +184,9 @@
       "AUDIO_RUNTIME_MISSING": "The audio system isn't available, so voice is off. Typing still works.",
       "TOOLS_OPTIN": "Tools are off for this model — it hasn't been checked for whether it can decline one. Chat works normally.",
       "TOOLS_UNSUPPORTED": "This model can't use tools. Chat works normally.",
-      "TOOLS_DISABLED": "Tools are switched off in this build."
+      "TOOLS_DISABLED": "Tools are switched off in this build.",
+      "CONFIG_PARSE_ERROR": "Jarvis couldn't read your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis.",
+      "CONFIG_INVALID_VALUE": "There's a setting Jarvis didn't understand in your configuration file, so it's running with the built-in defaults — and with file access and risky commands switched off until it can. Fix the file at {{path}}, then restart Jarvis."
     },
     "run": "Run this:",
     "copy": "Copy",

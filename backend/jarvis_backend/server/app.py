@@ -146,6 +146,12 @@ class AppState:
     # One model download at a time, process-wide: two concurrent fetches
     # would race on the same .part files.
     fetching_assets: bool = False
+    # Set when config.toml could not be read and defaults are in force with
+    # file access and dangerous tools switched off (config.load_or_default).
+    # Readiness reports it: the user edited that file by hand and is the only
+    # one who can fix it, so failing silently would leave them wondering why
+    # Jarvis stopped being able to touch their files.
+    config_error: str | None = None
 
     def __post_init__(self) -> None:
         self.connections: list[Connection] = []

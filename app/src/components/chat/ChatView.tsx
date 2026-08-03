@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorText } from "../../i18n";
 import { isBusyElsewhere, useConversation } from "../../state/conversation";
-import { Readiness } from "../onboarding/Readiness";
+import { advisoryChecks, isBlocked } from "../../lib/readiness";
+import { Readiness, ReadinessAdvisory } from "../onboarding/Readiness";
 import { ExtensionsPanel, pendingReviewCount } from "../settings/ExtensionsPanel";
 import { visualStateOf } from "../sphere/params";
 import { Composer } from "./Composer";
@@ -110,8 +111,12 @@ export function ChatView() {
   const busyElsewhere = isBusyElsewhere(s);
 
   // Nothing can be asked until the backend reports a usable setup. Warnings
-  // (no voice models, no mic) don't gate anything: typing still works.
-  const blocked = s.readiness !== null && !s.ready;
+  // (no voice models, no mic) don't gate anything: typing still works — but
+  // they still have to be *reachable*, which is what `advisory` is for. See
+  // lib/readiness.ts: the download button used to live only inside the gate,
+  // so it was invisible to exactly the users whose setup was otherwise fine.
+  const blocked = isBlocked(s.readiness, s.ready);
+  const advisory = advisoryChecks(s.readiness, s.ready);
 
   // "Why this model" — the RAM tier the backend picked against.
   const tierNote = s.tier
@@ -266,6 +271,16 @@ export function ChatView() {
             subtitle={[tierNote, toolNote].filter(Boolean).join(" ")}
           />
         )}
+
+        {/* Warnings the gate will never show, because the gate is only up for
+            failures. Above the error banner: this is the standing state of the
+            machine, not a reaction to what the user just did. */}
+        <ReadinessAdvisory
+          checks={advisory}
+          assetFetch={s.assetFetch}
+          assetFetchFailed={s.assetFetchFailed}
+          onFetch={s.fetchAssets}
+        />
 
         {/* While the gate is up it already explains the problem in full; the
             error banner would just say "can't reach Ollama" a second time. */}

@@ -193,6 +193,44 @@ def load() -> Config:
     )
 
 
+def load_or_default() -> tuple[Config, str | None]:
+    """`load()`, but an unreadable config degrades instead of killing the app.
+
+    The README tells users their configuration *is* `config.toml` ("No settings
+    screen"), so a typo in it is an ordinary user action. `load()` raising out
+    of `main.run()` exited the sidecar rc=1 with no ready line, which the user
+    sees only as "Backend didn't start in time" — from an app that will never
+    start again and has no UI left in which to explain why. Same shape as the
+    corrupt-database fix in `storage/db.py`: boot, keep the bad file, say so.
+
+    **The fallback direction is the security decision, and it is not "the
+    defaults".** A file reading `roots = ["~/safe"]` with a typo three lines
+    later would then have its sandbox silently *widened* to Documents +
+    Downloads + Desktop — the config could not be read, so it cannot be used to
+    justify access. The settings that bound what tools may do therefore fail
+    CLOSED (no roots, no dangerous tools) and only the inert ones take defaults.
+
+    Returns the config and the failure code, or None when the file was fine.
+    The caller surfaces the code; this module authors no English.
+    """
+    try:
+        return load(), None
+    except ConfigError as e:
+        ddir = data_dir()
+        ddir.mkdir(parents=True, exist_ok=True)
+        return (
+            Config(
+                ollama_url="http://127.0.0.1:11434",
+                default_model="",
+                config_path=config_dir() / "config.toml",
+                data_dir=ddir,
+                filesystem_roots=(),
+                allow_dangerous_tools=False,
+            ),
+            e.code,
+        )
+
+
 # --- app-managed state ------------------------------------------------------
 # Settings the app itself writes (UI toggles) live in state.toml in the DATA
 # dir, apart from the hand-edited config.toml — the app never rewrites the

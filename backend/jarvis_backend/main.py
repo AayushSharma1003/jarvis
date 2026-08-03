@@ -30,7 +30,7 @@ from .config import (
     config_dir,
     data_dir,
     extensions_dir,
-    load,
+    load_or_default,
     load_wake_enabled,
     save_wake_enabled,
 )
@@ -106,7 +106,17 @@ def run() -> None:
     if delay := os.environ.get("JARVIS_STARTUP_DELAY"):
         time.sleep(float(delay))
 
-    config = load()
+    # Never `load()` here: a typo in the file the README tells users to edit
+    # would exit the sidecar before the ready line, and "Backend didn't start
+    # in time" is the last thing the app would ever say. Degrade, fail closed,
+    # and report the code through readiness — see config.load_or_default.
+    config, config_error = load_or_default()
+    if config_error:
+        log.warning(
+            "%s reading %s — running with defaults, file access and dangerous tools OFF",
+            config_error,
+            config.config_path,
+        )
     env_token = os.environ.get("JARVIS_WS_TOKEN")
     token = env_token or make_token()
 
@@ -155,6 +165,7 @@ def run() -> None:
         confirm=confirm,
         taint=taint,
         extensions_loaded=extensions_loaded,
+        config_error=config_error,
     )
     confirm.bind(lambda: state.connections)
     state.wake = _make_wake_service(state, config)
