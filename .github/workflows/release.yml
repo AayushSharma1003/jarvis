@@ -196,9 +196,18 @@ jobs:
             microphone returns silence rather than an error, so the app looks
             like it is ignoring you.
 
-            ### Earlier release candidates were not installable
+            ### Voice needs a one-time download
+
+            Open Jarvis and press **Download voice models** on the setup panel
+            (~500 MB, kept on your machine). Nothing downloads until you do.
+
+            ### Earlier builds
 
             `v0.1.0-rc1` through `rc4` shipped a broken macOS bundle seal and
             fail with *"Jarvis is damaged"*, which **Open Anyway cannot fix**.
-            Delete them rather than trying to work around it; this build is the
-            first one that installs.
+
+            `v0.1.0-rc5` installs, but has **no way to obtain the voice
+            models** — the button above did not exist, so the wake word and
+            speech were unreachable. Text chat worked.
+
+            Delete either rather than working around them.

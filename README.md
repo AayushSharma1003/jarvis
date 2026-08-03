@@ -1,308 +1,273 @@
+<div align="center">
+
 # JARVIS
 
-**A local-first, voice-activated AI assistant that runs entirely on your own machine.**
-Say *"Hey Jarvis"*, talk, get a spoken answer — no API keys, no account, no telemetry,
-and no network traffic you didn't ask for.
+### The AI assistant that never leaves your laptop.
 
-[![CI](https://github.com/AayushSharma1003/jarvis/actions/workflows/ci.yml/badge.svg)](https://github.com/AayushSharma1003/jarvis/actions/workflows/ci.yml)
+Say **“Hey Jarvis”**, ask a question, get a spoken answer — with no account, no API key,
+no subscription, and nothing sent to anyone's server. Ever.
+
+<br/>
+
+**[⬇︎ Download for macOS](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_aarch64.dmg)** &nbsp;·&nbsp;
+**[⬇︎ Download for Windows](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_x64-setup.exe)** &nbsp;·&nbsp;
+**[⬇︎ Download for Linux](https://github.com/AayushSharma1003/jarvis/releases/download/v0.1.0-rc6/Jarvis_0.1.0_amd64.deb)**
+
+<sub>macOS 12+ (Apple Silicon) · Windows 10/11 (64-bit) · Ubuntu/Debian (64-bit)<br/>
+Free and open source · [All downloads &amp; checksums](https://github.com/AayushSharma1003/jarvis/releases)</sub>
+
+<br/>
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
+![Platform](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)
+![Works offline](https://img.shields.io/badge/works-offline-brightgreen)
+![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)
 
-<!-- DEMO GIF: record "Hey Jarvis" → question → spoken answer, sphere reacting. -->
+</div>
 
-> **Status: pre-alpha, 5 of 6 phases complete, phase 6 (ship) underway.** The voice loop is real
-> and works end to end on an 8 GB M2: wake word, endpointing, transcription, local LLM,
-> streaming speech, barge-in, and an audio-reactive sphere. The permission engine, the
-> filesystem sandbox, taint tracking and the SSRF guard are **built and enforcing**, and
-> the tool set ships on top of them: files, shell (`run_command`, always confirms) and
-> `web_fetch`. Extensions load only what you approved — keyed on a hash of their exact
-> files, approved through an in-app panel — though an approved one runs unsandboxed,
-> which the docs say plainly.
-> [What works today](#what-works-today) is honest about the line.
+<!-- DEMO GIF: "Hey Jarvis" → question → spoken answer, sphere reacting. -->
 
 ---
 
-## The interesting part
+## What it is
 
-Everything below is measured on the primary target: an **8 GB M2 Pro MacBook**, the
-machine this project is tuned for on the theory that if it's smooth there, it's smooth
-anywhere.
+Most AI assistants are a microphone pointed at someone else's data centre. Jarvis is the
+opposite: the model, your conversations and your voice all stay on your machine. Pull out
+the network cable and it still works.
 
-| Metric | Measured | Why it's not free |
-|---|---|---|
-| Always-on wake word, idle CPU | **2.4%** of one core | An always-listening loop that costs 15% of a core is a laptop-battery bug wearing a feature costume. Budget was <3%. |
-| End of speech → first audible word | **1.17–1.41 s** | Started at 3.92 s. The fix wasn't a faster model — see [latency.md](docs/latency.md). |
-| Warm text time-to-first-token | **407 ms** | llama3.2:3b via Ollama. |
-| Whisper transcription at endpoint | **~140 ms** | Whole utterance on Metal at the endpoint — measured fast enough that streaming STT was unnecessary complexity. |
-| Sphere render cost | **1.8 ms CPU/frame** | ~6k shader-displaced points + bloom, with a behaviour-identical Canvas-2D fallback. |
-| Backend test suite | **705 tests** | Voice orchestration included: a `VoiceIO` boundary lets the whole spoken turn be driven over the WebSocket with zero hardware and zero model files. Security regressions are mutation-proven — the test is broken on purpose to watch it fail before it's trusted. |
+You talk to it, and it talks back in about a second and a half, while a glass sphere
+pulses along with the conversation. It can also *do* things — read and write files, run
+commands, fetch a web page. Every one of those asks you first.
 
-Four decisions this project is actually about:
-
-- **One ML runtime story.** onnxruntime (wake word, VAD, TTS) + whisper.cpp (STT).
-  No PyTorch, no ctranslate2 — a dependency that drags a second 2 GB runtime into a
-  desktop bundle is a regression, not a shortcut. The openWakeWord inference chain is
-  [vendored](backend/jarvis_backend/wake/detector.py) (three ONNX sessions and a ring
-  buffer, bit-exact against the reference implementation) specifically to keep scipy and
-  scikit-learn out of the shipped sidecar.
-- **Local-first is a constraint, not a marketing line.** Ollama is detected or installed,
-  never bundled. The model catalog is bundled data with a *manual* refresh. There is no
-  server, no auto-update, no crash reporter, no analytics. The app makes exactly the
-  network calls you ask it to.
-- **The security model was designed before the tools existed** ([security-model.md](docs/security-model.md)),
-  because retrofitting a permission engine onto a shipped tool list is how assistants get
-  their users owned by a web page.
-- **Messages are an immutable tree from day one.** Turn-grouped, `parent_id`-linked,
-  branching-ready — the branching *UI* is phase 5, but retrofitting immutability is the
-  expensive half, so it was done first.
+> **Jarvis is young.** It's fast and genuinely useful, but this is an early release and
+> you will find rough edges. What it will never do is phone home about them.
 
 ---
 
-## What works today
+## What you can do with it
 
-| | Status | |
-|---|---|---|
-| **Text chat** | ✅ working | Streaming, stop/interrupt, conversation sidebar (list / switch / rename / delete), RAM-tier-aware model picker, a setup readiness gate, reconnect with backoff, full i18n. |
-| **Voice loop** | ✅ working | Hotkey or wake word → Silero VAD endpointing → whisper.cpp (Metal) → local LLM → clause-chunked Kokoro TTS → playback with barge-in. |
-| **"Hey Jarvis" always-on** | ✅ working | Vendored openWakeWord chain behind an adaptive energy gate + VAD, so the expensive embedding model sleeps in silence. Wake word also interrupts playback. |
-| **The sphere** | ✅ working | Audio-reactive orb, four states, docks into the header while you chat and glides to centre stage when you speak. WebGL with a 2D fallback. |
-| **Storage** | ✅ working | SQLite message tree, branching-ready. Delete is the one exception to immutability, by design. |
-| **Permission engine** | ✅ working | `safe`/`ask`/`dangerous`, an in-app confirmation the *backend* requests (never a claim a client can make), "allow for this session" keyed on tool + exact arguments and never for `dangerous`, and every way of not getting an answer resolving to deny. |
-| **Filesystem sandbox + taint** | ✅ working | Paths enforced after `resolve()`, Jarvis's own config/data excluded ahead of the root test; reading a file marks the conversation, and from there side-effectful calls confirm with provenance and can't be covered by a session grant. |
-| **File tools** | ✅ working | `read_file` / `list_dir` (safe), `write_file` (ask), `delete_file` (dangerous, refuses directories). Tool use is gated on the model — unvetted models never see a schema. |
-| **Shell + `web_fetch`** | ✅ working | `run_command` always confirms with the full command shown — no classifier, no denylist — and takes no sandbox, because a subprocess escapes one by design. `web_fetch` is `ask` (a URL can carry data out) and runs behind an SSRF guard: scheme allowlist, every resolved IP checked, IP literals not resolved, every redirect hop re-validated. Both bounded by timeouts and incremental output caps. |
-| **Extensions** | ✅ working | Manifest, content-keyed approval, the loader, an in-app approval panel, `jarvis install <url>` and a host API for extensions that need to speak up on their own. Approving is two steps (a detail card of declared permissions and effective risks, then Approve) and keyed to the extension's exact bytes; it loads live, no restart. Install only accepts `http(s)` — `git clone 'ext::sh -c …'` executes the command — and names the folder from the manifest, never the URL. An approved extension runs **unsandboxed**, with the sidecar's full privileges — its declared permissions are intent, not a boundary. |
-| **Timers & reminders** | ✅ working | The reference extension, and the one that proved the extension API needed an escape hatch: a tool returns a string, but a timer fires *later*. Deadlines are absolute wall-clock (macOS's monotonic clock stops while the lid is shut) and survive a restart; when one fires, Jarvis shows a toast and says it out loud. |
-| **Branching** | ✅ working | Edit a question or regenerate an answer and it forks a sibling turn rather than overwriting anything; `‹ 2/3 ›` moves between the alternatives, landing on each branch's *end* rather than the fork point. The message tree has been immutable and branching-ready since day 1 — this is the UI that finally reaches it, and the old path comes back verbatim. |
-| **Installers** | 🚧 phase 6 | The macOS `.app`/`.dmg`, the Windows `.msi`/`.exe` and the Linux `.deb` build on a tag. **No AppImage** — it failed on three consecutive tags and was cut rather than fixed, since the `.deb` is the primary desktop format anyway. Releases are unsigned by design (zero budget) and checksummed; see [unsigned-install.md](docs/unsigned-install.md). |
-
-**Verified on macOS (Apple Silicon), hands-on.** Windows and Linux are built by CI every
-tag and are *not* yet hands-on tested — the cross-platform code paths exist, the hardware
-validation does not. Said plainly because a README that claims three platforms and has
-tested one is a bug report waiting to be filed.
+| | |
+|---|---|
+| 🎙️ **Talk, hands-free** | Say “Hey Jarvis” from across the room. It listens locally for about 2% of one CPU core — and you can cut it off mid-sentence, like you would a person. |
+| ⌨️ **Or just type** | A proper chat app: streaming replies, conversation history, rename and delete, and a model picker that knows what your RAM can actually handle. |
+| 📁 **Work with your files** | *“Summarise the notes in my Documents folder.”* Reading is free, writing asks, deleting asks loudly — and only inside folders you've allowed. |
+| 💻 **Run commands** | *“What's using port 3000?”* The full command is shown and runs only after you click Allow. No exceptions. |
+| 🌐 **Read the web** | Fetch a page and ask about it, behind a guard that stops a malicious link turning Jarvis into a probe of your home network. |
+| 🌳 **Rewind and branch** | Edit any question or retry any answer. The old one isn't overwritten — it becomes a branch you flip back to with `‹ 2/3 ›`. |
+| ⏰ **Timers and reminders** | *“Remind me in 20 minutes.”* It says so out loud when the time comes, and survives a restart. |
+| 🧩 **Extend it** | Extensions are plain Python, declare what they need, and load only after you approve them. |
 
 ---
 
-## How it works
+## Get started in 5 minutes
 
-```mermaid
-flowchart LR
-    subgraph app["Tauri 2 app"]
-        UI["React 19 + three.js<br/>sphere · chat · settings"]
-        RS["Rust shell<br/>tray · hotkeys · sidecar supervisor"]
-    end
-    subgraph py["Python sidecar"]
-        WS["WebSocket server<br/>127.0.0.1 · token + Origin auth"]
-        WAKE["Wake service<br/>energy gate → Silero → openWakeWord"]
-        VOICE["Voice exchange<br/>VAD endpoint → whisper.cpp → Kokoro"]
-        AG["Agent loop"]
-        SEC["Security layer<br/>permissions · taint · sandbox · SSRF"]
-        TOOLS["File tools<br/>read · list · write · delete"]
-        DB[("SQLite<br/>immutable message tree")]
-    end
-    OLLAMA["Ollama<br/>detected, never bundled"]
+Jarvis runs a language model on your own computer, so there are two pieces: **Ollama**,
+which runs the model, and **Jarvis**, which is everything else.
 
-    UI <-->|"ws://127.0.0.1"| WS
-    RS -->|spawns + supervises| WS
-    WAKE -->|wake.detected| WS
-    WS --> VOICE --> AG
-    AG --> SEC --> TOOLS
-    AG <--> OLLAMA
-    AG --> DB
+### 1. Install Ollama and pull a model
+
+Jarvis deliberately doesn't bundle Ollama — it's a separate tool you may already use, and
+quietly installing a background service on your machine isn't our call to make.
+
+Get it from **[ollama.com/download](https://ollama.com/download)**, then run:
+
+```bash
+ollama pull llama3.2:3b
 ```
 
-The Rust shell spawns the Python sidecar with a token in its environment and waits for a
-JSON ready-line on stdout; the webview then connects over a loopback WebSocket that
-checks both the token and the `Origin` header. The sidecar watches its parent PID and
-exits with it, so there are no orphaned Python processes.
+<sub>That's the right first model for 8 GB of RAM. Jarvis will suggest a larger one if your
+machine can take it.</sub>
 
-**Where the 1.4 seconds go** (8 GB M2, llama3.2:3b — full breakdown in [latency.md](docs/latency.md)):
+### 2. Install Jarvis
 
-| Stage | Time |
+Download it from the links at the top. Because this is a free project without a $99/year
+Apple certificate or a several-hundred-dollar Windows one, **your OS will warn you the
+first time you open it.** Nothing is wrong — here's exactly what you'll see.
+
+<details>
+<summary><b>macOS</b> — “Apple could not verify…”</summary>
+
+<br/>
+
+1. Open the `.dmg` and **drag Jarvis onto the Applications folder.** Don't run it from
+   inside the disk image — macOS runs apps from there in a read-only sandbox and Jarvis
+   will misbehave.
+2. Open it from Applications. A dialog says Apple can't verify it. Click **Done** —
+   *not* “Move to Bin”.
+3. Go to **System Settings → Privacy &amp; Security**, scroll down, and click **Open Anyway**.
+4. Launch it once more and confirm. You won't be asked again.
+5. **Allow the microphone** when prompted — the wake word and voice need it.
+
+> Upgrading from an older Jarvis? macOS will ask for the microphone again. That's
+> expected: the app's signature changed, and macOS ties permissions to it.
+
+</details>
+
+<details>
+<summary><b>Windows</b> — “Windows protected your PC”</summary>
+
+<br/>
+
+1. Run the installer. SmartScreen shows a blue box.
+2. Click **More info**, then **Run anyway**.
+3. Allow microphone access when Windows asks.
+
+</details>
+
+<details>
+<summary><b>Linux</b> — Debian / Ubuntu</summary>
+
+<br/>
+
+```bash
+sudo apt install ./Jarvis_0.1.0_amd64.deb
+```
+
+Then launch Jarvis from your applications menu.
+
+</details>
+
+<sub>Every download is checksummed — verify against `SHA256SUMS.txt` on the
+[releases page](https://github.com/AayushSharma1003/jarvis/releases) with
+`shasum -a 256 -c SHA256SUMS.txt` on macOS/Linux, or `Get-FileHash` on Windows.</sub>
+
+### 3. Turn on voice
+
+Open Jarvis. If voice isn't ready, it says so and shows a **Download voice models**
+button — click it. That's about 500 MB of speech-recognition and text-to-speech models,
+downloaded once and kept on your machine. Nothing downloads until you press it.
+
+Then click the microphone, or just say **“Hey Jarvis.”**
+
+---
+
+## What it needs
+
+| | Minimum | Comfortable |
+|---|---|---|
+| **RAM** | 8 GB | 16 GB or more |
+| **Disk** | ~1.5 GB — app, voice models and a small language model | |
+| **macOS** | 12 Monterey, **Apple Silicon only** | M1 or newer |
+| **Windows** | 10 or 11, 64-bit | |
+| **Linux** | Debian/Ubuntu-based, 64-bit | |
+
+Jarvis picks a model that fits your machine — **8 GB → ~3B parameters**, **16 GB → ~8B**,
+**32 GB → ~14B**, larger above that — and you can always override it.
+
+> **Intel Macs aren't supported yet.** The macOS build is Apple Silicon only.
+
+---
+
+## How fast is it?
+
+Measured on the slowest machine it targets — an **8 GB M2 MacBook** running `llama3.2:3b`:
+
+| | |
 |---|---|
-| VAD hangover before the endpoint fires | 700 ms *(a perception tunable, reported separately)* |
-| whisper.cpp on the whole utterance (Metal) | ~140 ms |
-| LLM time to first sentence | ~500–650 ms |
-| Kokoro first chunk | ~550–850 ms |
-| Audio out | ~40 ms |
+| You stop speaking → Jarvis starts speaking | **1.2–1.4 seconds** |
+| First word of a typed reply | **407 ms** |
+| Always-on wake word, idle CPU cost | **2.4% of one core** |
 
-The chunking is the trick: waiting for a complete first sentence cost 3.0 s of synthesis
-on a long opener, so TTS fires on the first clause or 10 words, whichever closes first,
-and the voice-mode system prompt asks the model for a short opening sentence. Latency is
-a prompt-engineering problem as much as an inference one.
+A faster machine or a bigger model moves the first two. The wake word cost stays flat.
 
 ---
 
-## Security model, short version
+## Your privacy, concretely
 
-Full write-up: **[docs/security-model.md](docs/security-model.md)** — normative, and
-written before the code.
+The part most assistants are vague about, in specifics:
 
-Built and enforcing today:
+- **No account, no sign-in, no API key.** There is nothing to log into.
+- **No telemetry, no analytics, no crash reporting.** Not “anonymised” — absent.
+- **No auto-update.** Jarvis never contacts a server to see if it's out of date.
+- **Your conversations** live in a local SQLite file you can read, back up or delete.
+- **Your voice** is transcribed on your machine, and the audio is thrown away.
+- **The only network traffic** is what you ask for: fetching a web page, talking to Ollama
+  on your own machine, or downloading the voice models when you press the button.
 
-- Every tool carries a risk level: `safe` / `ask` / `dangerous`. Risky calls confirm with
-  the exact action shown, the dialog defaults focus to **Deny**, and `dangerous` can be
-  switched off wholesale (`[tools] allow_dangerous`) — off means refused without asking.
-- Filesystem tools are sandboxed to user-chosen roots, enforced on `resolve()`-ed paths so
-  a `..` or a symlink inside a root pointing out is refused. Jarvis's own config and data
-  directories are excluded *before* the root test, so no tool can widen its own sandbox.
-- **Taint tracking:** once untrusted content (today: a file Jarvis read) enters the
-  conversation, every side-effectful call escalates to confirmation with provenance, and
-  cannot be covered by — or create — an "allow for this session" grant. Prompt injection
-  is assumed, not defended against by hope.
-- **Shell always confirms**, full command text shown, no classifier and no denylist (both
-  are bypass generators). `run_command` deliberately takes *no* sandbox — a subprocess
-  escapes it by design (`cat ~/.ssh/id_rsa` ignores every root), so its guardrail is the
-  unconditional confirmation, and the docs say so rather than letting the sandbox imply a
-  protection it doesn't provide.
-- **`web_fetch` + SSRF guard:** http/https only, every resolved IP checked against
-  private/loopback/link-local/metadata ranges (a host with one public and one private
-  record is refused outright), IP literals validated without resolving, and **every
-  redirect hop re-validated** — a 302 to the cloud metadata endpoint is the classic
-  escalation. Fetching is `ask`, because a URL can carry data *out*.
-- Both are bounded so one call can't hold the app hostage: incremental output caps read as
-  the bytes arrive (never buffer-then-truncate) and real timeouts, with the whole process
-  group killed on a shell timeout or barge-in.
-- The backend binds 127.0.0.1 with a per-session token and a strict `Origin` check.
-- Tool use is gated on the *model*: one that can't reliably decline a tool manufactures
-  permission dialogs, and confirmation fatigue is how permission engines fail.
-
-- **Extensions are approved by content, not by name** (§5). An extension runs only if a
-  SHA-256 of every file in its folder — `manifest.toml` included, so a declared risk level
-  can't be lowered afterwards — matches a recorded approval. Discovery reads TOML and
-  hashes bytes; it *imports nothing*, because importing is executing and permission asked
-  after the code runs is not permission. Declared risk levels are floors the core raises
-  and never lowers, the manifest is an allowlist of what gets exposed, and a tool name
-  already taken is refused so `read_file` can't be hijacked.
-
-  And the part that matters most, said plainly: **an approved extension is not sandboxed.**
-  It runs in the sidecar process with everything that process can do, so `network = false`
-  in a manifest is a *declaration of intent*, not a cage. Approving one is informed consent
-  to run someone's code as yourself, and the prompt says so in those words. Enforcing the
-  permissions block for real needs a subprocess per extension behind an RPC boundary — a
-  different architecture, and not one v1 claims to have.
-
-Every section of that document is now built: the approval panel landed in M5.2,
-`jarvis install <url>` in M5.3, and the extension host API in M5.4.
-
-Known residuals, stated rather than hidden: a DNS-rebinding window between the SSRF check
-and the connect, a TOCTOU window between path resolution and file open, and an approved
-extension's full process privileges. All are documented in
-[security-model.md](docs/security-model.md); none is quietly ignored.
+Turn off your Wi-Fi and Jarvis keeps working.
 
 ---
 
-## Run it from source
+## When Jarvis does things on your computer
 
-Prereqs: [uv](https://docs.astral.sh/uv/), Node 22+, Rust stable, and
-[Ollama](https://ollama.com) running with a model pulled (`ollama pull llama3.2:3b`).
+An assistant that can run commands and delete files is only as good as the moment it stops
+and asks. That system was designed before the tools existed, not bolted on after:
 
-```sh
-# backend: deps, tests, and a setup diagnosis
-cd backend && uv sync && uv run pytest && uv run jarvis doctor
+- **Every action is rated** *routine*, *needs permission*, or *risky* — and the rating is
+  decided by Jarvis itself, never by the AI model.
+- **Shell commands always ask**, showing the exact command. There's no clever
+  “safe command” detector, because those are eventually wrong and always confident.
+- **Files are fenced.** Jarvis reaches only folders you've allowed, and its own config and
+  data are off-limits to it.
+- **Untrusted content raises the bar.** Once a web page or unknown file enters a
+  conversation, anything with a side-effect asks again and tells you *why*. A web page
+  cannot talk Jarvis into deleting your files.
+- **“Allow this session”** covers that exact action with those exact arguments, and is
+  never offered for risky ones.
 
-# voice models (~500 MB, pinned URLs + SHA-256, resumable) — user-invoked, never automatic
-uv run python ../scripts/fetch_models.py
+**One thing to be clear about:** an extension you approve runs with Jarvis's full
+privileges. Its declared permissions tell you its intent — they are not a cage. Approve
+extensions the way you'd approve any program.
 
-# the app
+---
+
+## Known limits
+
+Said plainly, because finding out later is worse:
+
+- **Hands-on tested on macOS (Apple Silicon).** Windows and Linux are built automatically
+  for every release but haven't yet had hands-on testing. If you're on one, you're early —
+  please [tell us what breaks](https://github.com/AayushSharma1003/jarvis/issues).
+- **No Intel Mac build** yet.
+- **Voice is English**, and the wake word is “Hey Jarvis” — it can't be changed yet.
+- **No settings screen.** Configuration is a TOML file in Jarvis's data folder.
+- **Ollama is required**, installed separately.
+- **No echo cancellation.** With loud speakers, Jarvis can hear itself.
+
+---
+
+## Built with
+
+Tauri 2, React 19 and three.js on the front; a Python sidecar behind it running
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) for speech recognition,
+[Silero VAD](https://github.com/snakers4/silero-vad) for knowing when you've stopped
+talking, [openWakeWord](https://github.com/dscripka/openWakeWord) for the wake word,
+[Kokoro](https://github.com/thewh1teagle/kokoro-onnx) for the voice, and
+[Ollama](https://ollama.com) for the language model. One ML runtime, no PyTorch, no 2 GB
+surprise in your Applications folder.
+
+Curious how it fits together? See [architecture.md](docs/architecture.md), the
+[security model](docs/security-model.md), and [where the 1.4 seconds go](docs/latency.md).
+
+## Build from source
+
+```bash
+git clone https://github.com/AayushSharma1003/jarvis.git && cd jarvis
+cd backend && uv sync && uv run python ../scripts/fetch_models.py
 cd ../app && npm install && npm run tauri dev
 ```
 
-`uv run jarvis doctor --latency` runs the real voice pipeline against a synthetic
-utterance — Kokoro speaks the test question, so no microphone is needed — and prints the
-per-stage breakdown above for your machine.
-
-There are no installers yet. When there are, they will be **unsigned**: this is a
-zero-budget project and code-signing certificates are not free. The OS warnings you'd see
-and why are documented in [unsigned-install.md](docs/unsigned-install.md) rather than
-hand-waved.
-
----
-
-## Engineering notes
-
-The things that cost real time, kept so nobody rediscovers them:
-
-- **CPU% lies on Apple Silicon.** A mostly-idle background thread gets scheduled onto
-  efficiency cores at roughly a third of the clock, so the same work reads ~3× the CPU%
-  you measured in a hot benchmark loop. Always-on budgets have to come from measured idle
-  deltas, not from hot-loop arithmetic.
-- **int8 Kokoro is 2.4× *slower* than fp32** on Apple Silicon (RTF 0.66 vs 0.28), and the
-  CoreML execution provider fragments the graph into 155 partitions. Both "optimisations"
-  were tried and reverted.
-- **WKWebView suspends the WebContent process** when the window is occluded — frozen JS
-  can't answer a wake event, while WebKit's separate networking process keeps the
-  WebSocket `ESTABLISHED` so everything *looks* healthy. Always-on means the webview has
-  to be told not to throttle.
-- **Whisper transcribes silence as `[BLANK_AUDIO]`**, which is a non-empty string, which
-  became a real LLM turn. Ambient room noise was starting conversations.
-- **UnrealBloom writes alpha = 1**, turning a transparent canvas into an opaque square;
-  the sphere's edges dissolve via an in-scene vignette that fades to the exact page
-  background instead. And the render watchdog measures *render-call duration*, never
-  frame cadence — rAF throttling makes cadence lie and will happily demote a perfectly
-  capable GPU to the 2D fallback forever.
-- **Tauri 2 needs an explicit capabilities file** or the webview gets zero IPC permissions
-  and `event.listen` fails silently — which presents as "the backend didn't start".
-
-- **A model that can't decline a tool is a security problem, not a quality one.**
-  llama3.2:3b answers "what's 17 times 4?" by running `echo 17*4` in a shell, 3 times
-  out of 3. Every spurious call is a permission dialog the user didn't provoke, and
-  confirmation fatigue is the documented way permission engines fail. Tool use is
-  therefore gated on the model, and unvetted models default to off —
-  [with measurements](docs/tool-calling.md).
-
-More: [architecture.md](docs/architecture.md) · [latency.md](docs/latency.md) ·
-[tool-calling.md](docs/tool-calling.md) · [docs/design/sphere.md](docs/design/sphere.md)
-
----
-
-## Repo layout
-
-| Path | What lives there |
-|---|---|
-| [app/](app/) | Tauri 2 shell (`src-tauri/`) + React/TypeScript frontend — sphere, chat, settings |
-| [backend/](backend/) | Python sidecar: `wake` `stt` `tts` `llm` `agent` `tools` `security` `storage` `server` |
-| [extensions/](extensions/) | Manifests for the default extension set — the loader is built, the bodies are M5.4 |
-| [scripts/](scripts/) | Installers, PyInstaller sidecar build, model fetch, offline wake-word training |
-| [catalog/](catalog/) | Curated model catalog — bundled data, manual refresh, not a service |
-| [docs/](docs/) | Architecture, security model, latency budgets, extension authoring |
-
-Backend emits machine-readable error **codes**; every user-facing string lives in
-`app/src/i18n/`. That rule is enforced in review — it's what makes translation a data
-problem later instead of a refactor.
-
----
-
-## Roadmap
-
-1. ✅ **Walking skeleton** — Tauri shell + sidecar + streaming text chat + SQLite tree.
-2. ✅ **Voice loop** — VAD, whisper.cpp, Kokoro, barge-in, inside the latency budget.
-3. ✅ **Always-on + feel** — wake word, sphere, chat management, readiness gate, RAM tiering.
-4. ✅ **Agency + security** — the largest phase; tools ship *with* their security layer, never before it. The [model capability gate](docs/tool-calling.md) (tool use is gated on the model, because *"can this model decline a tool?"* turns out to be a security property), the tool plumbing, the permission engine + confirmation, the filesystem sandbox + file tools + taint, then shell and `web_fetch` + SSRF.
-5. 🚧 **Extended scope** — the extension work is complete (loader, content-keyed approval gate, in-app approval panel, `jarvis install <url>`, a host API, and `timers-reminders` as the working reference), and so is the branching UI. Still to come: model catalog UI, custom wake words.
-6. **Ship** — installers, docs, a tagged unsigned release with checksums.
-
-Post-v1: acoustic echo cancellation (macOS Voice Processing AU, then WebRTC AEC3), voice
-cloning evaluation, and auto-update if signing ever becomes affordable.
-
----
+Requires [uv](https://docs.astral.sh/uv/), Node 22+ and a Rust toolchain.
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md). Extensions are the intended entry point; anything
-touching `backend/jarvis_backend/security/` wants an issue first.
+Issues and pull requests are welcome — especially **Windows and Linux bug reports**, which
+are the least-tested part of the project. Include your OS, your RAM and what you asked
+Jarvis to do. See [CONTRIBUTING.md](CONTRIBUTING.md); anything touching
+`backend/jarvis_backend/security/` wants an issue first.
 
 ## License
 
-[Apache-2.0](LICENSE). Third-party models and vendored code are credited in
-[NOTICE](NOTICE) — openWakeWord, Silero VAD, whisper.cpp and Kokoro, without which none
-of this would run on a laptop.
+[Apache-2.0](LICENSE). No model weights live in this repository — they're downloaded from
+upstream when you ask for them. Third-party components are credited in [NOTICE](NOTICE).
 
-No model weights live in this repository; `scripts/fetch_models.py` downloads them from
-upstream on request. One caveat worth stating up front: openWakeWord's **pre-trained wake
-models are CC BY-NC-SA 4.0** (non-commercial), a constraint that belongs to those
-downloaded weights rather than to JARVIS. Training a replacement offline — which is also
-what a custom wake phrase such as "Hey Friday" would need — is **not built**: it wants
-PyTorch and a data pipeline, and this project's whole ML story is deliberately
-onnxruntime + whisper.cpp with no torch anywhere. Deferred past v1 rather than shipped
-half-done.
+**One licensing caveat worth knowing:** openWakeWord's pre-trained wake-word models are
+**CC BY-NC-SA 4.0 (non-commercial)**. That constraint belongs to those downloaded weights,
+not to Jarvis itself — but if you plan to use Jarvis commercially, the wake word is the
+piece to look at.
+
+---
+
+<div align="center">
+<sub>Built by <a href="https://github.com/AayushSharma1003">Aayush Sharma</a></sub>
+</div>
